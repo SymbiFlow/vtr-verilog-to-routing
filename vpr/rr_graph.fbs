@@ -1,0 +1,176 @@
+namespace vtr.vpr;
+
+table ChannelList {
+  index:int;
+  info:int;
+}
+
+table Channels {
+  chan_width_max:int;
+  x_min:int;
+  y_min:int;
+  x_max:int;
+  y_max:int;
+  x_list:[ChannelList];
+  y_list:[ChannelList];
+}
+
+enum SwitchType : byte {
+  INVALID_SWITCH_TYPE,
+  MUX,
+  TRISTATE,
+  PASS_GATE,
+  SHORT,
+  BUFFER
+}
+
+table SwitchTiming {
+  r:float;
+  c_in:float;
+  c_out:float;
+  t_del:float;
+}
+
+table SwitchSizing {
+  mux_trans_size:float;
+  buf_size:float;
+}
+
+table Switch {
+  id:int;
+  name:string;
+  type:SwitchType;
+  timing:SwitchTiming;
+  sizing:SwitchSizing;
+}
+
+table SegmentTiming {
+  r_per_meter:float;
+  c_per_meter:float;
+}
+
+table Segment {
+  id:int;
+  name:string;
+  timing:SegmentTiming;
+}
+
+enum PinType : byte {
+  NONE,
+  OPEN,
+  OUTPUT,
+  INPUT
+}
+
+table Pin {
+  ptc:int;
+  name:string;
+}
+
+table PinClass {
+  type:PinType;
+  pin:[Pin];
+}
+
+table BlockType {
+  id:int;
+  name:string;
+  width:int;
+  height:int;
+  pin_class:[PinClass];
+}
+
+table GridLoc {
+  x:int;
+  y:int;
+  block_type_id:int;
+  width_offset:int;
+  height_offset:int;
+}
+
+enum NodeType: byte {
+  INVALID_NODE_TYPE,
+  CHANX,
+  CHANY,
+  SOURCE,
+  SINK,
+  OPIN,
+  IPIN
+}
+
+enum NodeDirection: byte {
+  NO_DIR,
+  INC_DIR,
+  DEC_DIR,
+  BI_DIR
+}
+
+enum NodeSide: byte {
+  NO_SIDE,
+  LEFT,
+  RIGHT,
+  TOP,
+  BOTTOM
+}
+
+table NodeTiming {
+  r:float;
+  c:float;
+}
+
+table NodeLoc {
+  x_low:short;
+  y_low:short;
+  x_high:short;
+  y_high:short;
+  side:NodeSide;
+  ptc:int;
+  timing:NodeTiming;
+  segment_id:int;
+}
+
+table NodeMetadata {
+  name:string;
+  x_offset:int;
+  y_offset:int;
+  z_offset:int;
+  value:string;
+}
+
+table NodeSegment {
+  segment_id:int = -1;
+}
+
+table RrNode {
+  id:int;
+  type:NodeType;
+  direction:NodeDirection;
+  capacity:int;
+  loc:NodeLoc;
+  timing:NodeTiming;
+  metadata:[NodeMetadata];
+  segment:NodeSegment;
+}
+
+table RrEdge {
+  src_node:int;
+  sink_node:int;
+  switch_id:int;
+  metadata:[NodeMetadata];
+}
+
+table RrGraph {
+  tool_version:string;
+  tool_comment:string;
+  channels:Channels;
+  switches:[Switch];
+  segments:[Segment];
+  block_types:[BlockType];
+  grid:[GridLoc];
+  rr_node:[RrNode];
+  rr_edge:[RrEdge];
+}
+
+root_type RrGraph;
+file_identifier "RRGR";
+file_extension "rrgraph";

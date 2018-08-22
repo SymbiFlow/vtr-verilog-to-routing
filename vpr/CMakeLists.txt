@@ -6,17 +6,28 @@ option(VPR_USE_SIGNAL_HANDLER "Should VPR use a signal handler to intercept sign
 
 include(CheckCXXSymbolExists)
 
+find_package(Flatbuffers REQUIRED)
+
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/rr_graph_generated.h
+  COMMAND flatbuffers::flatc -o ${CMAKE_CURRENT_BINARY_DIR} -c ${CMAKE_CURRENT_SOURCE_DIR}/rr_graph.fbs
+  DEPENDS rr_graph.fbs
+  )
+
 #Collect the source files
 file(GLOB_RECURSE EXEC_SOURCES src/main.cpp)
 file(GLOB_RECURSE LIB_SOURCES src/*/*.cpp)
 file(GLOB_RECURSE LIB_HEADERS src/*/*.h)
+list(APPEND LIB_HEADERS ${CMAKE_CURRENT_BINARY_DIR}/rr_graph_generated.h)
 files_to_dirs(LIB_HEADERS LIB_INCLUDE_DIRS)
 
 #Create the library
 add_library(libvpr STATIC
-             ${LIB_HEADERS}
-             ${LIB_SOURCES})
-target_include_directories(libvpr PUBLIC ${LIB_INCLUDE_DIRS})
+            ${LIB_HEADERS} ${RR_GRAPH_OUTPUTS}
+            ${LIB_SOURCES})
+target_include_directories(libvpr
+  PUBLIC ${LIB_INCLUDE_DIRS}
+  )
 set_target_properties(libvpr PROPERTIES PREFIX "") #Avoid extra 'lib' prefix
 
 #Specify link-time dependancies
@@ -29,18 +40,19 @@ target_link_libraries(libvpr
                         libtatum
                         libargparse
                         libpugixml
+                        flatbuffers::flatbuffers
 			libhlc)
 
 #Create the executable
 add_executable(vpr ${EXEC_SOURCES})
-target_link_libraries(vpr 
+target_link_libraries(vpr
                         libvpr)
 
 if (VPR_USE_SIGNAL_HANDLER)
     #Check wheter VPR can use sigaction to handle signals (only supported by POSIX)
     CHECK_CXX_SYMBOL_EXISTS(sigaction csignal HAVE_SIGACTION)
     if(HAVE_SIGACTION)
-        target_compile_definitions(libvpr PRIVATE VPR_USE_SIGACTION)    
+        target_compile_definitions(libvpr PRIVATE VPR_USE_SIGACTION)
     endif()
 endif()
 

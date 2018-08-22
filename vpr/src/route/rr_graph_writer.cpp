@@ -15,6 +15,7 @@
 #include "read_xml_arch_file.h"
 #include "vtr_version.h"
 #include "rr_graph_writer.h"
+#include "rr_graph_generated.h"
 
 using namespace std;
 
@@ -24,18 +25,35 @@ using namespace std;
  * float -> string -> float conversions */
 constexpr int FLOAT_PRECISION = std::numeric_limits<float>::max_digits10;
 /*********************** Subroutines local to this module *******************/
-void write_rr_channel(fstream &fp);
-void write_rr_node(fstream &fp);
-void write_rr_switches(fstream &fp);
-void write_rr_grid(fstream &fp);
-void write_rr_edges(fstream &fp);
-void write_rr_block_types(fstream &fp);
-void write_rr_segments(fstream &fp, const t_segment_inf *segment_inf, const int num_seg_types);
+static void write_rr_channel(fstream &fp);
+static flatbuffers::Offset<vtr::vpr::Channels> write_rr_channel_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_node(fstream &fp);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>>> write_rr_node_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_switches(fstream &fp);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Switch>>> write_rr_switches_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_grid(fstream &fp);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::GridLoc>>> write_rr_grid_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_edges(fstream &fp);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrEdge>>> write_rr_edges_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_block_types(fstream &fp);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::BlockType>>> write_rr_block_types_flatbuffer(flatbuffers::FlatBufferBuilder &fbb);
+static void write_rr_segments(fstream &fp, const t_segment_inf *segment_inf, const int num_seg_types);
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Segment>>> write_rr_segments_flatbuffer(flatbuffers::FlatBufferBuilder &fbb, const t_segment_inf *segment_inf, const int num_seg_types);
+static void write_rr_graph_flatbuffer(const char *file_name, const t_segment_inf *segment_inf, const int num_seg_types);
+static void write_rr_graph_xml(const char *file_name, const t_segment_inf *segment_inf, const int num_seg_types);
 
 /************************ Subroutine definitions ****************************/
 
 /* This function is used to write the rr_graph into xml format into a a file with name: file_name */
 void write_rr_graph(const char *file_name, const t_segment_inf *segment_inf, const int num_seg_types) {
+    if (vtr::check_file_name_extension(file_name, ".rrgraph")) {
+      write_rr_graph_flatbuffer(file_name, segment_inf, num_seg_types);
+    } else {
+      write_rr_graph_xml(file_name, segment_inf, num_seg_types);
+    }
+}
+
+void write_rr_graph_xml(const char *file_name, const t_segment_inf *segment_inf, const int num_seg_types) {
     fstream fp;
     fp.open(file_name, fstream::out | fstream::trunc);
 
@@ -63,6 +81,55 @@ void write_rr_graph(const char *file_name, const t_segment_inf *segment_inf, con
 
     cout << "Finished generating RR graph file named " << file_name << endl << endl;
 }
+void write_rr_graph_flatbuffer(const char *file_name, const t_segment_inf *segment_inf, const int num_seg_types) {
+    cout << "Serializing RR graph" << endl;
+    flatbuffers::FlatBufferBuilder fbb(1024);
+
+    auto info_string = fbb.CreateString(vtr::VERSION);
+    auto info_comment = fbb.CreateString(get_arch_file_name());
+    auto channels = write_rr_channel_flatbuffer(fbb);
+    auto switches = write_rr_switches_flatbuffer(fbb);
+    auto segments = write_rr_segments_flatbuffer(fbb, segment_inf, num_seg_types);
+    auto block_types = write_rr_block_types_flatbuffer(fbb);
+    auto grid = write_rr_grid_flatbuffer(fbb);
+    auto node = write_rr_node_flatbuffer(fbb);
+    auto edges = write_rr_edges_flatbuffer(fbb);
+    auto root = CreateRrGraph(
+        fbb,
+        info_string,
+        info_comment,
+        channels,
+        switches,
+        segments,
+        block_types,
+        grid,
+        node,
+        edges);
+    FinishRrGraphBuffer(fbb, root);
+
+    /* Verify generation code is correct before writing. */
+    flatbuffers::Verifier verifier(
+        fbb.GetBufferPointer(), fbb.GetSize(),
+        /*_max_depth=*/64,
+        /*_max_tables=*/std::numeric_limits<flatbuffers::uoffset_t>::max());
+    if(vtr::vpr::VerifyRrGraphBuffer(verifier) == false) {
+      vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                "Code failed to generate a valid rrgraph flatbuffer.");
+    }
+
+    fstream fp;
+    fp.open(file_name, fstream::out | fstream::trunc | fstream::binary);
+
+    /* Prints out general info for easy error checking*/
+    if (!fp.is_open() || !fp.good()) {
+        vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                "couldn't open file \"%s\" for generating RR graph file\n", file_name);
+    }
+    fp.write(reinterpret_cast<const char *>(fbb.GetBufferPointer()), fbb.GetSize());
+    fp.close();
+
+    cout << "Finished generating RR graph file named " << file_name << endl << endl;
+}
 
 /* Channel info in device_ctx.chan_width is written in xml format.
  * A general summary of the min and max values of the channels are first printed. Every
@@ -86,6 +153,28 @@ void write_rr_channel(fstream &fp) {
         fp << "\t\t<y_list index =\"" << i << "\" info=\"" << list[i] << "\"/>" << endl;
     }
     fp << "\t</channels>" << endl;
+}
+flatbuffers::Offset<vtr::vpr::Channels> write_rr_channel_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    const auto& device_ctx = g_vpr_ctx.device();
+
+    std::vector<flatbuffers::Offset<vtr::vpr::ChannelList>> x_list(device_ctx.grid.height()-1);
+    for (size_t i = 0; i < device_ctx.grid.height() - 1; i++) {
+        x_list[i] = vtr::vpr::CreateChannelList(fbb, i, device_ctx.chan_width.x_list[i]);
+    }
+    std::vector<flatbuffers::Offset<vtr::vpr::ChannelList>> y_list(device_ctx.grid.width()-1);
+    for (size_t i = 0; i < device_ctx.grid.width() - 1; i++) {
+        y_list[i] = vtr::vpr::CreateChannelList(fbb, i, device_ctx.chan_width.y_list[i]);
+    }
+
+    return vtr::vpr::CreateChannels(
+        fbb,
+        device_ctx.chan_width.max,
+        device_ctx.chan_width.x_min,
+        device_ctx.chan_width.y_min,
+        device_ctx.chan_width.x_max,
+        device_ctx.chan_width.y_max,
+        fbb.CreateVector(x_list),
+        fbb.CreateVector(y_list));
 }
 
 /* All relevant rr node info is written out to the graph.
@@ -127,6 +216,113 @@ void write_rr_node(fstream &fp) {
 
     fp << "\t</rr_nodes>" << endl << endl;
 }
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>>> write_rr_node_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    std::vector<flatbuffers::Offset<vtr::vpr::RrNode>> nodes(device_ctx.rr_nodes.size());
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        auto& node = device_ctx.rr_nodes[inode];
+
+        vtr::vpr::NodeType type = vtr::vpr::NodeType_INVALID_NODE_TYPE;
+        vtr::vpr::NodeDirection direction = vtr::vpr::NodeDirection_NO_DIR;
+        switch(node.type()) {
+          case CHANX:
+            type = vtr::vpr::NodeType_CHANX;
+            break;
+          case CHANY:
+            type = vtr::vpr::NodeType_CHANY;
+            break;
+          case SOURCE:
+            type = vtr::vpr::NodeType_SOURCE;
+            break;
+          case SINK:
+            type = vtr::vpr::NodeType_SINK;
+            break;
+          case OPIN:
+            type = vtr::vpr::NodeType_OPIN;
+            break;
+          case IPIN:
+            type = vtr::vpr::NodeType_IPIN;
+            break;
+          default:
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Valid inputs for class types are \"CHANX\", \"CHANY\",\"SOURCE\", \"SINK\",\"OPIN\", and \"IPIN\".");
+            break;
+        }
+
+        if (node.type() == CHANX || node.type() == CHANY) {
+            switch(node.direction()) {
+              case INC_DIRECTION:
+                direction = vtr::vpr::NodeDirection_INC_DIR;
+                break;
+              case DEC_DIRECTION:
+                direction = vtr::vpr::NodeDirection_DEC_DIR;
+                break;
+              case BI_DIRECTION:
+                direction = vtr::vpr::NodeDirection_BI_DIR;
+                break;
+              default:
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Valid inputs for direction types are \"INC_DIRECTION\", \"DEC_DIRECTION\",\"BI_DIRECTION\".");
+                break;
+            }
+        }
+
+        vtr::vpr::NodeSide side = vtr::vpr::NodeSide_NO_SIDE;
+        if (node.type() == IPIN || node.type() == OPIN) {
+            switch(node.side()) {
+            case LEFT:
+              side = vtr::vpr::NodeSide_LEFT;
+              break;
+            case RIGHT:
+              side = vtr::vpr::NodeSide_RIGHT;
+              break;
+            case TOP:
+              side = vtr::vpr::NodeSide_TOP;
+              break;
+            case BOTTOM:
+              side = vtr::vpr::NodeSide_BOTTOM;
+              break;
+            default:
+              vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                      "Valid inputs for direction types are \"INC_DIRECTION\", \"DEC_DIRECTION\",\"BI_DIRECTION\".");
+              break;
+            }
+        }
+
+        flatbuffers::Offset<vtr::vpr::NodeSegment> segment;
+        if (device_ctx.rr_indexed_data[node.cost_index()].seg_index != -1) {
+          segment = vtr::vpr::CreateNodeSegment(fbb,
+            device_ctx.rr_indexed_data[node.cost_index()].seg_index);
+        }
+
+        // TODO: Serialize metadata!
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::NodeMetadata>>> metadata;
+
+        nodes[inode] = vtr::vpr::CreateRrNode(
+            fbb,
+            inode,
+            type,
+            direction,
+            node.capacity(),
+            vtr::vpr::CreateNodeLoc(
+                fbb,
+                node.xlow(),
+                node.ylow(),
+                node.xhigh(),
+                node.yhigh(),
+                side,
+                node.ptc_num()),
+            vtr::vpr::CreateNodeTiming(
+                fbb,
+                node.R(),
+                node.C()),
+            metadata,
+            segment);
+    }
+
+    return fbb.CreateVector(nodes);
+}
 
 /* Segment information in the t_segment_inf data structure is written out.
  * Information includes segment id, name, and optional timing parameters*/
@@ -141,6 +337,21 @@ void write_rr_segments(fstream &fp, const t_segment_inf *segment_inf, const int 
         fp << "\t\t</segment>" << endl;
     }
     fp << "\t</segments>" << endl << endl;
+}
+flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Segment>>> write_rr_segments_flatbuffer(flatbuffers::FlatBufferBuilder &fbb, const t_segment_inf *segment_inf, const int num_seg_types) {
+    std::vector<flatbuffers::Offset<vtr::vpr::Segment>> segments(num_seg_types);
+    for (int iseg = 0; iseg < num_seg_types; iseg++) {
+        segments[iseg] = vtr::vpr::CreateSegment(
+            fbb,
+            iseg,
+            fbb.CreateString(segment_inf[iseg].name),
+            vtr::vpr::CreateSegmentTiming(
+              fbb,
+              segment_inf[iseg].Rmetal,
+              segment_inf[iseg].Cmetal));
+    }
+
+    return fbb.CreateVector(segments);
 }
 
 /* Switch info is written out into xml format. This includes
@@ -184,6 +395,58 @@ void write_rr_switches(fstream &fp) {
     }
     fp << "\t</switches>" << endl << endl;
 }
+static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Switch>>> write_rr_switches_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    const auto& device_ctx = g_vpr_ctx.device();
+    std::vector<flatbuffers::Offset<vtr::vpr::Switch>> switches(device_ctx.num_rr_switches);
+    for (int iSwitch = 0; iSwitch < device_ctx.num_rr_switches; iSwitch++) {
+        const t_rr_switch_inf &rr_switch = device_ctx.rr_switch_inf[iSwitch];
+
+        vtr::vpr::SwitchType switch_type = vtr::vpr::SwitchType_INVALID_SWITCH_TYPE;
+        switch(rr_switch.type()) {
+        case SwitchType::TRISTATE:
+          switch_type = vtr::vpr::SwitchType_TRISTATE;
+          break;
+        case SwitchType::MUX:
+          switch_type = vtr::vpr::SwitchType_MUX;
+          break;
+        case SwitchType::PASS_GATE:
+          switch_type = vtr::vpr::SwitchType_PASS_GATE;
+          break;
+        case SwitchType::SHORT:
+          switch_type = vtr::vpr::SwitchType_SHORT;
+          break;
+        case SwitchType::BUFFER:
+          switch_type = vtr::vpr::SwitchType_BUFFER;
+          break;
+        default:
+            VPR_THROW(VPR_ERROR_ROUTE, "Invalid switch type %d\n", rr_switch.type());
+        }
+
+        flatbuffers::Offset<flatbuffers::String> name;
+        if(rr_switch.name) {
+          name = fbb.CreateString(rr_switch.name);
+        }
+
+        switches[iSwitch] = vtr::vpr::CreateSwitch(
+            fbb,
+            iSwitch,
+            name,
+            switch_type,
+            vtr::vpr::CreateSwitchTiming(
+                fbb,
+                rr_switch.R,
+                rr_switch.Cin,
+                rr_switch.Cout,
+                rr_switch.Tdel),
+            vtr::vpr::CreateSwitchSizing(
+                fbb,
+                rr_switch.mux_trans_size,
+                rr_switch.buf_size)
+            );
+    }
+
+    return fbb.CreateVector(switches);
+}
 
 /* Block information is printed out in xml format. This includes general,
  * pin class, and pins */
@@ -208,14 +471,14 @@ void write_rr_block_types(fstream &fp) {
 
             char const* pin_type;
             switch (class_inf.type) {
-                case -1:
+                case OPEN:
                     pin_type = "OPEN";
                     break;
-                case 0:
-                    pin_type = "OUTPUT"; //driver
+                case DRIVER:
+                    pin_type = "OUTPUT";
                     break;
-                case 1:
-                    pin_type = "INPUT"; //receiver
+                case RECEIVER:
+                    pin_type = "INPUT";
                     break;
                 default:
                     pin_type = "NONE";
@@ -237,6 +500,65 @@ void write_rr_block_types(fstream &fp) {
     }
     fp << "\t</block_types>" << endl << endl;
 }
+flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::BlockType>>> write_rr_block_types_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    std::vector<flatbuffers::Offset<vtr::vpr::BlockType>> block_types(device_ctx.num_block_types);
+    for (int iBlock = 0; iBlock < device_ctx.num_block_types; iBlock++) {
+        const auto& btype = device_ctx.block_types[iBlock];
+
+        std::vector<flatbuffers::Offset<vtr::vpr::PinClass>> pin_classes(btype.num_class);
+        for (int iClass = 0; iClass < btype.num_class; iClass++) {
+            const auto& class_inf = btype.class_inf[iClass];
+
+            vtr::vpr::PinType pin_type;
+            switch (class_inf.type) {
+                case OPEN:
+                    pin_type = vtr::vpr::PinType_OPEN;
+                    break;
+                case DRIVER:
+                    pin_type = vtr::vpr::PinType_OUTPUT;
+                    break;
+                case RECEIVER:
+                    pin_type = vtr::vpr::PinType_INPUT;
+                    break;
+                default:
+                    pin_type = vtr::vpr::PinType_NONE;
+                    break;
+            }
+
+            //the pin list is printed out as the child values
+            std::vector<flatbuffers::Offset<vtr::vpr::Pin>> pins(class_inf.num_pins);
+            for (int iPin = 0; iPin < class_inf.num_pins; iPin++) {
+                const auto &pin = class_inf.pinlist[iPin];
+                pins[iPin] = vtr::vpr::CreatePin(
+                    fbb,
+                    pin,
+                    fbb.CreateString(block_type_pin_index_to_name(&btype, pin)));
+            }
+
+            pin_classes[iClass] = vtr::vpr::CreatePinClass(
+                fbb,
+                pin_type,
+                fbb.CreateVector(pins));
+        }
+
+        flatbuffers::Offset<flatbuffers::String> name;
+        if(btype.name) {
+          name = fbb.CreateString(btype.name);
+        }
+
+        block_types[iBlock] = vtr::vpr::CreateBlockType(
+            fbb,
+            btype.index,
+            name,
+            btype.width,
+            btype.height,
+            fbb.CreateVector(pin_classes));
+    }
+
+    return fbb.CreateVector(block_types);
+}
 
 /* Grid information is printed out in xml format. Each grid location
  * and its relevant information is included*/
@@ -257,6 +579,25 @@ void write_rr_grid(fstream &fp) {
     }
     fp << "\t</grid>" << endl << endl;
 }
+flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::GridLoc>>> write_rr_grid_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    std::vector<flatbuffers::Offset<vtr::vpr::GridLoc>> grid;
+    grid.reserve(device_ctx.grid.width()*device_ctx.grid.height());
+    for (size_t x = 0; x < device_ctx.grid.width(); x++) {
+        for (size_t y = 0; y < device_ctx.grid.height(); y++) {
+            const t_grid_tile &grid_tile = device_ctx.grid[x][y];
+            grid.push_back(vtr::vpr::CreateGridLoc(
+                fbb,
+                x, y,
+                grid_tile.type->index,
+                grid_tile.width_offset,
+                grid_tile.height_offset));
+        }
+    }
+
+    return fbb.CreateVector(grid);
+}
 
 /* Edges connecting to each rr node is printed out. The two nodes
  * it connects to are also printed*/
@@ -273,4 +614,26 @@ void write_rr_edges(fstream &fp) {
         }
     }
     fp << "\t</rr_edges>" << endl << endl;
+}
+flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrEdge>>> write_rr_edges_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    int num_edges = 0;
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        num_edges += device_ctx.rr_nodes[inode].num_edges();
+    }
+
+    std::vector<flatbuffers::Offset<vtr::vpr::RrEdge>> edges;
+    edges.reserve(num_edges);
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        auto& node = device_ctx.rr_nodes[inode];
+        for (int iedge = 0; iedge < node.num_edges(); iedge++) {
+            edges.push_back(vtr::vpr::CreateRrEdge(
+                fbb,
+                inode,
+                node.edge_sink_node(iedge),
+                node.edge_switch(iedge)));
+        }
+    }
+    return fbb.CreateVector(edges);
 }

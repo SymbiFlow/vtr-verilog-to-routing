@@ -15,6 +15,9 @@
 
 #include <string.h>
 #include <algorithm>
+#include <exception>
+#include <fstream>
+#include <vector>
 #include <ctime>
 #include "pugixml.hpp"
 #include "pugixml_util.hpp"
@@ -42,31 +45,39 @@
 #include "vpr_error.h"
 
 #include "rr_graph_reader.h"
+#include "rr_graph_generated.h"
 
 
 using namespace std;
 using namespace pugiutil;
 
 /*********************** Subroutines local to this module *******************/
-void process_switches(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
-void verify_segments(pugi::xml_node parent, const pugiutil::loc_data & loc_data, const t_segment_inf *segment_inf);
-void verify_blocks(pugi::xml_node parent, const pugiutil::loc_data & loc_data);
-void process_blocks(pugi::xml_node parent, const pugiutil::loc_data & loc_data);
-void verify_grid(pugi::xml_node parent, const pugiutil::loc_data& loc_data, const DeviceGrid& grid);
-void process_nodes(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
-void process_edges(pugi::xml_node parent, const pugiutil::loc_data& loc_data, int *wire_to_rr_ipin_switch, const int num_rr_switches);
-void process_channels(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
-void process_rr_node_indices(const DeviceGrid& grid);
-void process_seg_id(pugi::xml_node parent, const pugiutil::loc_data & loc_data);
-void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data,
+static void process_switches(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
+static void process_switches_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Switch>> *switches, int *num_rr_switches);
+static void verify_segments(pugi::xml_node parent, const pugiutil::loc_data & loc_data, const t_segment_inf *segment_inf);
+static void verify_segments_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Segment>> *segments, const t_segment_inf * segment_inf);
+static void verify_blocks(pugi::xml_node parent, const pugiutil::loc_data & loc_data);
+static void verify_blocks_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::BlockType>> *block_types);
+static void verify_grid(pugi::xml_node parent, const pugiutil::loc_data& loc_data, const DeviceGrid& grid);
+static void verify_grid_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::GridLoc>> *grid_data, const DeviceGrid& grid);
+static void process_nodes(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
+static void process_nodes_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes);
+static void process_edges(pugi::xml_node parent, const pugiutil::loc_data& loc_data, int *wire_to_rr_ipin_switch, const int num_rr_switches);
+static void process_edges_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrEdge>> *rr_edges, int *wire_to_rr_ipin_switch, const int num_rr_switches);
+static void process_channels(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
+static void process_channels_flatbuffer(const vtr::vpr::Channels *channels);
+static void process_rr_node_indices(const DeviceGrid& grid);
+static void process_seg_id(pugi::xml_node parent, const pugiutil::loc_data & loc_data);
+static void process_seg_id_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes);
+static void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data,
+        const bool is_global_graph, const int num_seg_types);
+static void set_cost_indices_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes,
         const bool is_global_graph, const int num_seg_types);
 
 /************************ Subroutine definitions ****************************/
 
-/*loads the given RR_graph file into the appropriate data structures
- * as specified by read_rr_graph_name. Set up correct routing data
- * structures as well*/
-void load_rr_file(const t_graph_type graph_type,
+
+static void load_rr_file_flatbuffer(const t_graph_type graph_type,
         const DeviceGrid& grid,
         t_chan_width *nodes_per_chan,
         const int num_seg_types,
@@ -75,7 +86,109 @@ void load_rr_file(const t_graph_type graph_type,
         int *wire_to_rr_ipin_switch,
         int *num_rr_switches,
         const char* read_rr_graph_name) {
+  fstream fp;
+  fp.open(read_rr_graph_name, fstream::in | fstream::binary);
+  /* Prints out general info for easy error checking*/
+  if (!fp.is_open() || !fp.good()) {
+      vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+              "couldn't open file \"%s\" for reading RR graph file\n", read_rr_graph_name);
+  }
 
+   // get length of file:
+  fp.seekg(0, fp.end);
+  size_t length = fp.tellg();
+  fp.seekg(0, fp.beg);
+
+  vector<char> buffer(length);
+  try {
+    fp.read(buffer.data(), buffer.size());
+  } catch(std::ios_base::failure & e) {
+    vpr_throw(VPR_ERROR_ROUTE, read_rr_graph_name, 0, "%s", e.what());
+  }
+  const uint8_t *data = reinterpret_cast<const uint8_t*>(buffer.data());
+  flatbuffers::Verifier verifier(
+      data, buffer.size(),
+      /*_max_depth=*/64,
+      /*_max_tables=*/std::numeric_limits<flatbuffers::uoffset_t>::max());
+  if(!vtr::vpr::VerifyRrGraphBuffer(verifier)) {
+    vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+              "file \"%s\" not a valid rr_graph flatbuffer\n",
+              read_rr_graph_name);
+  }
+
+  auto rr_graph = vtr::vpr::GetRrGraph(data);
+  if(rr_graph->tool_version() != nullptr) {
+    const char *tool_version = rr_graph->tool_version()->c_str();
+    if (strcmp(tool_version, vtr::VERSION) != 0) {
+      vtr::printf("\n");
+      vtr::printf_warning(__FILE__, __LINE__,
+              "This architecture version is for VPR %s while your current VPR version is %s compatability issues may arise\n",
+              vtr::VERSION, tool_version);
+      vtr::printf("\n");
+    }
+  }
+
+  if(rr_graph->tool_comment() != nullptr) {
+    std::string tool_comment = rr_graph->tool_comment()->str();
+    string correct_string = "Generated from arch file ";
+    correct_string += get_arch_file_name();
+    if (tool_comment != correct_string) {
+      vtr::printf("\n");
+      vtr::printf_warning(__FILE__, __LINE__,
+              "This RR graph file is based on %s while your input architecture file is %s compatability issues may arise\n"
+              , get_arch_file_name(), tool_comment.c_str());
+      vtr::printf("\n");
+    }
+  }
+
+  //Compare with the architecture file to ensure consistency
+  verify_grid_flatbuffer(rr_graph->grid(), grid);
+  verify_blocks_flatbuffer(rr_graph->block_types());
+  verify_segments_flatbuffer(rr_graph->segments(), segment_inf);
+
+  process_channels_flatbuffer(rr_graph->channels());
+
+  /* Decode the graph_type */
+  bool is_global_graph = (GRAPH_GLOBAL == graph_type ? true : false);
+
+  /* Global routing uses a single longwire track */
+  int max_chan_width = (is_global_graph ? 1 : nodes_per_chan->max);
+  VTR_ASSERT(max_chan_width > 0);
+
+  /* Alloc rr nodes and count count nodes */
+  process_nodes_flatbuffer(rr_graph->rr_node());
+
+  /* Loads edges, switches, and node look up tables*/
+  process_switches_flatbuffer(rr_graph->switches(), num_rr_switches);
+  process_edges_flatbuffer(rr_graph->rr_edge(), wire_to_rr_ipin_switch, *num_rr_switches);
+
+  //Partition the rr graph edges for efficient access to configurable/non-configurable
+  //edge subsets. Must be done after RR switches have been allocated
+  auto& device_ctx = g_vpr_ctx.mutable_device();
+  partition_rr_graph_edges(device_ctx);
+
+  process_rr_node_indices(grid);
+
+  init_fan_in(device_ctx.rr_nodes, device_ctx.rr_nodes.size());
+
+  //sets the cost index and seg id information
+  set_cost_indices_flatbuffer(rr_graph->rr_node(), is_global_graph, num_seg_types);
+
+  alloc_and_load_rr_indexed_data(segment_inf, num_seg_types, device_ctx.rr_node_indices,
+          max_chan_width, *wire_to_rr_ipin_switch, base_cost_type);
+
+  process_seg_id_flatbuffer(rr_graph->rr_node());
+}
+
+static void load_rr_file_xml(const t_graph_type graph_type,
+        const DeviceGrid& grid,
+        t_chan_width *nodes_per_chan,
+        const int num_seg_types,
+        const t_segment_inf * segment_inf,
+        const enum e_base_cost_type base_cost_type,
+        int *wire_to_rr_ipin_switch,
+        int *num_rr_switches,
+        const char* read_rr_graph_name) {
     const char *Prop;
     pugi::xml_node next_component;
 
@@ -88,6 +201,7 @@ void load_rr_file(const t_graph_type graph_type,
                 "Expecting .xml format for RR graph files.\n",
                 read_rr_graph_name);
     }
+
     try {
 
         //parse the file
@@ -130,9 +244,6 @@ void load_rr_file(const t_graph_type graph_type,
 
         next_component = get_single_child(rr_graph, "segments", loc_data);
         verify_segments(next_component, loc_data, segment_inf);
-
-        vtr::printf_info("Starting build routing resource graph...\n");
-        clock_t begin = clock();
 
         next_component = get_first_child(rr_graph, "channels", loc_data);
         process_channels(next_component, loc_data);
@@ -181,19 +292,6 @@ void load_rr_file(const t_graph_type graph_type,
 
         process_seg_id(next_component, loc_data);
 
-	if (getEchoEnabled() && isEchoFileEnabled(E_ECHO_RR_GRAPH)) {
-		dump_rr_graph(getEchoFileName(E_ECHO_RR_GRAPH));
-	}
-
-        check_rr_graph(graph_type, grid, *num_rr_switches, device_ctx.block_types);
-
-#ifdef USE_MAP_LOOKAHEAD
-        compute_router_lookahead(num_seg_types);
-#endif
-
-        float elapsed_time = (float) (clock() - begin) / CLOCKS_PER_SEC;
-        vtr::printf_info("Build routing resource graph took %g seconds\n", elapsed_time);
-
     } catch (XmlError& e) {
 
         vpr_throw(VPR_ERROR_ROUTE, read_rr_graph_name, e.line(), "%s", e.what());
@@ -201,9 +299,54 @@ void load_rr_file(const t_graph_type graph_type,
 
 }
 
+/*loads the given RR_graph file into the appropriate data structures
+ * as specified by read_rr_graph_name. Set up correct routing data
+ * structures as well*/
+void load_rr_file(const t_graph_type graph_type,
+        const DeviceGrid& grid,
+        t_chan_width *nodes_per_chan,
+        const int num_seg_types,
+        const t_segment_inf * segment_inf,
+        const enum e_base_cost_type base_cost_type,
+        int *wire_to_rr_ipin_switch,
+        int *num_rr_switches,
+        const char* read_rr_graph_name) {
+    vtr::printf_info("Starting build routing resource graph...\n");
+    clock_t begin = clock();
+
+    if (vtr::check_file_name_extension(read_rr_graph_name, ".xml")) {
+      load_rr_file_xml(graph_type, grid, nodes_per_chan, num_seg_types,
+                       segment_inf, base_cost_type, wire_to_rr_ipin_switch,
+                       num_rr_switches, read_rr_graph_name);
+    } else if(vtr::check_file_name_extension(read_rr_graph_name, ".rrgraph")) {
+      load_rr_file_flatbuffer(graph_type, grid, nodes_per_chan, num_seg_types,
+                       segment_inf, base_cost_type, wire_to_rr_ipin_switch,
+                       num_rr_switches, read_rr_graph_name);
+    } else {
+        vtr::printf_warning(__FILE__, __LINE__,
+                "Architecture file '%s' may be in incorrect format. "
+                "Expecting .xml or .rrgraph format for RR graph files.\n",
+                read_rr_graph_name);
+    }
+
+    if (getEchoEnabled() && isEchoFileEnabled(E_ECHO_RR_GRAPH)) {
+            dump_rr_graph(getEchoFileName(E_ECHO_RR_GRAPH));
+    }
+
+    const auto &device_ctx = g_vpr_ctx.device();
+    check_rr_graph(graph_type, grid, *num_rr_switches, device_ctx.block_types);
+
+#ifdef USE_MAP_LOOKAHEAD
+    compute_router_lookahead(num_seg_types);
+#endif
+
+    float elapsed_time = (float) (clock() - begin) / CLOCKS_PER_SEC;
+    vtr::printf_info("Build routing resource graph took %g seconds\n", elapsed_time);
+}
+
 /* Reads in the switch information and adds it to device_ctx.rr_switch_inf as specified*/
 void process_switches(pugi::xml_node parent, const pugiutil::loc_data & loc_data) {
-    auto& device_ctx = g_vpr_ctx.device();
+    const auto& device_ctx = g_vpr_ctx.device();
     pugi::xml_node Switch, SwitchSubnode;
 
     Switch = get_first_child(parent, "switch", loc_data);
@@ -249,6 +392,60 @@ void process_switches(pugi::xml_node parent, const pugiutil::loc_data & loc_data
     }
 
 }
+void process_switches_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Switch>> *switches, int *num_rr_switches) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    size_t numSwitches = switches->size();
+    *num_rr_switches = numSwitches;
+
+    // FIXME: delete [] rr_switch_inf?
+    // FIXME: rr_switch_inf should just be a vector?
+    device_ctx.rr_switch_inf = new t_rr_switch_inf[numSwitches];
+
+    for(const auto *switch_ : *switches) {
+        int iSwitch = switch_->id();
+        auto& rr_switch = device_ctx.rr_switch_inf[iSwitch];
+        rr_switch.name = vtr::strdup(switch_->name()->c_str());
+
+        SwitchType switch_type = SwitchType::INVALID;
+        switch(switch_->type()) {
+          case vtr::vpr::SwitchType_TRISTATE:
+            switch_type = SwitchType::TRISTATE;
+            break;
+          case vtr::vpr::SwitchType_MUX:
+            switch_type = SwitchType::MUX;
+            break;
+          case vtr::vpr::SwitchType_PASS_GATE:
+            switch_type = SwitchType::PASS_GATE;
+            break;
+          case vtr::vpr::SwitchType_SHORT:
+            switch_type = SwitchType::SHORT;
+            break;
+          case vtr::vpr::SwitchType_BUFFER:
+            switch_type = SwitchType::BUFFER;
+            break;
+          default:
+            VPR_THROW(VPR_ERROR_ROUTE, "Invalid switch type '%d'\n", switch_->type());
+        }
+        rr_switch.set_type(switch_type);
+        auto *timing = switch_->timing();
+        if (timing) {
+            rr_switch.R = timing->r();
+            rr_switch.Cin = timing->c_in();
+            rr_switch.Cout = timing->c_out();
+            rr_switch.Tdel = timing->t_del();
+        } else {
+            rr_switch.R = 0;
+            rr_switch.Cin = 0;
+            rr_switch.Cout = 0;
+            rr_switch.Tdel = 0;
+        }
+
+        auto *sizing = switch_->sizing();
+        rr_switch.mux_trans_size = sizing->mux_trans_size();
+        rr_switch.buf_size = sizing->buf_size();
+    }
+}
 
 /*Only CHANX and CHANY components have a segment id. This function
  *reads in the segment id of each node*/
@@ -277,6 +474,22 @@ void process_seg_id(pugi::xml_node parent, const pugiutil::loc_data & loc_data) 
             }
         }
         rr_node = rr_node.next_sibling(rr_node.name());
+    }
+}
+void process_seg_id_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    for(const auto *rr_node : *rr_nodes) {
+        int i = rr_node->id();
+        auto& node = device_ctx.rr_nodes[i];
+
+        if (rr_node->segment()) {
+            int seg_id = rr_node->segment()->segment_id();
+            device_ctx.rr_indexed_data[node.cost_index()].seg_index = seg_id;
+        } else {
+            //-1 for non chanx or chany nodes
+            device_ctx.rr_indexed_data[node.cost_index()].seg_index = -1;
+        }
     }
 }
 
@@ -390,6 +603,118 @@ void process_nodes(pugi::xml_node parent, const pugiutil::loc_data & loc_data) {
         rr_node = rr_node.next_sibling(rr_node.name());
     }
 }
+void process_nodes_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+    device_ctx.rr_nodes.resize(rr_nodes->size());
+    for(const auto *rr_node : *rr_nodes) {
+        int i = rr_node->id();
+        auto& node = device_ctx.rr_nodes[i];
+
+        switch(rr_node->type()) {
+          case vtr::vpr::NodeType_CHANX:
+            node.set_type(CHANX);
+            break;
+          case vtr::vpr::NodeType_CHANY:
+            node.set_type(CHANY);
+            break;
+          case vtr::vpr::NodeType_SOURCE:
+            node.set_type(SOURCE);
+            break;
+          case vtr::vpr::NodeType_SINK:
+            node.set_type(SINK);
+            break;
+          case vtr::vpr::NodeType_OPIN:
+            node.set_type(OPIN);
+            break;
+          case vtr::vpr::NodeType_IPIN:
+            node.set_type(IPIN);
+            break;
+          default:
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Valid inputs for class types are \"CHANX\", \"CHANY\",\"SOURCE\", \"SINK\",\"OPIN\", and \"IPIN\".");
+        }
+
+        if (node.type() == CHANX || node.type() == CHANY) {
+            switch(rr_node->direction()) {
+              case vtr::vpr::NodeDirection_INC_DIR:
+                node.set_direction(INC_DIRECTION);
+                break;
+              case vtr::vpr::NodeDirection_DEC_DIR:
+                node.set_direction(DEC_DIRECTION);
+                break;
+              case vtr::vpr::NodeDirection_BI_DIR:
+                node.set_direction(BI_DIRECTION);
+                break;
+              default:
+                VTR_ASSERT(rr_node->direction() == vtr::vpr::NodeDirection_NO_DIR);
+                node.set_direction(NO_DIRECTION);
+                break;
+            }
+        }
+
+        node.set_capacity(rr_node->capacity());
+
+        //--------------
+        const auto *locSubnode = rr_node->loc();
+
+        short x1, x2, y1, y2;
+        x1 = locSubnode->x_low();
+        x2 = locSubnode->x_high();
+        y1 = locSubnode->y_low();
+        y2 = locSubnode->y_high();
+
+        if (node.type() == IPIN || node.type() == OPIN) {
+            e_side side;
+            switch(locSubnode->side()) {
+              case vtr::vpr::NodeSide_LEFT:
+                side = LEFT;
+                break;
+              case vtr::vpr::NodeSide_RIGHT:
+                side = RIGHT;
+                break;
+              case vtr::vpr::NodeSide_TOP:
+                side = TOP;
+                break;
+              default:
+                VTR_ASSERT(locSubnode->side() == vtr::vpr::NodeSide_BOTTOM);
+                side = BOTTOM;
+                break;
+            }
+            node.set_side(side);
+        }
+
+        node.set_coordinates(x1, y1, x2, y2);
+        node.set_ptc_num(locSubnode->ptc());
+
+        //-------
+        const auto *timingSubnode = rr_node->timing();
+
+        float R = 0.f;
+        float C = 0.f;
+        if (timingSubnode) {
+            R = timingSubnode->r();
+            C = timingSubnode->c();
+        }
+        node.set_rc_index(find_create_rr_rc_data(R, C));
+
+        //clear each node edge
+        node.set_num_edges(0);
+
+        //  <metadata>
+        //    <meta name='grid_prefix' x_offset="1" y_offset="0" z_offset="0">CLBLL_L_</meta>
+        //  </metadata>
+        const auto *metadata = rr_node->metadata();
+        if (metadata) {
+            for(const auto*meta : *metadata) {
+                t_offset o;
+                o.x = meta->x_offset();
+                o.y = meta->y_offset();
+                o.z = meta->z_offset();
+                node.add_metadata(o, meta->name()->c_str(), meta->value()->c_str());
+            }
+        }
+    }
+}
 
 /*Loads the edges information from file into vpr. Nodes and switches must be loaded
  before calling this function*/
@@ -472,6 +797,75 @@ void process_edges(pugi::xml_node parent, const pugiutil::loc_data & loc_data,
     num_edges_for_node.clear();
     count_for_wire_to_ipin_switches.clear();
 }
+void process_edges_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrEdge>> *rr_edges,
+        int *wire_to_rr_ipin_switch, const int num_rr_switches) {
+
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    //count the number of edges and store it in a vector
+    vector<int> num_edges_for_node;
+    num_edges_for_node.resize(device_ctx.rr_nodes.size(), 0);
+    fill(num_edges_for_node.begin(), num_edges_for_node.end(), 0);
+
+    for(const auto *edge : *rr_edges) {
+        int source_node = edge->src_node();
+        num_edges_for_node[source_node]++;
+    }
+
+    for(size_t source_node = 0; source_node < device_ctx.rr_nodes.size(); ++source_node) {
+        device_ctx.rr_nodes[source_node].set_num_edges(num_edges_for_node[source_node]);
+    }
+
+    //reset this vector in order to start count for num edges again
+    fill(num_edges_for_node.begin(), num_edges_for_node.end(), 0);
+
+    /*initialize a vector that keeps track of the number of wire to ipin switches
+    There should be only one wire to ipin switch. In case there are more, make sure to
+    store the most frequent switch */
+    vector<int> count_for_wire_to_ipin_switches;
+    count_for_wire_to_ipin_switches.resize(num_rr_switches, 0);
+    //first is index, second is count
+    pair <int, int> most_frequent_switch(-1, 0);
+
+    for(const auto *edge : *rr_edges) {
+        int source_node = edge->src_node();
+        int sink_node = edge->sink_node();
+        int switch_id = edge->switch_id();
+
+        /*Keeps track of the number of the specific type of switch that connects a wire to an ipin
+         * use the pair data structure to keep the maximum*/
+        if (device_ctx.rr_nodes[source_node].type() == CHANX || device_ctx.rr_nodes[source_node].type() == CHANY) {
+            if (device_ctx.rr_nodes[sink_node].type() == IPIN) {
+                count_for_wire_to_ipin_switches[switch_id]++;
+                if (count_for_wire_to_ipin_switches[switch_id] > most_frequent_switch.second) {
+                    most_frequent_switch.first = switch_id;
+                    most_frequent_switch.second = count_for_wire_to_ipin_switches[switch_id];
+                }
+            }
+        }
+
+        //set edge in correct rr_node data structure
+        device_ctx.rr_nodes[source_node].set_edge_sink_node(num_edges_for_node[source_node], sink_node);
+        device_ctx.rr_nodes[source_node].set_edge_switch(num_edges_for_node[source_node], switch_id);
+
+        // Read the metadata for the edge
+        auto metadata = edge->metadata();
+        if (metadata) {
+            for(const auto *meta : *metadata) {
+                t_offset o;
+                o.x = meta->x_offset();
+                o.y = meta->y_offset();
+                o.z = meta->z_offset();
+
+                device_ctx.rr_nodes[source_node].add_edge_metadata(
+                    sink_node, switch_id,
+                    o, meta->name()->c_str(), meta->value()->c_str());
+            }
+        }
+        num_edges_for_node[source_node]++;
+    }
+    *wire_to_rr_ipin_switch = most_frequent_switch.first;
+}
 
 /* All channel info is read in and loaded into device_ctx.chan_width*/
 void process_channels(pugi::xml_node parent, const pugiutil::loc_data & loc_data) {
@@ -500,6 +894,22 @@ void process_channels(pugi::xml_node parent, const pugiutil::loc_data & loc_data
         channelLists = channelLists.next_sibling(channelLists.name());
     }
 
+}
+void process_channels_flatbuffer(const vtr::vpr::Channels *channels) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    device_ctx.chan_width.max = channels->chan_width_max();
+    device_ctx.chan_width.x_min = channels->x_min();
+    device_ctx.chan_width.y_min = channels->y_min();
+    device_ctx.chan_width.x_max = channels->x_max();
+    device_ctx.chan_width.y_max = channels->y_max();
+
+    for(const auto *channel : *channels->x_list()) {
+        device_ctx.chan_width.x_list[channel->index()] = channel->info();
+    }
+    for(const auto *channel : *channels->y_list()) {
+        device_ctx.chan_width.y_list[channel->index()] = channel->info();
+    }
 }
 
 /* Grid was initialized from the architecture file. This function checks
@@ -530,6 +940,29 @@ void verify_grid(pugi::xml_node parent, const pugiutil::loc_data & loc_data, con
                     "Architecture file does not match RR graph's height_offset at (%d, %d)", x, y);
         }
         grid_node = grid_node.next_sibling(grid_node.name());
+    }
+}
+void verify_grid_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::GridLoc>> *grid_data, const DeviceGrid& grid) {
+    for (const auto *grid_loc : *grid_data) {
+        int x = grid_loc->x();
+        int y = grid_loc->y();
+
+        const t_grid_tile& grid_tile = grid[x][y];
+
+        if (grid_tile.type->index != grid_loc->block_type_id()) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's block_type_id at (%d, %d): arch used ID %d, RR graph used ID %d.", x, y,
+                     (grid_tile.type->index), grid_loc->block_type_id());
+        }
+        if (grid_tile.width_offset != grid_loc->width_offset()) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's width_offset at (%d, %d)", x, y);
+        }
+
+        if (grid_tile.height_offset != grid_loc->height_offset()) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's height_offset at (%d, %d)", x, y);
+        }
     }
 }
 
@@ -624,6 +1057,79 @@ void verify_blocks(pugi::xml_node parent, const pugiutil::loc_data & loc_data) {
         Block = Block.next_sibling(Block.name());
     }
 }
+void verify_blocks_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::BlockType>> *block_types) {
+    const auto& device_ctx = g_vpr_ctx.device();
+    for (const auto *block_type : *block_types) {
+        const auto &block_info = device_ctx.block_types[block_type->id()];
+
+        const char* name = block_type->name()->c_str();
+
+        if (strcmp(block_info.name, name) != 0) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's block name: arch uses name %s, RR graph uses name %s", block_info.name, name);
+        }
+
+        if (block_info.width != block_type->width()) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's block width");
+        }
+        if (block_info.height != block_type->height()) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's block height");
+        }
+
+        for (size_t classNum = 0; classNum < block_type->pin_class()->size();
+             ++classNum) {
+            const auto *pin_class = block_type->pin_class()->Get(classNum);
+            const auto& class_inf = block_info.class_inf[classNum];
+
+            /*Verify types and pins*/
+            e_pin_type type;
+            switch(pin_class->type()) {
+              case vtr::vpr::PinType_OPEN:
+                type = OPEN;
+                break;
+              case vtr::vpr::PinType_OUTPUT:
+                type = DRIVER;
+                break;
+              case vtr::vpr::PinType_INPUT:
+                type = RECEIVER;
+                break;
+              default:
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Valid inputs for class types are \"OPEN\", \"OUTPUT\", and \"INPUT\".");
+                type = OPEN;
+            }
+
+            if (class_inf.type != type) {
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Architecture file does not match RR graph's block type");
+            }
+
+            VTR_ASSERT(class_inf.num_pins > 0);
+            VTR_ASSERT(std::numeric_limits<decltype(class_inf.num_pins)>::max() >= pin_class->pin()->size());
+            if (class_inf.num_pins != (decltype(class_inf.num_pins))pin_class->pin()->size()) {
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Incorrect number of pins in %d pin_class in block %s", classNum, block_info.name);
+            }
+
+            for (const auto *pin : *pin_class->pin()) {
+                auto num = pin->ptc();
+                auto index = pin_index_by_num(class_inf, num);
+
+                if (index < 0) {
+                    vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                            "Architecture file does not match RR graph's block pin list: invalid ptc for pin class");
+                }
+
+                if (pin->name()->str() != block_type_pin_index_to_name(&block_info, class_inf.pinlist[index])) {
+                    vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                            "Architecture file does not match RR graph's block pin list");
+                }
+            }
+        }
+    }
+}
 
 /* Segments was initialized already. This function checks
  * if it corresponds to the RR graph. Errors out if it doesn't correspond*/
@@ -652,6 +1158,27 @@ void verify_segments(pugi::xml_node parent, const pugiutil::loc_data & loc_data,
             }
         }
         Segment = Segment.next_sibling(Segment.name());
+    }
+}
+void verify_segments_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::Segment>> *segments, const t_segment_inf * segment_inf) {
+    for(const auto *segment : *segments) {
+        int segNum = segment->id();
+        const char* name = segment->name()->c_str();
+        if (strcmp(segment_inf[segNum].name, name) != 0) {
+            vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                    "Architecture file does not match RR graph's segment name: arch uses %s, RR graph uses %s", segment_inf[segNum].name, name);
+        }
+
+        if(segment->timing() != nullptr) {
+            if (segment_inf[segNum].Rmetal != segment->timing()->r_per_meter()) {
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Architecture file does not match RR graph's segment R_per_meter");
+            }
+            if (segment_inf[segNum].Cmetal != segment->timing()->c_per_meter()) {
+                vpr_throw(VPR_ERROR_OTHER, __FILE__, __LINE__,
+                        "Architecture file does not match RR graph's segment C_per_meter");
+            }
+        }
     }
 }
 
@@ -802,7 +1329,8 @@ void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data,
     /*Go through each rr_node and use the segment ids to set CHANX and CHANY cost index*/
     rr_node = get_first_child(parent, "node", loc_data);
 
-    for (size_t i = 0; i < device_ctx.rr_nodes.size(); i++) {
+    while(rr_node) {
+        int i = get_attribute(rr_node, "id", loc_data).as_int();
         auto& node = device_ctx.rr_nodes[i];
 
         /*CHANX and CHANY cost index is dependent on the segment id*/
@@ -823,5 +1351,46 @@ void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data,
             }
         }
         rr_node = rr_node.next_sibling(rr_node.name());
+    }
+}
+void set_cost_indices_flatbuffer(const flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>> *rr_nodes,
+        const bool is_global_graph, const int num_seg_types) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    //set the cost index in order to load the segment information, rr nodes should be set already
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
+        if (device_ctx.rr_nodes[inode].type() == SOURCE) {
+            device_ctx.rr_nodes[inode].set_cost_index(SOURCE_COST_INDEX);
+        } else if (device_ctx.rr_nodes[inode].type() == SINK) {
+            device_ctx.rr_nodes[inode].set_cost_index(SINK_COST_INDEX);
+        } else if (device_ctx.rr_nodes[inode].type() == IPIN) {
+            device_ctx.rr_nodes[inode].set_cost_index(IPIN_COST_INDEX);
+        } else if (device_ctx.rr_nodes[inode].type() == OPIN) {
+            device_ctx.rr_nodes[inode].set_cost_index(OPIN_COST_INDEX);
+        }
+    }
+
+    for(const auto *rr_node : *rr_nodes) {
+        int i = rr_node->id();
+        auto& node = device_ctx.rr_nodes[i];
+
+        /*CHANX and CHANY cost index is dependent on the segment id*/
+        if (node.type() != CHANX &&
+            node.type() != CHANY) {
+          continue;
+        }
+
+        // segment_id is required for all rr_nodes in CHANX or CHANY.
+        VTR_ASSERT(rr_node->segment());
+
+        int seg_id = rr_node->segment()->segment_id();
+        VTR_ASSERT(seg_id >= 0);
+        if (is_global_graph) {
+            node.set_cost_index(0);
+        } else if (device_ctx.rr_nodes[i].type() == CHANX) {
+            node.set_cost_index(CHANX_COST_INDEX_START + seg_id);
+        } else if (device_ctx.rr_nodes[i].type() == CHANY) {
+            node.set_cost_index(CHANX_COST_INDEX_START + num_seg_types + seg_id);
+        }
     }
 }
