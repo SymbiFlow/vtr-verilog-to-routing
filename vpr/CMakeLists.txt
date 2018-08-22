@@ -68,3 +68,4 @@ target_link_libraries(test_vpr
                         libvpr)
 
 add_test(NAME test_vpr COMMAND test_vpr --use-colour=yes)
+add_test(NAME test_serialization COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_serialization.sh)
