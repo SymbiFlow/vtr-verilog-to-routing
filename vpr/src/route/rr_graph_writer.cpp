@@ -131,6 +131,33 @@ void write_rr_graph_flatbuffer(const char *file_name, const t_segment_inf *segme
     cout << "Finished generating RR graph file named " << file_name << endl << endl;
 }
 
+static void add_metadata_to_xml(fstream &fp, const char *tab_prefix, const t_metadata_dict & meta) {
+    fp << tab_prefix << "<metadata>" << endl;
+
+    for(const auto &meta_elem : meta) {
+        const t_offset & offset = meta_elem.first.first;
+        const std::string & key = meta_elem.first.second;
+        const std::vector<t_metadata_as> & values = meta_elem.second;
+        for(const auto &value : values) {
+          fp << tab_prefix << "\t<meta name=\"" << key << "\"";
+
+          if(offset.x != 0 || offset.y != 0 || offset.z != 0) {
+            if(offset.x) {
+              fp << " x_offset=\"" << offset.x << "\"";
+            }
+            if(offset.y) {
+              fp << " y_offset=\"" << offset.y << "\"";
+            }
+            if(offset.z) {
+              fp << " z_offset=\"" << offset.z << "\"";
+            }
+          }
+          fp << ">" << value.as_string() << "</meta>" << endl;
+        }
+    }
+    fp << tab_prefix << "</metadata>" << endl;
+}
+
 /* Channel info in device_ctx.chan_width is written in xml format.
  * A general summary of the min and max values of the channels are first printed. Every
  * x and y channel list is printed out in its own attribute*/
@@ -211,10 +238,44 @@ void write_rr_node(fstream &fp) {
             fp << "\t\t\t<segment segment_id=\"" << device_ctx.rr_indexed_data[node.cost_index()].seg_index << "\"/>" << endl;
         }
 
+        const auto iter = device_ctx.rr_node_metadata.find(&node);
+        if(iter != device_ctx.rr_node_metadata.end()) {
+            const t_metadata_dict & meta = iter->second;
+            add_metadata_to_xml(fp, "\t\t\t", meta);
+        }
+
         fp << "\t\t</node>" << endl;
     }
 
     fp << "\t</rr_nodes>" << endl << endl;
+}
+
+static void add_metadata_to_flatbuffer(
+    flatbuffers::FlatBufferBuilder &fbb,
+    std::vector<flatbuffers::Offset<vtr::vpr::NodeMetadata>> *metadata,
+    const t_metadata_dict & meta) {
+    size_t num_meta = 0;
+    for(const auto &meta_elem : meta) {
+      num_meta += meta_elem.second.size();
+    }
+
+    metadata->clear();
+    metadata->reserve(num_meta);
+
+    for(const auto &meta_elem : meta) {
+        const t_offset & offset = meta_elem.first.first;
+        const std::string & key = meta_elem.first.second;
+        const std::vector<t_metadata_as> & values = meta_elem.second;
+        for(const auto &value : values) {
+          metadata->push_back(vtr::vpr::CreateNodeMetadata(
+              fbb,
+              fbb.CreateString(key),
+              offset.x,
+              offset.y,
+              offset.z,
+              fbb.CreateString(value.as_string())));
+        }
+    }
 }
 static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrNode>>> write_rr_node_flatbuffer(flatbuffers::FlatBufferBuilder &fbb) {
     auto& device_ctx = g_vpr_ctx.device();
@@ -296,8 +357,12 @@ static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrN
             device_ctx.rr_indexed_data[node.cost_index()].seg_index);
         }
 
-        // TODO: Serialize metadata!
-        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::NodeMetadata>>> metadata;
+        std::vector<flatbuffers::Offset<vtr::vpr::NodeMetadata>> metadata;
+        const auto iter = device_ctx.rr_node_metadata.find(&node);
+        if(iter != device_ctx.rr_node_metadata.end()) {
+            const t_metadata_dict & meta = iter->second;
+            add_metadata_to_flatbuffer(fbb, &metadata, meta);
+        }
 
         nodes[inode] = vtr::vpr::CreateRrNode(
             fbb,
@@ -317,7 +382,7 @@ static flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrN
                 fbb,
                 node.R(),
                 node.C()),
-            metadata,
+            fbb.CreateVector(metadata),
             segment);
     }
 
@@ -607,10 +672,28 @@ void write_rr_edges(fstream &fp) {
 
     for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
         auto& node = device_ctx.rr_nodes[inode];
+        const auto edge_metadata_iter = device_ctx.rr_edge_metadata.find(&node);
         for (int iedge = 0; iedge < node.num_edges(); iedge++) {
             fp << "\t\t<edge src_node=\"" << inode <<
                     "\" sink_node=\"" << node.edge_sink_node(iedge) <<
-                    "\" switch_id=\"" << node.edge_switch(iedge) << "\"/>" << endl;
+                    "\" switch_id=\"" << node.edge_switch(iedge) << "\"";
+            bool wrote_edge_metadata = false;
+            if(edge_metadata_iter != device_ctx.rr_edge_metadata.end()) {
+                auto iter = edge_metadata_iter->second.find(std::make_pair(node.edge_sink_node(iedge), node.edge_switch(iedge)));
+                if(iter != edge_metadata_iter->second.end()) {
+                    fp << ">" << endl;
+
+                    const t_metadata_dict & meta = iter->second;
+                    add_metadata_to_xml(fp, "\t\t\t", meta);
+                    wrote_edge_metadata = true;
+                }
+            }
+
+            if(wrote_edge_metadata == false) {
+              fp << "/>" << endl;
+            } else {
+              fp << "\t\t</edge>" << endl;
+            }
         }
     }
     fp << "\t</rr_edges>" << endl << endl;
@@ -627,12 +710,27 @@ flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<vtr::vpr::RrEdge>>> 
     edges.reserve(num_edges);
     for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
         auto& node = device_ctx.rr_nodes[inode];
+        const auto edge_metadata_iter = device_ctx.rr_edge_metadata.find(&node);
         for (int iedge = 0; iedge < node.num_edges(); iedge++) {
+            std::vector<flatbuffers::Offset<vtr::vpr::NodeMetadata>> metadata;
+
+            int32_t sink_node = node.edge_sink_node(iedge);
+            int32_t switch_id = node.edge_switch(iedge);
+
+            if(edge_metadata_iter != device_ctx.rr_edge_metadata.end()) {
+                auto iter = edge_metadata_iter->second.find(std::make_pair(sink_node, switch_id));
+                if(iter != edge_metadata_iter->second.end()) {
+                  const t_metadata_dict & meta = iter->second;
+                  add_metadata_to_flatbuffer(fbb, &metadata, meta);
+                }
+            }
+
             edges.push_back(vtr::vpr::CreateRrEdge(
                 fbb,
                 inode,
-                node.edge_sink_node(iedge),
-                node.edge_switch(iedge)));
+                sink_node,
+                switch_id,
+                fbb.CreateVector(metadata)));
         }
     }
     return fbb.CreateVector(edges);
