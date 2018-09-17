@@ -46,7 +46,8 @@ std::vector<HistogramBucket> build_histogram(std::vector<float> values, size_t n
         //Find the bucket who's max is less than the current slack
 
         auto iter = std::lower_bound(histogram.begin(), histogram.end(), value, comp);
-        VTR_ASSERT(iter != histogram.end());
+        if(iter == histogram.end())
+            continue;
 
         iter->count++;
     }

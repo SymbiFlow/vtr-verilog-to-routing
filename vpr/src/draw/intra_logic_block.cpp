@@ -499,7 +499,7 @@ void draw_logical_connections() {
 				(draw_state->showing_sub_blocks() || src_clb != sink_clb)) {
 				setcolor(BLACK); // if showing all, draw the other ones in black
 			} else {
-				continue; // not showing all, and not the sperified block, so skip
+				continue; // not showing all, and not the specified block, so skip
 			}
 
 			draw_one_logical_connection(driver_pin_id, sink_pin_id);

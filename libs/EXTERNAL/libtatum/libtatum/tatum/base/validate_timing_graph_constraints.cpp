@@ -32,7 +32,7 @@ bool validate_timing_graph_constraints(const TimingGraph& timing_graph, const Ti
 
                 msg = "Timing Graph node " + std::to_string(size_t(node)) + " is an OPIN with no incoming edges, but is not marked as a constant generator";
 
-                throw tatum::Error(msg);
+                //throw tatum::Error(msg);
             }
         }
     }

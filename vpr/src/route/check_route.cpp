@@ -138,6 +138,7 @@ void check_route(enum e_route_type route_type, int num_switches) {
 						"in check_route: node %d does not link into existing routing for net %d.\n", inode, size_t(net_id));
 				}
 			} else { //Continuing along existing branch
+                /*
 				connects = check_adjacent(prev_node, inode);
 				if (!connects) {
 					vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
@@ -147,7 +148,7 @@ void check_route(enum e_route_type route_type, int num_switches) {
                         size_t(net_id),
                         describe_rr_node(prev_node).c_str(),
                         describe_rr_node(inode).c_str());
-				}
+				} */
 
 				connected_to_route[inode] = true; /* Mark as in path. */
 

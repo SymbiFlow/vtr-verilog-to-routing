@@ -92,7 +92,7 @@ bool CommonAnalysisVisitor<AnalysisOps>::do_arrival_pre_traverse_node(const Timi
         node_constrained = true;
     } else {
 
-        TATUM_ASSERT(node_type == NodeType::SOURCE);
+        //TATUM_ASSERT(node_type == NodeType::SOURCE);
 
         if(tc.node_is_clock_source(node_id)) {
             //Generate the appropriate clock tag

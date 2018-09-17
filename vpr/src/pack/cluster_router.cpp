@@ -368,11 +368,11 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 				}
 
 				if (is_impossible) {
-					vtr::printf("Routing was impossible!\n");
+					//vtr::printf("Routing was impossible!\n");
 				} else {
 					is_impossible = route_has_conflict(lb_nets[idx].rt_tree, router_data);
 					if (is_impossible) {
-						vtr::printf("Routing was impossible due to modes!\n");
+						//vtr::printf("Routing was impossible due to modes!\n");
 					}
 				}
 
@@ -394,7 +394,7 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 		} else {
 			--inet;
             auto& atom_ctx = g_vpr_ctx.atom();
-			vtr::printf("Net '%s' is impossible to route within proposed %s cluster\n", atom_ctx.nlist.net_name(lb_nets[inet].atom_net_id).c_str(), router_data->lb_type->name);
+			//vtr::printf("Net '%s' is impossible to route within proposed %s cluster\n", atom_ctx.nlist.net_name(lb_nets[inet].atom_net_id).c_str(), router_data->lb_type->name);
 			is_routed = false;
 		}
 		router_data->pres_con_fac *= router_data->params.pres_fac_mult;

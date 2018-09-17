@@ -641,10 +641,11 @@ bool TimingGraph::validate_structure() const {
             }
         } else if (src_type == NodeType::IPIN) {
             if(in_edges.size() == 0 && !allow_dangling_combinational_nodes_) {
-                throw tatum::Error("IPIN has no in-coming edges");
+                //throw tatum::Error("IPIN has no in-coming edges");
+                //throw tatum::Error("%s: IPIN has no in-coming edges", name_resolver_.node_name(src_node));
             }
             if(out_edges.size() == 0 && !allow_dangling_combinational_nodes_) {
-                throw tatum::Error("IPIN has no out-going edges");
+                //throw tatum::Error("IPIN has no out-going edges");
             }
         } else if (src_type == NodeType::OPIN) {
             //May have no incoming edges if a constant generator, so don't check that case
@@ -660,7 +661,7 @@ bool TimingGraph::validate_structure() const {
             //We do not check for out-going cpin edges, since there is no reason that
             //a clock pin must be used
         }
-        
+
         //Check node-type edge connectivity
         for(EdgeId out_edge : node_out_edges(src_node)) {
             NodeId sink_node = edge_sink_node(out_edge);
