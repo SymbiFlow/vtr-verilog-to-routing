@@ -485,6 +485,7 @@ ast_node_t *find_top_module()
 void convert_ast_to_netlist_recursing_via_modules(ast_node_t* current_module, char *instance_name, int level)
 {
 	signal_list_t *list = NULL;
+	simplify_ast_module(current_module);
 
 	/* BASE CASE is when there are no other instantiations of modules in this module */
 	if (current_module->types.module.size_module_instantiations == 0 &&
@@ -565,8 +566,6 @@ void convert_ast_to_netlist_recursing_via_modules(ast_node_t* current_module, ch
 				((ast_node_t*)module_names_to_idx->data[sc_spot])->children[2],
 				temp_instance_name, current_module->children[0]->types.identifier);
 
-			simplify_ast_module(current_module);
-
 			/* recursive call point */
 			convert_ast_to_netlist_recursing_via_modules(((ast_node_t*)module_names_to_idx->data[sc_spot]), temp_instance_name, level+1);
 
@@ -599,8 +598,6 @@ void convert_ast_to_netlist_recursing_via_modules(ast_node_t* current_module, ch
 				/* module_items */
 				((ast_node_t*)module_names_to_idx->data[sc_spot])->children[2],
 				temp_instance_name, current_module->children[0]->types.identifier);
-
-			simplify_ast_module(current_module);
 
 			/* recursive call point */
 			convert_ast_to_netlist_recursing_via_modules(((ast_node_t*)module_names_to_idx->data[sc_spot]), temp_instance_name, level+1);

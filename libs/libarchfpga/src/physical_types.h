@@ -1198,6 +1198,7 @@ enum class BufferSize {
  * R:  Equivalent resistance of the buffer/switch.                           *
  * Cin:  Input capacitance.                                                  *
  * Cout:  Output capacitance.                                                *
+ * Cinternal: Internal capacitance in a buffer with fanout.                  *
  * Tdel_map: A map where the key is the number of inputs and the entry       *
  *           is the corresponding delay. If there is only one entry at key   *
  *           UNDEFINED, then delay is a constant (doesn't vary with fan-in). *
@@ -1215,6 +1216,7 @@ struct t_arch_switch_inf {
         float R = 0.;
         float Cin = 0.;
         float Cout = 0.;
+        float Cinternal = 0.; // defined the property Cinternal 
         float mux_trans_size = 1.;
         BufferSize buf_size_type = BufferSize::AUTO;
         float buf_size = 0.;
@@ -1263,6 +1265,7 @@ struct t_arch_switch_inf {
  * R:  Equivalent resistance of the buffer/switch.                           *
  * Cin:  Input capacitance.                                                  *
  * Cout:  Output capacitance.                                                *
+ * Cinternal: Internal capacitance in a buffer.                              *
  * Tdel:  Intrinsic delay.  The delay through an unloaded switch is          *
  *        Tdel + R * Cout.                                                   *
  * mux_trans_size:  The area of each transistor in the segment's driving mux *
@@ -1273,6 +1276,7 @@ struct t_rr_switch_inf {
 	float R = 0.;
 	float Cin = 0.;
 	float Cout = 0.;
+	float Cinternal = 0.; //defined the property Cinternal
 	float Tdel = 0.;
 	float mux_trans_size = 0.;
 	float buf_size = 0.;
