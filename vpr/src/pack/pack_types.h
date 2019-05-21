@@ -272,4 +272,17 @@ struct t_lb_router_data {
 	}
 };
 
+/* Stores status of mode selection during clustering */
+struct t_mode_selection_status {
+    bool is_mode_conflict = false; /* Flag to verify whether detailed routing ended in a mode conflict issue */
+    bool try_expand_all_modes = false; /* Flag to assess whether the detailed routing has to expand nodes using all modes */
+    bool expand_all_modes = false; /* Flag to enable all modes during node expansion */
+
+	/* Member function to check whether there is a mode-related issue */
+    bool is_mode_issue() {
+        return is_mode_conflict || try_expand_all_modes;
+    }
+};
+
+
 #endif

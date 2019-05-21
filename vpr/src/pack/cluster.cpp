@@ -19,6 +19,11 @@
  *      t_pb:
  *          Represents a clustered instance of a t_pb_graph_node containing netlist primitives
  *
+ *      t_mode_selection_status:
+ *          It is a helper data structure used to instruct the cluster router
+ *          whether to perform detailed routing adopting all the possible modes
+ *          or not. It is defined in pack_types.h
+ *
  *  t_pb_type and t_pb_graph_node (and related types) describe the targetted FPGA architecture, while t_pb represents
  *  the actual clustering of the user netlist.
  *
@@ -32,6 +37,22 @@
  *
  *      The output of clustering is 400 t_pb of type BLE which represent the clustered user netlist.
  *      Each of the 400 t_pb will reference one of the 4 BLE-type t_pb_graph_nodes.
+ *
+ *
+ *
+ * During the clustering step of `do_clustering`, `detailed_routing_stage` is
+ * incremented at each iteration until a cluster is correctly generated or
+ * `detailed_routing_stage` assumes an invalid value (E_DETAILED_ROUTE_INVALID).
+ *
+ * Depending on its value we have different behaviors:
+ *
+ *     E_DETAILED_ROUTE_AT_END_ONLY:
+ *	      Skip routing if heuristic is to route at the end of packing complex block.
+ *     E_DETAILED_ROUTE_FOR_EACH_ATOM:
+ *	      Try to route if heuristic is to route for every atom. If the clusterer
+ *	      arrives at this stage, it means that more checks have to be performed
+ *	      as the previous stage failed to generate a new cluster.
+ *
  */
 #include <cstdio>
 #include <cstdlib>
@@ -607,11 +628,9 @@ std::map<t_type_ptr,size_t> do_clustering(const t_packer_opts& packer_opts, cons
             VTR_LOGV(verbosity == 2, "\n");
 
 			if (detailed_routing_stage == (int)E_DETAILED_ROUTE_AT_END_ONLY) {
-				// FIXME: is_mode_conflict does not affect this stage. It will be needed when trying to route the packed clusters later on.
-				bool is_mode_conflict;
-				reset_intra_lb_route(router_data);
-				is_cluster_legal = try_intra_lb_route(router_data, packer_opts.pack_verbosity, &is_mode_conflict);
-				if (is_cluster_legal == true) {
+				t_mode_selection_status mode_status;
+				is_cluster_legal = try_intra_lb_route(router_data, packer_opts.pack_verbosity, &mode_status);
+				if (is_cluster_legal) {
                     VTR_LOGV(verbosity > 2, "\tPassed route at end.\n");
 				} else {
 					VTR_LOGV(verbosity > 0, "Failed route at end, repack cluster trying detailed routing at each stage.\n");
@@ -1170,15 +1189,15 @@ static enum e_block_pack_status try_pack_molecule(
 				}
 			}
 			if (block_pack_status == BLK_PASSED) {
-				/* Try to route if heuristic is to route for every atom
-					Skip routing if heuristic is to route at the end of packing complex block
-				*/
-				bool is_mode_conflict = true;
+				t_mode_selection_status mode_status;
 				bool is_routed = false;
 				bool do_detailed_routing_stage = detailed_routing_stage == (int)E_DETAILED_ROUTE_FOR_EACH_ATOM;
-				reset_intra_lb_route(router_data);
-				while (do_detailed_routing_stage && is_mode_conflict) {
-					is_routed = try_intra_lb_route(router_data, verbosity, &is_mode_conflict);
+				if (do_detailed_routing_stage) {
+					/* Repeat this stage until a mode issue has been solved or until it is impossible to solve */
+					do {
+						reset_intra_lb_route(router_data);
+						is_routed = try_intra_lb_route(router_data, verbosity, &mode_status);
+					} while (do_detailed_routing_stage && mode_status.is_mode_issue());
 				}
 
 				if (do_detailed_routing_stage && is_routed == false) {
