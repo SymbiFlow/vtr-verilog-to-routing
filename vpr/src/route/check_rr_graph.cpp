@@ -464,7 +464,7 @@ void check_rr_node(int inode, enum e_route_type route_type, const DeviceContext&
 
             if (check_for_out_edges) {
                 std::string info = describe_rr_node(inode);
-                VTR_LOG_WARN("in check_rr_node: %s has no out-going edges.\n", info.c_str());
+                //VTR_LOG_WARN( "in check_rr_node: %s has no out-going edges.\n", info.c_str());
             }
         }
     } else if (rr_type == SINK) { /* SINK -- remove this check if feedthroughs allowed */
@@ -536,11 +536,11 @@ static void check_unbuffered_edges(int from_node) {
         }
 
         if (trans_matched == false) {
-            VTR_LOG_WARN(
-                "in check_unbuffered_edges:\n"
-                "connection from node %d to node %d uses an unbuffered switch (switch type %d '%s')\n"
-                "but there is no corresponding unbuffered switch edge in the other direction.\n",
-                from_node, to_node, from_switch_type, device_ctx.rr_switch_inf[from_switch_type].name);
+            //VTR_LOG_WARN(
+            //        "in check_unbuffered_edges:\n"
+            //        "connection from node %d to node %d uses an unbuffered switch (switch type %d '%s')\n"
+            //        "but there is no corresponding unbuffered switch edge in the other direction.\n",
+            //        from_node, to_node, from_switch_type, device_ctx.rr_switch_inf[from_switch_type].name);
         }
 
     } /* End for all from_node edges */
