@@ -2,15 +2,19 @@
   <models>
     <!-- LAB Primitives -->
     <model name="stratixiv_lcell_comb">
+        <!-- Note that timing edges are derived from the 'specify' statements in
+             the quartus device primitive verilog model (quartus/eda/sim_lib/stratixiv_atoms.v),
+             which appear to be consistent with the Stratix IV Handbook.
+             -->
       <input_ports>
-        <port name="dataa" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="datab" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="datac" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="datad" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="datae" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="dataf" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="datag" combinational_sink_ports="sumout combout cout shareout"/>
-        <port name="cin" combinational_sink_ports="sumout cout shareout"/>
+        <port name="dataa" combinational_sink_ports="combout sumout cout shareout"/>
+        <port name="datab" combinational_sink_ports="combout sumout cout shareout"/>
+        <port name="datac" combinational_sink_ports="combout sumout cout shareout"/>
+        <port name="datad" combinational_sink_ports="combout sumout cout shareout"/>
+        <port name="datae" combinational_sink_ports="combout"/>
+        <port name="dataf" combinational_sink_ports="combout sumout cout"/>
+        <port name="datag" combinational_sink_ports="combout"/>
+        <port name="cin" combinational_sink_ports="sumout cout"/>
         <port name="sharein" combinational_sink_ports="sumout cout"/>
       </input_ports>
       <output_ports>
@@ -3085,7 +3089,7 @@
         <port name="signa" clock="clk" combinational_sink_ports="dataout"/>
         <port name="signb" clock="clk" combinational_sink_ports="dataout"/>
         <port name="ena" clock="clk" combinational_sink_ports="dataout"/>
-        <port name="aclr" clock="clk"/>
+        <port name="aclr" clock="clk" combinational_sink_ports="dataout"/>
         <port name="devclrn" clock="clk" combinational_sink_ports="dataout"/>
         <port name="devpor" clock="clk" combinational_sink_ports="dataout"/>
         <port name="clk" is_clock="1"/>
@@ -4411,205 +4415,119 @@
   </models>
   <layout>
     <auto_layout aspect_ratio="1.35">
-        <!--Perimeter of 'io' blocks with 'EMPTY' blocks at corners-->
-        <perimeter type="io" priority="1000"/>
-        <corners type="EMPTY" priority="1001"/>
+
+        <!-- Stratix IV IO blocks connect to both horizontal and vertical
+             routing channels. We approximate this by placing them one unit
+             'in' from the true perimeter (which is left empty). This means
+             that they are fully surrounded by routing channels, allowing them
+             to connect to both horizontal and vertical channels. This is a
+             minor approximation since on real Stratix IV devices there is no 
+             perimeter-side vertical routing channel -->
+        <perimeter type="EMPTY" priority="5000"/>
+        <col type="io" startx="1" priority="1001"/> <!-- Left side -->
+        <col type="io" startx="W-2" priority="1001"/> <!-- Right side -->
+        <row type="io" starty="1" priority="1000"/> <!-- Bottom side -->
+        <row type="io" starty="H-2" priority="1000"/> <!-- Top side -->
 
         <!-- Stratix IV devices support up to 12 PLLs located around the device perimeter 
              as indicated in Figure 5-1 of Chapter 5 of the Stratix IV handbook
 
              Note the use of different priorities to avoid ambiguity on small devices -->
-        <single type="PLL" x="0" y="H-2" priority="1997"/> <!-- L1 -->
-        <single type="PLL" x="0" y="H/2" priority="2000"/> <!-- L2 -->
-        <single type="PLL" x="0" y="H/2 - 1" priority="1999"/> <!-- L3 -->
-        <single type="PLL" x="0" y="1" priority="1998"/> <!-- L4 -->
+        <single type="PLL" x="1" y="H-2" priority="1997"/> <!-- L1 -->
+        <single type="PLL" x="1" y="H/2" priority="2000"/> <!-- L2 -->
+        <single type="PLL" x="1" y="H/2 - 1" priority="1999"/> <!-- L3 -->
+        <single type="PLL" x="1" y="1" priority="1998"/> <!-- L4 -->
 
-        <single type="PLL" x="W - 1" y="H-2" priority="1997"/> <!-- R1 -->
-        <single type="PLL" x="W - 1" y="H/2" priority="2000"/> <!-- R2 -->
-        <single type="PLL" x="W - 1" y="H/2 - 1" priority="1999"/> <!-- R3 -->
-        <single type="PLL" x="W - 1" y="1" priority="1998"/> <!-- R4 -->
+        <single type="PLL" x="W - 2" y="H-2" priority="1997"/> <!-- R1 -->
+        <single type="PLL" x="W - 2" y="H/2" priority="2000"/> <!-- R2 -->
+        <single type="PLL" x="W - 2" y="H/2 - 1" priority="1999"/> <!-- R3 -->
+        <single type="PLL" x="W - 2" y="1" priority="1998"/> <!-- R4 -->
 
-        <single type="PLL" x="W/2" y="H-1" priority="1996"/> <!-- T1 -->
-        <single type="PLL" x="W/2 + 1" y="H-1" priority="1995"/> <!-- T2 -->
+        <single type="PLL" x="W/2" y="H-2" priority="1996"/> <!-- T1 -->
+        <single type="PLL" x="W/2 + 1" y="H-2" priority="1995"/> <!-- T2 -->
 
-        <single type="PLL" x="W/2" y="0" priority="1994"/> <!-- B1 -->
-        <single type="PLL" x="W/2 + 1" y="0" priority="1993"/> <!-- B2 -->
+        <single type="PLL" x="W/2" y="1" priority="1994"/> <!-- B1 -->
+        <single type="PLL" x="W/2 + 1" y="1" priority="1993"/> <!-- B2 -->
 
         <!--Fill with 'LAB'-->
         <fill type="LAB" priority="10"/>
 
         <!--Column of 'DSP' with 'EMPTY' blocks wherever a 'DSP' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="DSP" startx="6" starty="1" repeatx="40" priority="150"/>
+        <col type="DSP" startx="6" starty="2" repeatx="40" priority="150"/>
         <col type="EMPTY" startx="6" repeatx="40" starty="1" priority="149"/>
 
         <!--Column of 'M9K' with 'EMPTY' blocks wherever a 'M9K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M9K" startx="5" starty="1" repeatx="26" priority="50"/>
+        <col type="M9K" startx="5" starty="2" repeatx="26" priority="50"/>
         <col type="EMPTY" startx="5" repeatx="26" starty="1" priority="49"/>
 
         <!--Column of 'M144K' with 'EMPTY' blocks wherever a 'M144K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M144K" startx="33" starty="1" repeatx="43" priority="100"/>
+        <col type="M144K" startx="33" starty="2" repeatx="43" priority="100"/>
         <col type="EMPTY" startx="33" repeatx="43" starty="1" priority="99"/>
     </auto_layout>
-    <fixed_layout name="EP4SGX110" width="82" height="66"> <!-- Also EP4SGX70 -->
-        <!--Perimeter of 'io' blocks with 'EMPTY' blocks at corners-->
-        <perimeter type="io" priority="1000"/>
-        <corners type="EMPTY" priority="1001"/>
+    <fixed_layout name="EP4SGX110" width="82" height="66">
+
+        <!-- Stratix IV IO blocks connect to both horizontal and vertical
+             routing channels. We approximate this by placing them one unit
+             'in' from the true perimeter (which is left empty). This means
+             that they are fully surrounded by routing channels, allowing them
+             to connect to both horizontal and vertical channels. This is a
+             minor approximation since on real Stratix IV devices there is no 
+             perimeter-side vertical routing channel -->
+        <perimeter type="EMPTY" priority="5000"/>
+        <col type="io" startx="1" priority="1001"/> <!-- Left side -->
+        <col type="io" startx="W-2" priority="1001"/> <!-- Right side -->
+        <row type="io" starty="1" priority="1000"/> <!-- Bottom side -->
+        <row type="io" starty="H-2" priority="1000"/> <!-- Top side -->
 
         <!-- Stratix IV devices support up to 12 PLLs located around the device perimeter 
              as indicated in Figure 5-1 of Chapter 5 of the Stratix IV handbook
 
              Note the use of different priorities to avoid ambiguity on small devices -->
-        <single type="PLL" x="0" y="H-2" priority="1997"/> <!-- L1 -->
-        <single type="PLL" x="0" y="H/2" priority="2000"/> <!-- L2 -->
-        <single type="PLL" x="0" y="H/2 - 1" priority="1999"/> <!-- L3 -->
-        <single type="PLL" x="0" y="1" priority="1998"/> <!-- L4 -->
+        <single type="PLL" x="1" y="H-2" priority="1997"/> <!-- L1 -->
+        <single type="PLL" x="1" y="H/2" priority="2000"/> <!-- L2 -->
+        <single type="PLL" x="1" y="H/2 - 1" priority="1999"/> <!-- L3 -->
+        <single type="PLL" x="1" y="1" priority="1998"/> <!-- L4 -->
 
-        <single type="PLL" x="W - 1" y="H-2" priority="1997"/> <!-- R1 -->
-        <single type="PLL" x="W - 1" y="H/2" priority="2000"/> <!-- R2 -->
-        <single type="PLL" x="W - 1" y="H/2 - 1" priority="1999"/> <!-- R3 -->
-        <single type="PLL" x="W - 1" y="1" priority="1998"/> <!-- R4 -->
+        <single type="PLL" x="W - 2" y="H-2" priority="1997"/> <!-- R1 -->
+        <single type="PLL" x="W - 2" y="H/2" priority="2000"/> <!-- R2 -->
+        <single type="PLL" x="W - 2" y="H/2 - 1" priority="1999"/> <!-- R3 -->
+        <single type="PLL" x="W - 2" y="1" priority="1998"/> <!-- R4 -->
 
-        <single type="PLL" x="W/2" y="H-1" priority="1996"/> <!-- T1 -->
-        <single type="PLL" x="W/2 + 1" y="H-1" priority="1995"/> <!-- T2 -->
+        <single type="PLL" x="W/2" y="H-2" priority="1996"/> <!-- T1 -->
+        <single type="PLL" x="W/2 + 1" y="H-2" priority="1995"/> <!-- T2 -->
 
-        <single type="PLL" x="W/2" y="0" priority="1994"/> <!-- B1 -->
-        <single type="PLL" x="W/2 + 1" y="0" priority="1993"/> <!-- B2 -->
-
-        <!--Fill with 'LAB'-->
-        <fill type="LAB" priority="10"/>
-
-        <!--Column of 'DSP' with 'EMPTY' blocks wherever a 'DSP' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="DSP" startx="6" starty="1" repeatx="40" priority="150"/>
-        <col type="EMPTY" startx="6" repeatx="40" starty="1" priority="149"/>
-
-        <!--Column of 'M9K' with 'EMPTY' blocks wherever a 'M9K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M9K" startx="5" starty="1" repeatx="26" priority="50"/>
-        <col type="EMPTY" startx="5" repeatx="26" starty="1" priority="49"/>
-
-        <!--Column of 'M144K' with 'EMPTY' blocks wherever a 'M144K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M144K" startx="33" starty="1" repeatx="43" priority="100"/>
-        <col type="EMPTY" startx="33" repeatx="43" starty="1" priority="99"/>
-    </fixed_layout>
-    <fixed_layout name="EP4SGX230" width="120" height="97"> <!-- Also EP4SGX180 -->
-        <!--Perimeter of 'io' blocks with 'EMPTY' blocks at corners-->
-        <perimeter type="io" priority="1000"/>
-        <corners type="EMPTY" priority="1001"/>
-
-        <!-- Stratix IV devices support up to 12 PLLs located around the device perimeter 
-             as indicated in Figure 5-1 of Chapter 5 of the Stratix IV handbook
-
-             Note the use of different priorities to avoid ambiguity on small devices -->
-        <single type="PLL" x="0" y="H-2" priority="1997"/> <!-- L1 -->
-        <single type="PLL" x="0" y="H/2" priority="2000"/> <!-- L2 -->
-        <single type="PLL" x="0" y="H/2 - 1" priority="1999"/> <!-- L3 -->
-        <single type="PLL" x="0" y="1" priority="1998"/> <!-- L4 -->
-
-        <single type="PLL" x="W - 1" y="H-2" priority="1997"/> <!-- R1 -->
-        <single type="PLL" x="W - 1" y="H/2" priority="2000"/> <!-- R2 -->
-        <single type="PLL" x="W - 1" y="H/2 - 1" priority="1999"/> <!-- R3 -->
-        <single type="PLL" x="W - 1" y="1" priority="1998"/> <!-- R4 -->
-
-        <single type="PLL" x="W/2" y="H-1" priority="1996"/> <!-- T1 -->
-        <single type="PLL" x="W/2 + 1" y="H-1" priority="1995"/> <!-- T2 -->
-
-        <single type="PLL" x="W/2" y="0" priority="1994"/> <!-- B1 -->
-        <single type="PLL" x="W/2 + 1" y="0" priority="1993"/> <!-- B2 -->
+        <single type="PLL" x="W/2" y="1" priority="1994"/> <!-- B1 -->
+        <single type="PLL" x="W/2 + 1" y="1" priority="1993"/> <!-- B2 -->
 
         <!--Fill with 'LAB'-->
         <fill type="LAB" priority="10"/>
 
         <!--Column of 'DSP' with 'EMPTY' blocks wherever a 'DSP' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="DSP" startx="6" starty="1" repeatx="40" priority="150"/>
+        <col type="DSP" startx="6" starty="2" repeatx="40" priority="150"/>
         <col type="EMPTY" startx="6" repeatx="40" starty="1" priority="149"/>
 
         <!--Column of 'M9K' with 'EMPTY' blocks wherever a 'M9K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M9K" startx="5" starty="1" repeatx="26" priority="50"/>
+        <col type="M9K" startx="5" starty="2" repeatx="26" priority="50"/>
         <col type="EMPTY" startx="5" repeatx="26" starty="1" priority="49"/>
 
         <!--Column of 'M144K' with 'EMPTY' blocks wherever a 'M144K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M144K" startx="33" starty="1" repeatx="43" priority="100"/>
+        <col type="M144K" startx="33" starty="2" repeatx="43" priority="100"/>
         <col type="EMPTY" startx="33" repeatx="43" starty="1" priority="99"/>
     </fixed_layout>
-    <fixed_layout name="EP4SGX530" width="186" height="129"> <!-- Also EP4SGX360 and EP4SGX290 -->
-        <!--Perimeter of 'io' blocks with 'EMPTY' blocks at corners-->
-        <perimeter type="io" priority="1000"/>
-        <corners type="EMPTY" priority="1001"/>
+    <!--
+        Stratix IV has only 4 unique device dies. 
+        Some devices are 'virtual': based off another die, with utilization limits controlled by Quartus
 
-        <!-- Stratix IV devices support up to 12 PLLs located around the device perimeter 
-             as indicated in Figure 5-1 of Chapter 5 of the Stratix IV handbook
-
-             Note the use of different priorities to avoid ambiguity on small devices -->
-        <single type="PLL" x="0" y="H-2" priority="1997"/> <!-- L1 -->
-        <single type="PLL" x="0" y="H/2" priority="2000"/> <!-- L2 -->
-        <single type="PLL" x="0" y="H/2 - 1" priority="1999"/> <!-- L3 -->
-        <single type="PLL" x="0" y="1" priority="1998"/> <!-- L4 -->
-
-        <single type="PLL" x="W - 1" y="H-2" priority="1997"/> <!-- R1 -->
-        <single type="PLL" x="W - 1" y="H/2" priority="2000"/> <!-- R2 -->
-        <single type="PLL" x="W - 1" y="H/2 - 1" priority="1999"/> <!-- R3 -->
-        <single type="PLL" x="W - 1" y="1" priority="1998"/> <!-- R4 -->
-
-        <single type="PLL" x="W/2" y="H-1" priority="1996"/> <!-- T1 -->
-        <single type="PLL" x="W/2 + 1" y="H-1" priority="1995"/> <!-- T2 -->
-
-        <single type="PLL" x="W/2" y="0" priority="1994"/> <!-- B1 -->
-        <single type="PLL" x="W/2 + 1" y="0" priority="1993"/> <!-- B2 -->
-
-        <!--Fill with 'LAB'-->
-        <fill type="LAB" priority="10"/>
-
-        <!--Column of 'DSP' with 'EMPTY' blocks wherever a 'DSP' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="DSP" startx="6" starty="1" repeatx="40" priority="150"/>
-        <col type="EMPTY" startx="6" repeatx="40" starty="1" priority="149"/>
-
-        <!--Column of 'M9K' with 'EMPTY' blocks wherever a 'M9K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M9K" startx="5" starty="1" repeatx="26" priority="50"/>
-        <col type="EMPTY" startx="5" repeatx="26" starty="1" priority="49"/>
-
-        <!--Column of 'M144K' with 'EMPTY' blocks wherever a 'M144K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M144K" startx="33" starty="1" repeatx="43" priority="100"/>
-        <col type="EMPTY" startx="33" repeatx="43" starty="1" priority="99"/>
-    </fixed_layout>
-    <fixed_layout name="EP4SE820" width="220" height="162">
-        <!--Perimeter of 'io' blocks with 'EMPTY' blocks at corners-->
-        <perimeter type="io" priority="1000"/>
-        <corners type="EMPTY" priority="1001"/>
-
-        <!-- Stratix IV devices support up to 12 PLLs located around the device perimeter 
-             as indicated in Figure 5-1 of Chapter 5 of the Stratix IV handbook
-
-             Note the use of different priorities to avoid ambiguity on small devices -->
-        <single type="PLL" x="0" y="H-2" priority="1997"/> <!-- L1 -->
-        <single type="PLL" x="0" y="H/2" priority="2000"/> <!-- L2 -->
-        <single type="PLL" x="0" y="H/2 - 1" priority="1999"/> <!-- L3 -->
-        <single type="PLL" x="0" y="1" priority="1998"/> <!-- L4 -->
-
-        <single type="PLL" x="W - 1" y="H-2" priority="1997"/> <!-- R1 -->
-        <single type="PLL" x="W - 1" y="H/2" priority="2000"/> <!-- R2 -->
-        <single type="PLL" x="W - 1" y="H/2 - 1" priority="1999"/> <!-- R3 -->
-        <single type="PLL" x="W - 1" y="1" priority="1998"/> <!-- R4 -->
-
-        <single type="PLL" x="W/2" y="H-1" priority="1996"/> <!-- T1 -->
-        <single type="PLL" x="W/2 + 1" y="H-1" priority="1995"/> <!-- T2 -->
-
-        <single type="PLL" x="W/2" y="0" priority="1994"/> <!-- B1 -->
-        <single type="PLL" x="W/2 + 1" y="0" priority="1993"/> <!-- B2 -->
-
-        <!--Fill with 'LAB'-->
-        <fill type="LAB" priority="10"/>
-
-        <!--Column of 'DSP' with 'EMPTY' blocks wherever a 'DSP' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="DSP" startx="6" starty="1" repeatx="40" priority="150"/>
-        <col type="EMPTY" startx="6" repeatx="40" starty="1" priority="149"/>
-
-        <!--Column of 'M9K' with 'EMPTY' blocks wherever a 'M9K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M9K" startx="5" starty="1" repeatx="26" priority="50"/>
-        <col type="EMPTY" startx="5" repeatx="26" starty="1" priority="49"/>
-
-        <!--Column of 'M144K' with 'EMPTY' blocks wherever a 'M144K' does not fit. Vertical offset by 1 for perimeter.-->
-        <col type="M144K" startx="33" starty="1" repeatx="43" priority="100"/>
-        <col type="EMPTY" startx="33" repeatx="43" starty="1" priority="99"/>
-    </fixed_layout>
+        Equivalent Devices:
+           EP4SGX110: EP4SGX70
+           EP4SGX230: EP4SGX180
+           EP4SGX530: EP4SGX360 EP4SGX290
+           EP4SGX830:
+       -->
+    <!--<fixed_layout name="EP4SGX110" width="82" height="66"/>-->
+    <!--<fixed_layout name="EP4SGX230" width="120" height="97"/>-->
+    <!--<fixed_layout name="EP4SGX530" width="186" height="129"/>-->
+    <!--<fixed_layout name="EP4SE820" width="220" height="162"/>-->
 </layout>
   <device>
 	<sizing R_minW_nmos="8926" R_minW_pmos="16067"/>
@@ -4623,7 +4541,7 @@
       <x distr="uniform" peak="1.000000"/>
       <y distr="uniform" peak="1.000000"/>
     </chan_width_distr>
-    <switch_block fs="3" type="wilton"/>
+    <switch_block type="custom"/>
     <connection_block input_switch_name="ipin_cblock"/>
   </device>
   <switchlist>
@@ -4761,17 +4679,25 @@
                 For L16 the intrinsic switch delay is ~30% of the total wire delay.
                 Both of these values are reasonable.
           -->
-
-    <segment name="L4" freq="0.67" length="4" type="unidir" Rmetal="201.7" Cmetal="18.0e-15">
+    <segment name="L4" freq="260" length="4" type="unidir" Rmetal="201.7" Cmetal="18.0e-15">
       <mux name="seg4_driver"/>
+      <!-- L4 connect to connection block L4 and L4prime -->
       <sb type="pattern">1 1 1 1 1</sb>
       <cb type="pattern">1 1 1 1</cb>
     </segment>
 
-    <segment name="L16" freq="0.13" length="16" type="unidir" Rmetal="50.42" Cmetal="20.7e-15">
+    <segment name="L16" freq="40" length="16" type="unidir" Rmetal="50.42" Cmetal="20.7e-15">
       <mux name="seg16_driver"/>
-      <sb type="pattern">1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1</sb>
-      <cb type="pattern">1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1</cb>
+      <!-- L16 connect to L16 and L4 -->
+      <!-- Vias from the top of the metal stack (global layers, where the long wires are 
+           implemented) down to the middle/bottom of the metal stack (semi-global layers, 
+           where the short wires are implemented) are expensive and restrictive.
+           
+           As a result Startix IV only places long wire switch blocks every 4 LABs -->
+      <sb type="pattern">1 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1</sb>
+
+      <!-- For the same reasons, long wires do not connect to block pins in Stratix IV -->
+      <cb type="pattern">0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0</cb>
     </segment>
   </segmentlist>
   <directlist>
@@ -4779,17 +4705,112 @@
       <direct name="LAB_carry_chain" from_pin="LAB.cout" to_pin="LAB.cin" x_offset="0" y_offset="-1" z_offset="0"/>
       <direct name="LAB_share_chain" from_pin="LAB.shareout" to_pin="LAB.sharein" x_offset="0" y_offset="-1" z_offset="0"/>
 
-      <!-- LAB direct-link interconnect. 20-bits go each way to the horizontally adjacent LABs.  
+      <!-- LAB direct-link interconnect. 20-bits go each way to the horizontally adjacent blocks.  
            The actual indexes used are choosen to align with which bits are on each side of 
-           the LAB (see LAB pinlocations) -->
-      <direct name="LAB-LAB_directlink_drive_right" from_pin="LAB.data_out[39:20]" to_pin="LAB.data_in[19:0]" x_offset="1" y_offset="0" z_offset="0"/>
-      <direct name="LAB-LAB_directlink_drive_left" from_pin="LAB.data_out[19:0]" to_pin="LAB.data_in[79:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+           the LAB (see LAB & block pinlocations) -->
+      <direct name="LAB-LAB_directlink_drive_right" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="LAB.data_in[19:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-LAB_directlink_drive_left" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="LAB.data_in[79:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <direct name="LAB-M9K_directlink_drive_right" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M9K.data_addr_control_in[19:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M9K_directlink_drive_left" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M9K.data_addr_control_in[79:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <direct name="LAB-M144K_directlink_drive_right_y7" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[19:0]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y6" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[44:25]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y5" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[70:51]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y4" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[96:77]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y3" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[122:103]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y2" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[148:129]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y1" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[174:155]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_right_y0" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="M144K.data_addr_control_in[200:181]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y7" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[226:207]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y6" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[252:233]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y5" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[278:259]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y4" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[304:285]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y3" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[330:311]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y2" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[356:337]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y1" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[382:363]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-M144K_directlink_drive_left_y0" from_pin="LAB.data_out[19:0]" from_side="left" to_pin="M144K.data_addr_control_in[408:389]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- Note: Need to specify to_side to aoid ambiguity with multi-height blocks -->
+      <direct name="LAB-DSP_directlink_drive_right_y3" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="DSP.data_in[19:0]"    to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_right_y2" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="DSP.data_in[55:36]"   to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_right_y1" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="DSP.data_in[164:145]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_right_y0" from_pin="LAB.data_out[39:20]" from_side="right" to_pin="DSP.data_in[199:180]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_left_y3" from_pin="LAB.data_out[19:0]"  from_side="left" to_pin="DSP.data_in[91:72]"   to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_left_y2" from_pin="LAB.data_out[19:0]"  from_side="left" to_pin="DSP.data_in[127:108]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_left_y1" from_pin="LAB.data_out[19:0]"  from_side="left" to_pin="DSP.data_in[235:216]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-DSP_directlink_drive_left_y0" from_pin="LAB.data_out[19:0]"  from_side="left" to_pin="DSP.data_in[271:252]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <direct name="LAB-IO_directlink_drive_right_z1" from_pin="LAB.data_out[39:30]" from_side="right" to_pin="io.core_in[9:0]" x_offset="1" y_offset="0" z_offset="1"/>
+      <direct name="LAB-IO_directlink_drive_right_z0" from_pin="LAB.data_out[29:20]" from_side="right" to_pin="io.core_in[9:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="LAB-IO_directlink_drive_left_z1" from_pin="LAB.data_out[19:10]" from_side="left" to_pin="io.core_in[33:24]" x_offset="-1" y_offset="0" z_offset="1"/>
+      <direct name="LAB-IO_directlink_drive_left_z0" from_pin="LAB.data_out[9:0]" from_side="left" to_pin="io.core_in[33:24]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- DSP direct-link interconnect. 20-bits go each way to the horizontally adjacent LABs. -->
+      <direct name="DSP-LAB_directlink_drive_right_y3" from_pin="DSP.data_out_top[53:36]" from_side="right" to_pin="LAB.data_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_right_y2" from_pin="DSP.data_out_top[71:54]" from_side="right" to_pin="LAB.data_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_right_y1" from_pin="DSP.data_out_bot[53:36]" from_side="right" to_pin="LAB.data_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_right_y0" from_pin="DSP.data_out_bot[71:54]" from_side="right" to_pin="LAB.data_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_left_y3" from_pin="DSP.data_out_top[17:0]" from_side="left" to_pin="LAB.data_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_left_y2" from_pin="DSP.data_out_top[35:18]" from_side="left" to_pin="LAB.data_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_left_y1" from_pin="DSP.data_out_bot[17:0]" from_side="left" to_pin="LAB.data_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-LAB_directlink_drive_left_y0" from_pin="DSP.data_out_bot[35:18]" from_side="left" to_pin="LAB.data_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <direct name="DSP-M9K_directlink_drive_right_y3" from_pin="DSP.data_out_top[53:36]" from_side="right" to_pin="M9K.data_addr_control_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_right_y2" from_pin="DSP.data_out_top[71:54]" from_side="right" to_pin="M9K.data_addr_control_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_right_y1" from_pin="DSP.data_out_bot[53:36]" from_side="right" to_pin="M9K.data_addr_control_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_right_y0" from_pin="DSP.data_out_bot[71:54]" from_side="right" to_pin="M9K.data_addr_control_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_left_y3" from_pin="DSP.data_out_top[17:0]"   from_side="left" to_pin="M9K.data_addr_control_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_left_y2" from_pin="DSP.data_out_top[35:18]"  from_side="left" to_pin="M9K.data_addr_control_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_left_y1" from_pin="DSP.data_out_bot[17:0]"   from_side="left" to_pin="M9K.data_addr_control_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="DSP-M9K_directlink_drive_left_y0" from_pin="DSP.data_out_bot[35:18]"  from_side="left" to_pin="M9K.data_addr_control_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- M9K direct-link interconnect. 20-bits go each way to the horizontally adjacent LABs. -->
+      <direct name="M9K-LAB_directlink_drive_right_data" from_pin="M9K.data_out[35:18]" from_side="right" to_pin="LAB.data_in[17:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-LAB_directlink_drive_right_control" from_pin="M9K.control_out[2:2]" from_side="right" to_pin="LAB.data_in[18:18]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-LAB_directlink_drive_left_data" from_pin="M9K.data_out[17:0]" from_side="left" to_pin="LAB.data_in[77:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-LAB_directlink_drive_left_control" from_pin="M9K.control_out[1:0]" from_side="left" to_pin="LAB.data_in[79:78]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- Note: Need to specify to_side to aoid ambiguity with multi-height blocks -->
+      <direct name="M9K-DSP_directlink_drive_right_data_y3" from_pin="M9K.data_out[35:18]" from_side="right" to_pin="DSP.data_in[17:0]"    to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_right_data_y2" from_pin="M9K.data_out[35:18]" from_side="right" to_pin="DSP.data_in[53:36]"   to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_right_data_y1" from_pin="M9K.data_out[35:18]" from_side="right" to_pin="DSP.data_in[162:145]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_right_data_y0" from_pin="M9K.data_out[35:18]" from_side="right" to_pin="DSP.data_in[197:180]" to_side="left" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_left_data_y3" from_pin="M9K.data_out[17:0]" from_side="left" to_pin="DSP.data_in[89:72]"   to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_left_data_y2" from_pin="M9K.data_out[17:0]" from_side="left" to_pin="DSP.data_in[125:108]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_left_data_y1" from_pin="M9K.data_out[17:0]" from_side="left" to_pin="DSP.data_in[233:216]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M9K-DSP_directlink_drive_left_data_y0" from_pin="M9K.data_out[17:0]" from_side="left" to_pin="DSP.data_in[269:252]" to_side="right" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- M144K direct-link interconnect. 20-bits go each way at each gtid location to the horizontally adjacent LABs. -->
+      <direct name="M144K-LAB_directlink_drive_right_y7" from_pin="M144K.data_out[67:60]" from_side="right" to_pin="LAB.data_in[7:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y6" from_pin="M144K.data_out[75:68]" from_side="right" to_pin="LAB.data_in[7:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y5" from_pin="M144K.data_out[82:76]" from_side="right" to_pin="LAB.data_in[6:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y4" from_pin="M144K.data_out[89:83]" from_side="right" to_pin="LAB.data_in[6:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y3" from_pin="M144K.data_out[96:90]" from_side="right" to_pin="LAB.data_in[6:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y2" from_pin="M144K.data_out[103:97]" from_side="right" to_pin="LAB.data_in[6:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y1" from_pin="M144K.data_out[111:104]" from_side="right" to_pin="LAB.data_in[7:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_right_y0" from_pin="M144K.data_out[119:112]" from_side="right" to_pin="LAB.data_in[7:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y7" from_pin="M144K.data_out[7:0]" from_side="left" to_pin="LAB.data_in[67:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y6" from_pin="M144K.data_out[15:8]" from_side="left" to_pin="LAB.data_in[67:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y5" from_pin="M144K.data_out[22:16]" from_side="left" to_pin="LAB.data_in[66:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y4" from_pin="M144K.data_out[29:23]" from_side="left" to_pin="LAB.data_in[66:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y3" from_pin="M144K.data_out[36:30]" from_side="left" to_pin="LAB.data_in[66:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y2" from_pin="M144K.data_out[43:37]" from_side="left" to_pin="LAB.data_in[66:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y1" from_pin="M144K.data_out[51:44]" from_side="left" to_pin="LAB.data_in[67:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+      <direct name="M144K-LAB_directlink_drive_left_y0" from_pin="M144K.data_out[59:52]" from_side="left" to_pin="LAB.data_in[67:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
+      <!-- IO direct-link interconnect. 20-bits go each way at each gtid location to the horizontally adjacent LABs. -->
+      <direct name="IO-LAB_directlink_drive_right_z1" from_pin="io.core_out[29:20]" from_side="right" to_pin="LAB.data_in[19:10]" x_offset="1" y_offset="0" z_offset="-1"/>
+      <direct name="IO-LAB_directlink_drive_right_z0" from_pin="io.core_out[29:20]" from_side="right" to_pin="LAB.data_in[9:0]" x_offset="1" y_offset="0" z_offset="0"/>
+      <direct name="IO-LAB_directlink_drive_left_z1" from_pin="io.core_out[9:0]" from_side="left" to_pin="LAB.data_in[79:70]" x_offset="-1" y_offset="0" z_offset="-1"/>
+      <direct name="IO-LAB_directlink_drive_left_z0" from_pin="io.core_out[9:0]" from_side="left" to_pin="LAB.data_in[69:60]" x_offset="-1" y_offset="0" z_offset="0"/>
+
   </directlist>
 
   <complexblocklist>
     <pb_type capacity="2" name="io">
       <input name="core_in" num_pins="50" equivalent="none"/>
-      <output name="core_out" num_pins="60" equivalent="none"/>
+      <output name="core_out" num_pins="40" equivalent="none"/>
       <clock name="clk" num_pins="5"/>
       <mode name="io">
         <pb_type name="pad" num_pb="1">
@@ -5611,12 +5632,20 @@
           <complete input="io.clk" name="io_cell_clks" output="io_cell.clk"/>
         </interconnect>
       </mode>
-      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.100"/>
+      <fc in_type="frac" in_val="0.0275" out_type="frac" out_val="0.0375"/>
       <pinlocations pattern="custom">
-        <loc side="left">  io.core_in io.core_out io.clk</loc>
-        <loc side="top">   io.core_in io.core_out io.clk</loc>
-        <loc side="right"> io.core_in io.core_out io.clk</loc>
-        <loc side="bottom">io.core_in io.core_out io.clk</loc>
+        <!-- In Stratix IV the IO pins connect to the adjacent vertical and one 
+             horizontal channel. However, since we use a single IO primitive we
+             need to specify pin locations which work for all locations (e.g. top,
+             bottom, left, right edges of the device). As a result we ensure the 
+             pin setup is symmetric on all sides, with half of the pins connecting
+             to each side of the IO block. This means that each pin is accessible
+             from one vertical and one horizontal channel. Like the LAB below the
+             Fc values have been adjusted to account for this. -->
+        <loc side="left">  io.core_in[0:24]  io.core_out[0:19]  io.clk[0:2]</loc>
+        <loc side="right"> io.core_in[24:49] io.core_out[20:39] io.clk[3:4]</loc>
+        <loc side="top">   io.core_in[0:24]  io.core_out[0:19]  io.clk[0:2]</loc>
+        <loc side="bottom">io.core_in[24:49] io.core_out[20:39] io.clk[3:4]</loc>
       </pinlocations>
       </pb_type>
 
@@ -5873,14 +5902,14 @@
           <complete input="PLL.in_clock" name="pll_clk_in" output="pll_no_compensation.inclk"/>
         </interconnect>
       </mode>
-      <fc in_type="frac" in_val="1.000" out_type="frac" out_val="1.000"/>
+      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.075"/>
       <pinlocations pattern="custom">
-        <loc side="left">  PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
-        <loc side="top">   PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
-        <loc side="right"> PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
+        <loc side="left"  >PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
+        <loc side="right" >PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
+        <loc side="top"   >PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
         <loc side="bottom">PLL.in_signal PLL.in_clock PLL.out_clock PLL.out_signal</loc>
       </pinlocations>
-      </pb_type>
+    </pb_type>
 
     <pb_type name="LAB">
       <input name="data_in" num_pins="80" equivalent="full"/>
@@ -5976,9 +6005,7 @@
 				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.datab" out_port="lcell_comb.sumout"/>
 				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.datac" out_port="lcell_comb.sumout"/>
 				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.datad" out_port="lcell_comb.sumout"/>
-				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.datae" out_port="lcell_comb.sumout"/>
 				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.dataf" out_port="lcell_comb.sumout"/>
-				  <delay_constant max="491e-12" min="335e-12" in_port="lcell_comb.datag" out_port="lcell_comb.sumout"/>
                   
                   <!-- Carry input to carry output delay -->
 				  <delay_constant max="11e-12" min="8e-12" in_port="lcell_comb.cin" out_port="lcell_comb.cout"/>
@@ -5998,9 +6025,7 @@
 				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.datab" out_port="lcell_comb.cout"/>
 				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.datac" out_port="lcell_comb.cout"/>
 				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.datad" out_port="lcell_comb.cout"/>
-				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.datae" out_port="lcell_comb.cout"/>
 				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.dataf" out_port="lcell_comb.cout"/>
-				  <delay_constant max="261e-12" min="193e-12" in_port="lcell_comb.datag" out_port="lcell_comb.cout"/>
        
                   <!-- Share input to combout delay -->
                   <!--   In Stratix IV Shared Arithmetic mode (the only mode that uses sharein/shareout)
@@ -6022,62 +6047,6 @@
 				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.datab" out_port="lcell_comb.shareout"/>
 				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.datac" out_port="lcell_comb.shareout"/>
 				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.datad" out_port="lcell_comb.shareout"/>
-				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.datae" out_port="lcell_comb.shareout"/>
-				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.dataf" out_port="lcell_comb.shareout"/>
-				  <delay_constant max="154e-12" min="98e-12" in_port="lcell_comb.datag" out_port="lcell_comb.shareout"/>
-
-
-                  <!-- There should be no timing paths between these ports (see QUIP's stratixii_le_wys.pdf,
-                       stratixiii_le_wys.pdf)!
-                       
-                       Neither shareout nor combout are connected to sharein, so there should be no paths
-                       between sharein and those ports. 
-                       
-                       Neither combout nor shareout are connected to the embedded full adders, so there
-                       should be no paths between cin and those outputs*.
-                       
-                       *However, it has been observed that QII may produce constant LUTs driving the shareout 
-                       port, with no corresponding inputs (since the LUT function is a constant):
-
-                            stratixiv_lcell_comb \Subtractor9Bit:Sub37|Add0~33_I (
-                                .cin(\Subtractor9Bit:Sub37|Add0~30 ),
-                                .sharein(\Subtractor9Bit:Sub37|Add0~31 ),
-                                .sumout(\Subtractor9Bit:Sub37|Add0~33 ),
-                                .cout(\Subtractor9Bit:Sub37|Add0~34 ),
-                                .shareout(\Subtractor9Bit:Sub37|Add0~35 ));
-                            defparam \Subtractor9Bit:Sub37|Add0~33_I .shared_arith = "on";
-                            defparam \Subtractor9Bit:Sub37|Add0~33_I .extended_lut = "off";
-                            defparam \Subtractor9Bit:Sub37|Add0~33_I .lut_mask = "000000000000FFFF";
-                        
-                       When VPR's timing analyzer is tracing back the path (to calculate required times), it
-                       looks for timing edges between a primitive's input and output pins, until it reaches
-                       one of these 'keeper' cells (which correspond to the start of the timing path):
-                          - Flip-Flop
-                          - Primary Input
-                          - Constant Generator
-
-                       Since VPR does not interpret the LUT mask of black-box arithmetic logic cells it does not 
-                       recognize that the LUT function driving shareout is actually a constant generator (and
-                       hence a valid timing path starting point). Instead, the timing analyzer thinks that 
-                       something is wrong (since the path appears to 'start' from combinational logic).  
-
-                       Ideally QII would create this shareout signal as an assignment, e.g.:
-                          assign \Subtractor9Bit:Sub37|Add0~35 = 1'b0;
-                       which would be recognized by VPR as a constant generator. But it does not, likely 
-                       because the signal needs to be generated internally by the LUT to allow packing chained
-                       ALMs together.
-
-                       To work around this annoying corner case, we create a 'fake' timing edge between cin 
-                       and shareout. Since sharein/shareout should never be used with-out cin/cout, and since a 
-                       finite (positive) delay always exists on the cin -> cout edge, this should not impact the
-                       critical path as the cin -> cout path should dominate.
-
-                       However since VPR currently only supports one 'chain' structure per primitive during 
-                       placement (and it is used for the carry chain), we may still route the sharein-shareout 
-                       chain connections on global routing, which may cause the delay of the share chain to 
-                       dominate the carry chain and modify the critical path.
-                       -->
-                  <delay_constant max="0e-12" min="0e-12" in_port="lcell_comb.cin" out_port="lcell_comb.shareout"/>
                 </pb_type>
                 <interconnect>
                   <complete input="lut.lin" name="in_comp1" output="lcell_comb.dataa"/>
@@ -6497,31 +6466,50 @@
           <complete input="mlab_cell.portbdataout" name="mlab_out" output="LAB.data_out"/>
         </interconnect>
       </mode>
-      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.100">
-        <!--Chains do not connect to general global routing-->
-        <fc_override port_name="cin" fc_type="frac" fc_val="0"/>
-        <fc_override port_name="cout" fc_type="frac" fc_val="0"/>
+      <fc in_type="frac" in_val="0.0275" out_type="frac" out_val="0.0375">
+          <!-- Based on mux size info Startix IV has approximately the following effective Fc values:
+                   Fc_in: 0.055
+                   Fc_out: 0.075
 
-        <!--Note: We do not list the LAB Share chain ports as having zero fc. 
-            VPR uses this (along with a pack pattern and direct link) to identify 
-            carry chain like structures which must be treated as placement macros.  
+               However, we allow half the pins to connect to the left side, the other half to the right side
+               and all pins to connect to the top side of the LAB (3-sided architecture).
 
-            However VPR currently does not support multiple chains/placement 
-            macros per primitive. We DO hook-up the share ports with directlink
-            but do NOT set fc to zero to avoid this issue. -->
+               As a result we divide the effective Fc values by 2 (since each pin can connect to two sides)
+               to keep roughly the same number of switches, yielding:
+
+                    Fc_in: 0.0275
+                    Fc_out: 0.0375
+               -->
+
+          <!--Chains do not connect to general global routing-->
+          <fc_override port_name="cin" fc_type="frac" fc_val="0"/>
+          <fc_override port_name="cout" fc_type="frac" fc_val="0"/>
+
+          <!--Note: We do not list the LAB Share chain ports as having zero fc. 
+              VPR uses this (along with a pack pattern and direct link) to identify 
+              carry chain like structures which must be treated as placement macros.  
+
+              However VPR currently does not support multiple chains/placement 
+              macros per primitive. We DO hook-up the share ports with directlink
+              but do NOT set fc to zero to avoid this issue. -->
       </fc>
       <pinlocations pattern="custom">
-        <!-- Stratix IV is a 3 sided architecture, the LABs can connect to routing on their left, top, and right.
-             To model this we spread the various ports around the three sides.
+          <!-- Stratix IV is a 3 sided architecture, the LABs can connect to routing on their 
+               left, top, and right.  To model this we spread the various ports around the three sides.
 
-             The exceptions to the above are the LAB chain ports, which propogate downward between blocks.
+               The exceptions to the above are the LAB chain ports, which propogate downward between blocks.
+
+               We model that half the pins can connect to each vertical channel (left/right),
+               and all can connect to the horizontal channel (top). This models the fact that 
+               each block pin can connect to some Vertical and some Horizontal wires in Stratix IV.
+               Note that Fc_in/Fc_out have been scaled to account for this.
              -->
-        <loc side="left">  LAB.data_in[0:26]  LAB.control_in[0:1] LAB.data_out[0:19]  LAB.clk[0]</loc>
-        <loc side="top">   LAB.data_in[27:52] LAB.control_in[2:4] LAB.data_out[20:25] LAB.clk    LAB.cin LAB.sharein</loc>
-        <loc side="right"> LAB.data_in[53:79] LAB.control_in[5:6] LAB.data_out[20:39] LAB.clk[1]</loc>
+        <loc side="left">  LAB.data_in[0:39]  LAB.control_in[0:3] LAB.data_out[0:19]  LAB.clk[0]</loc>
+        <loc side="right"> LAB.data_in[40:79] LAB.control_in[4:6] LAB.data_out[20:39] LAB.clk[1]</loc>
+        <loc side="top">   LAB.data_in        LAB.control_in      LAB.data_out        LAB.clk    LAB.cin LAB.sharein</loc>
         <loc side="bottom">LAB.cout LAB.shareout</loc>
       </pinlocations>
-      </pb_type>
+    </pb_type>
 
     <pb_type name="DSP" height="4">
       <input name="data_in" num_pins="288"/>
@@ -6755,6 +6743,7 @@
                   <T_clock_to_Q clock="clk" port="mac_mult_reg.ena" max="97e-12" min="97e-12"/>
                   <T_clock_to_Q clock="clk" port="mac_mult_reg.devclrn" max="97e-12" min="97e-12"/>
                   <T_clock_to_Q clock="clk" port="mac_mult_reg.devpor" max="97e-12" min="97e-12"/>
+                  <T_clock_to_Q clock="clk" port="mac_mult_reg.aclr" max="97e-12" min="97e-12"/>
 
                   <!-- Internal combinational delay -->
                   <delay_constant in_port="mac_mult_reg.dataa" out_port="mac_mult_reg.dataout" max="1185e-12" min="487e-12"/>
@@ -6764,6 +6753,7 @@
                   <delay_constant in_port="mac_mult_reg.ena" out_port="mac_mult_reg.dataout" max="1185e-12" min="487e-12"/>
                   <delay_constant in_port="mac_mult_reg.devclrn" out_port="mac_mult_reg.dataout" max="1185e-12" min="487e-12"/>
                   <delay_constant in_port="mac_mult_reg.devpor" out_port="mac_mult_reg.dataout" max="1185e-12" min="487e-12"/>
+                  <delay_constant in_port="mac_mult_reg.aclr" out_port="mac_mult_reg.dataout" max="1185e-12" min="487e-12"/>
 
                   <!-- External output Timing -->
                   <T_clock_to_Q clock="clk" port="mac_mult_reg.scanouta" max="97e-12" min="97e-12"/>
@@ -12512,8 +12502,84 @@
           <direct name="signal_out_bot" input="half_DSP[1].signal_out" output="DSP.signal_out[5:3]"/>
         </interconnect>
       </mode> <!-- DSP_normal -->
-      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.075"/>
-      <pinlocations pattern="spread"/>
+      <fc in_type="frac" in_val="0.0275" out_type="frac" out_val="0.0375">
+          <!-- Based on mux size info Startix IV has approximately the following effective Fc values:
+                   Fc_in: 0.055
+                   Fc_out: 0.075
+
+               However, we allow half the pins to connect to the left side, the other half to the right side;
+               and one quarter of pins to connect to the internal and top sides of the DSP (3-sided architecture).
+
+               As a result we divide the effective Fc values by 2 (since each pin can connect to two sides)
+               to keep roughly the same number of switches, yielding:
+
+                    Fc_in: 0.0275
+                    Fc_out: 0.0375
+               -->
+      </fc>
+      <pinlocations pattern="custom">
+          <!-- Stratix IV is a 3 sided architecture, each 'block' can connect to routing on their 
+               left, top, and right.  To model this we spread the various ports around the three sides.
+               The exceptions to the above are the chain ports, which propogate downward between blocks.
+
+               Since the DSP block has height > 1, we split the pins accordingly and spread the pins around
+               the sides and 'top' edges of each grid location within the block.
+
+               More specifically, the DSP has 4 left sides, 4 right sides, and 4 top sides where pins can
+               connect. Since the DSP actually consists of 2-halves we place the pins for each half at the 
+               appropriate y-offsets.
+
+               This means for instance that the top-half input pins (DSP.data_in[143:0]) are connected with
+               1/4 of them on each left/right side at y-offsets 2 and 3, and 1/2 at each top side at 
+               y-offsets 2 and 3. With the exception that the very top edge ('top' yoffset=3) has fewer pins
+               (to account for the chain_in and scan_a_in connections) in order to keep a unifrom pin density
+               per side.
+
+               This models the fact that each block pin can connect to some Vertical and some Horizontal 
+               wires in Stratix IV. Note that Fc_in/Fc_out have been scaled to account for this.
+             -->
+         <!-- The 'top' half of the DSP has pins connected at yoffsets 2 and 3 -->
+
+        <!-- 
+            In total there are:
+                data_in     : 288
+                chain_in    :  44
+                control_in  :  21
+                scan_a_in   :  18
+                clk         :   4
+                data_out_top:  72
+                data_out_bot:  72
+                signal_out  :   6
+                ==================
+                TOTAL       : 525 general data pins
+
+            Spread accross 4+4+4 = 12 sides this corresponds to:
+
+                525/12 = ~44 pins per side
+
+            We generally aim to distribute the pins evenly accross the sides to avoid
+            routing hot-spots.
+        -->
+        <!-- The 'top' half of the DSP has pins connected at yoffsets 2 and 3 -->
+        <loc yoffset="3" side="left"  >DSP.data_in[35:0]    DSP.control_in[2:0] DSP.scan_a_in[1:0] DSP.clk[0] DSP.data_out_top[17:0]  DSP.scan_a_out[1:0]                     </loc>
+        <loc yoffset="2" side="left"  >DSP.data_in[71:36]   DSP.control_in[4:3] DSP.scan_a_in[4:2]            DSP.data_out_top[35:18] DSP.scan_a_out[3:2] DSP.signal_out[0:0] </loc>
+        <loc yoffset="3" side="right" >DSP.data_in[107:72]  DSP.control_in[6:5] DSP.scan_a_in[6:5] DSP.clk[1] DSP.data_out_top[53:36] DSP.scan_a_out[5:4] DSP.signal_out[1:1] </loc>
+        <loc yoffset="2" side="right" >DSP.data_in[144:108] DSP.control_in[8:6] DSP.scan_a_in[8:7]            DSP.data_out_top[71:54] DSP.scan_a_out[7:6] DSP.signal_out[2:2] </loc>
+        <loc yoffset="3" side="top"   >DSP.data_in[143:72]  DSP.control_in[3:0] DSP.scan_a_in[3:0] DSP.clk[0] DSP.data_out_top[35:0]  DSP.scan_a_out[3:0] DSP.signal_out[0:0] DSP.chain_in</loc>
+        <loc yoffset="2" side="top"   >DSP.data_in[71:0]    DSP.control_in[8:4] DSP.scan_a_in[8:4] DSP.clk[1] DSP.data_out_top[71:36] DSP.scan_a_out[9:4] DSP.signal_out[2:1] </loc>
+        <loc yoffset="3" side="bottom"></loc>
+        <loc yoffset="2" side="bottom"></loc>
+
+        <!-- The 'bottom' half of the DSP has pins connected at yoffsets 0 and 1 -->
+        <loc yoffset="1" side="left"  >DSP.data_in[179:145] DSP.control_in[11:9]  DSP.scan_a_in[10:9]  DSP.clk[2] DSP.data_out_bot[17:0]  DSP.scan_a_out[9:8]                      </loc>
+        <loc yoffset="0" side="left"  >DSP.data_in[215:180] DSP.control_in[13:12] DSP.scan_a_in[12:11]            DSP.data_out_bot[35:18] DSP.scan_a_out[11:10] DSP.signal_out[3:3]</loc>
+        <loc yoffset="1" side="right" >DSP.data_in[251:216] DSP.control_in[15:14] DSP.scan_a_in[14:13]            DSP.data_out_bot[53:36] DSP.scan_a_out[13:12] DSP.signal_out[4:4]</loc>
+        <loc yoffset="0" side="right" >DSP.data_in[287:252] DSP.control_in[20:16] DSP.scan_a_in[17:15] DSP.clk[3] DSP.data_out_bot[71:54] DSP.scan_a_out[15:14] DSP.signal_out[5:5]</loc>
+        <loc yoffset="1" side="top"   >DSP.data_in[287:215] DSP.control_in[13:9]  DSP.scan_a_in[13:9]  DSP.clk[2] DSP.data_out_bot[35:0]  DSP.scan_a_out[12:10] DSP.signal_out[3:3]</loc>
+        <loc yoffset="0" side="top"   >DSP.data_in[214:144] DSP.control_in[20:16] DSP.scan_a_in[17:14] DSP.clk[3] DSP.data_out_bot[71:36] DSP.scan_a_out[17:13] DSP.signal_out[5:4]</loc>
+        <loc yoffset="1" side="bottom"></loc>
+        <loc yoffset="0" side="bottom">DSP.chain_out</loc>
+      </pinlocations>
       </pb_type> <!-- DSP -->
 
     <!-- See comments in scripts/gen_stratixiv_memories_class.py for details on how these
@@ -29355,8 +29421,35 @@
           </direct>
         </interconnect>
       </mode>
-      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.100"/>
-      <pinlocations pattern="spread"/>
+      <fc in_type="frac" in_val="0.0275" out_type="frac" out_val="0.0375">
+          <!-- Based on mux size info Startix IV has approximately the following effective Fc values:
+                   Fc_in: 0.055
+                   Fc_out: 0.075
+
+               However, we allow half the pins to connect to the left side, the other half to the right side
+               and all pins to connect to the top side of the M9K (3-sided architecture).
+
+               As a result we divide the effective Fc values by 2 (since each pin can connect to two sides)
+               to keep roughly the same number of switches, yielding:
+
+                    Fc_in: 0.0275
+                    Fc_out: 0.0375
+               -->
+      </fc>
+      <pinlocations pattern="custom">
+          <!-- Stratix IV is a 3 sided architecture, the blocks can connect to routing on their 
+               left, top, and right.  To model this we spread the various ports around the three sides.
+
+               We model that half the pins can connect to each vertical channel (left/right),
+               and all can connect to the horizontal channel (top). This models the fact that 
+               each block pin can connect to some Vertical and some Horizontal wires in Stratix IV.
+               Note that Fc_in/Fc_out have been scaled to account for this.
+             -->
+        <loc side="left"  >M9K.data_addr_control_in[51:0]   M9K.data_out[17:0]  M9K.control_out[1:0] M9K.clk_in[0]</loc>
+        <loc side="right" >M9K.data_addr_control_in[103:52] M9K.data_out[35:18] M9K.control_out[2:2] M9K.clk_in[1]</loc>
+        <loc side="top"   >M9K.data_addr_control_in         M9K.data_out        M9K.control_out      M9K.clk_in   </loc>
+        <loc side="bottom"></loc>
+      </pinlocations>
     </pb_type>
     <pb_type height="8" name="M144K">
       <input name="data_addr_control_in" num_pins="416"/>
@@ -48196,9 +48289,308 @@
           </direct>
         </interconnect>
       </mode>
-      <fc in_type="frac" in_val="0.055" out_type="frac" out_val="0.100"/>
-      <pinlocations pattern="spread"/>
+      <fc in_type="frac" in_val="0.0275" out_type="frac" out_val="0.0375">
+          <!-- Based on mux size info Startix IV has approximately the following effective Fc values:
+                   Fc_in: 0.055
+                   Fc_out: 0.075
+
+               However, we allow half the pins to connect to the left side, the other half to the right side
+               and all pins to connect to the top side of the LAB (3-sided architecture).
+
+               As a result we divide the effective Fc values by 2 (since each pin can connect to two sides)
+               to keep roughly the same number of switches, yielding:
+
+                    Fc_in: 0.0275
+                    Fc_out: 0.0375
+               -->
+      </fc>
+      <pinlocations pattern="custom">
+          <!-- Stratix IV is a 3 sided architecture, the blocks can connect to routing on their 
+               left, top, and right.  To model this we spread the various ports around the three sides.
+
+               We model that half the pins can connect to each adjacent vertical channel (left/right),
+               and all can connect to the horizontal channels (tops). This models the fact that 
+               each block pin can connect to some Vertical and some Horizontal wires in Stratix IV.
+               Note that Fc_in/Fc_out have been scaled to account for this.
+             -->
+        <loc yoffset="7" side="left"  >M144K.data_addr_control_in[24:0]    M144K.data_out[7:0]                                     </loc>
+        <loc yoffset="6" side="left"  >M144K.data_addr_control_in[50:25]   M144K.data_out[15:8]                                    </loc>
+        <loc yoffset="5" side="left"  >M144K.data_addr_control_in[76:51]   M144K.data_out[22:16]                                   </loc>
+        <loc yoffset="4" side="left"  >M144K.data_addr_control_in[102:77]  M144K.data_out[29:23]                                   </loc>
+        <loc yoffset="3" side="left"  >M144K.data_addr_control_in[128:103] M144K.data_out[36:30]   M144K.control_out[0] M144K.clk_in[0]</loc>
+        <loc yoffset="2" side="left"  >M144K.data_addr_control_in[154:129] M144K.data_out[43:37]   M144K.control_out[1]              </loc>
+        <loc yoffset="1" side="left"  >M144K.data_addr_control_in[180:155] M144K.data_out[51:44]                                   </loc>
+        <loc yoffset="0" side="left"  >M144K.data_addr_control_in[206:181] M144K.data_out[59:52]                                   </loc>
+
+        <loc yoffset="7" side="right" >M144K.data_addr_control_in[232:207] M144K.data_out[67:60]                                   </loc>
+        <loc yoffset="6" side="right" >M144K.data_addr_control_in[258:233] M144K.data_out[75:68]                                   </loc>
+        <loc yoffset="5" side="right" >M144K.data_addr_control_in[284:259] M144K.data_out[82:76]                                   </loc>
+        <loc yoffset="4" side="right" >M144K.data_addr_control_in[310:285] M144K.data_out[89:83]   M144K.control_out[2]              </loc>
+        <loc yoffset="3" side="right" >M144K.data_addr_control_in[336:311] M144K.data_out[96:90]                      M144K.clk_in[1]</loc>
+        <loc yoffset="2" side="right" >M144K.data_addr_control_in[362:337] M144K.data_out[103:97]                                  </loc>
+        <loc yoffset="1" side="right" >M144K.data_addr_control_in[388:363] M144K.data_out[111:104]                                 </loc>
+        <loc yoffset="0" side="right" >M144K.data_addr_control_in[415:389] M144K.data_out[119:112]                                 </loc>
+
+        <loc yoffset="7" side="top"   >M144K.data_addr_control_in[51:0]    M144K.data_out[14:0]                                    </loc>
+        <loc yoffset="6" side="top"   >M144K.data_addr_control_in[103:52]  M144K.data_out[29:15]                                   </loc>
+        <loc yoffset="5" side="top"   >M144K.data_addr_control_in[155:104] M144K.data_out[44:30]   M144K.control_out[0]              </loc>
+        <loc yoffset="4" side="top"   >M144K.data_addr_control_in[207:156] M144K.data_out[59:45]   M144K.control_out[1] M144K.clk_in[0]</loc>
+        <loc yoffset="3" side="top"   >M144K.data_addr_control_in[259:208] M144K.data_out[74:60]   M144K.control_out[2] M144K.clk_in[1]</loc>
+        <loc yoffset="2" side="top"   >M144K.data_addr_control_in[311:260] M144K.data_out[89:75]                                   </loc>
+        <loc yoffset="1" side="top"   >M144K.data_addr_control_in[363:312] M144K.data_out[104:90]                                  </loc>
+        <loc yoffset="0" side="top"   >M144K.data_addr_control_in[415:364] M144K.data_out[119:105]                                 </loc>
+
+        <loc yoffset="7" side="bottom"></loc>
+        <loc yoffset="6" side="bottom"></loc>
+        <loc yoffset="5" side="bottom"></loc>
+        <loc yoffset="4" side="bottom"></loc>
+        <loc yoffset="3" side="bottom"></loc>
+        <loc yoffset="2" side="bottom"></loc>
+        <loc yoffset="1" side="bottom"></loc>
+        <loc yoffset="0" side="bottom"></loc>
+      </pinlocations>
     </pb_type>
   </complexblocklist>
+  <switchblocklist>
+      <!-- Stratix IV uses a uni-directional routing architecture with a Driver Input Mux (DIM) size of 12 (i.e.
+           each wire can be driven by one of 12 block/outputs or wires) for the L4s.
+           
+           In the Stratix IV architecture the long wires (L16 here) are accessible only from the short wires, 
+           and are not connected to the block pins (i.e. connection blocks). Furthermore, they only connect 
+           to switch blocks every 4 LABs (to avoid expensive deep via stacks).
+           We approximate the L16 DIM size as 40:1 (in reality it is a pair of 20:1 (?) muxes with a 2:1 swap mux
+           in front, which has nearly the same connectivity as a full 40:1).
+
+           L4 wires
+           ================
+           At a channel width of 300 there are 260 L4/L4prime wires. At an effective Fc_out of 0.075 
+           and 40 LAB outputs this yeilds:
+
+                40 * 2 = 80 outputs per channel  [2 LABs per-channel]
+
+                80 * 0.075 = 6 outputs drive each L4 wire [output connection block]
+
+           This leaves:
+
+                12 - 6 = 6 inputs to the DIMs from other routing wires [switch block]
+
+           Since L4s connect at every switch block, there are:
+
+                260 L16 wires per channel + direction which can drive wires at a particular switchblock
+                (via switchpoints 0, 1, 2, 3)
+
+           And for each direction (260 wires) only:
+
+               260 / 4 = 65 wires starting/ending per channel + direction at each switch block
+               (i.e. from each direction, north/south/east/west, there are 32 L4s starting, and 32 L4s ending; + 1 wire for the 65th)
+
+           Which we allocate as follows:
+
+                L4
+                =====
+                straight-through connection: 2 (from L4 or L16)
+                clock-wise turn            : 2 (from L4 or L16)
+                counter-clock-wise turn    : 2 (from L4 or L16)
+
+           L16 wires
+           =========
+           At a channel width of 300 there are 40 L16 wires (20 in each direction), which do not connect to the input/output connection blocks.
+           This leaves 40 inputs to the DIM to select from routing wires (long wires use larger DIMs to improve reachability,
+           the area cost is relatively small since they are so rare).
+
+           Since L16s only connect at every 4th switch block there are:
+
+                40 / 4 = 10 L16 wires per channel (5 in each direction) which can drive wires at a particular switchblock
+                (via switchpoints 0, 4, 8, 12)
+
+           And for each direction (20 wires) only:
+
+               40 / 16 = 2.25 => 2 wires starting/ending per channel + direction at each switch block
+               (i.e. from each direction, north/south/east/west, there is one L16 starting, and one L16 ending)
+           
+           We assign the 40 DIM inputs as follows:
+
+                L16
+                =====
+                straight-through connection:  3 (from L16)
+                straight-through connection: 11 (from L4)
+                clock-wise turn            :  3 (from L16)
+                clock-wise turn            : 10 (from L4)
+                counter clock-wise turn    :  3 (from L16)
+                counter clock-wise turn    : 10 (from L4)
+
+           Switch pattern
+           ==============
+           This switch block is based on the Wilton switch block (see Page 103 of Steve Wilton's PhD Thesis 
+           "Architecture and Algorithms for Field-Programmable Gate Arrays with Embedded Memory", 1997):
+
+                left-to-top: W - t
+                top-to-right: t + 1
+                right-to-bottom: 2*W - 2 - t
+                bottom-to-left: t + 1
+                left-to-right: t
+                top-to-bottom: t
+
+           Since Wilton assumed bidirection routing (while we use unidirectional routing),
+           we mirror the clock-wise turns to match the conter-clock-wise specification.
+           -->
+      <switchblock name="wilton_turn_clockwise_core" type="unidir">
+          <switchblock_location type="CORE"/>
+          <switchfuncs>
+              <!-- Clock-wise turns -->
+              <func type="tl" formula="W-t"/>     <!-- top to left -->
+              <func type="rt" formula="t+1"/>     <!-- right to top -->
+              <func type="br" formula="2*W-2-t"/> <!-- bottom to right -->
+              <func type="lb" formula="t+1"/>     <!-- left to bottom -->
+          </switchfuncs>
+          <!-- L16 drivers -->
+          <wireconn num_conns="3*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L16" to_switchpoint="0"/>
+          <wireconn num_conns="10*to" from_type="L4" from_switchpoint="0" to_type="L16" to_switchpoint="0"/>
+
+          <!-- L4 drivers 
+
+               Driving from L16 (few) to L4 (many) preferr driving from end-point of L16, although since there are many they will
+               all be multiply connected.
+               
+               Driving from L4 (many) to L4 (many) shuffle the switchpoints so the L4's are driven from a variety of switchpoints.
+               Since the actual number L4s starting/ending are equal, using 'fixed' from_order would mean only switchpoint 0 -> 0
+               connections. A 'shuffled' order will mix-up the from switchpoints for more diversity.
+               -->
+          <wireconn num_conns="2*to" from_order="shuffled">
+              <from type="L16" switchpoint="0,12,8,4"/>
+              <from type="L4" switchpoint="0,1,2,3"/>
+              <to type="L4" switchpoint="0"/>
+          </wireconn>
+      </switchblock>
+
+      <switchblock name="wilton_turn_counter_clockwise_core" type="unidir">
+          <switchblock_location type="CORE"/>
+          <switchfuncs>
+              <!-- Counter-clock-wise turns -->
+              <func type="lt" formula="W-t"/>     <!-- left to top -->
+              <func type="tr" formula="t+1"/>     <!-- top to right -->
+              <func type="rb" formula="2*W-2-t"/> <!-- right to bottom -->
+              <func type="bl" formula="t+1"/>     <!-- bottom to left -->
+          </switchfuncs>
+          <!-- L16 drivers -->
+          <wireconn num_conns="3*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L16" to_switchpoint="0"/>
+          <wireconn num_conns="10*to" from_type="L4" from_switchpoint="0" to_type="L16" to_switchpoint="0"/>
+
+          <!-- L4 drivers 
+
+               Driving from L16 (few) to L4 (many) preferr driving from end-point of L16, although since there are many they will
+               all be multiply connected.
+               
+               Driving from L4 (many) to L4 (many) shuffle the switchpoints so the L4's are driven from a variety of switchpoints.
+               Since the actual number L4s starting/ending are equal, using 'fixed' from_order would mean only switchpoint 0 -> 0
+               connections. A 'shuffled' order will mix-up the from switchpoints for more diversity.
+
+               Note that a different from_switchpoints ordering is used to ensure a different shuffling occurs compared to 
+               wilton_turn_clockwise_core.
+               -->
+          <wireconn num_conns="2*to" from_order="shuffled">
+              <from type="L16" switchpoint="0,12,8,4"/>
+              <from type="L4" switchpoint="0,1,2,3"/>
+              <to type="L4" switchpoint="0"/>
+          </wireconn>
+      </switchblock>
+
+
+      <switchblock name="wilton_straight" type="unidir">
+          <switchblock_location type="EVERYWHERE"/>
+          <switchfuncs>
+              <!-- Straight -->
+              <func type="lr" formula="t"/> <!-- left to right -->
+              <func type="tb" formula="t"/> <!-- top to bottom -->
+              <func type="rl" formula="t"/> <!-- right to left -->
+              <func type="bt" formula="t"/> <!-- bottom to top -->
+          </switchfuncs>
+          <!-- L16 Drivers 
+                Note that we order the switchpoints in order of preference, since VPR currently
+                iterates through the source sets in order, such that we connect first to wires
+                ending at the switchblock (switchpoint 0), and then fallback to switchpoints
+                in decreasing distance from the drive point (if we have more to's than from's
+                it then wraps around).
+
+                Note also that we multiply the number of expected connections by 'to', since while usually
+                there is only one 'to' wire, ocasionally there may be more, and we want to ensure they all
+                get the same number of connections.
+
+                For L16->L16:
+                  We allow any valid switchpoint to be used as the 'from' point.
+                  Allow 'low' switchpoints like '4' may seem counter-intuitive (i.e. why not use a cheaper L4)
+                  this makes it easier to bypass once on the L16 network (e.g. to get around congestion).
+           -->
+          <wireconn num_conns="3*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L16" to_switchpoint="0"/>
+          <wireconn num_conns="11*to" from_type="L4" from_switchpoint="0,3,2,1" to_type="L16" to_switchpoint="0"/>
+
+          <!-- L4 Drivers -->
+          <wireconn num_conns="2*to" from_order="shuffled">
+              <from type="L16" switchpoint="0,12,8,4"/>
+              <from type="L4" switchpoint="0"/>
+              <to type="L4" switchpoint="0"/>
+          </wireconn>
+          <!--<wireconn num_conns="1*to" from_type="L4" from_switchpoint="0" to_type="L4" to_switchpoint="0"/>-->
+          <!--<wireconn num_conns="1*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L4" to_switchpoint="0"/>-->
+      </switchblock>
+
+      <switchblock name="wilton_straight_corner" type="unidir">
+          <!-- Same as wilton straight, but turning around a corner -->
+          <switchblock_location type="CORNER"/>
+          <switchfuncs>
+              <!-- Counter-clock-wise turns -->
+              <func type="lt" formula="t"/> <!-- left to top -->
+              <func type="tr" formula="t"/> <!-- top to right -->
+              <func type="rb" formula="t"/> <!-- right to bottom -->
+              <func type="bl" formula="t"/> <!-- bottom to left -->
+
+              <!-- Clock-wise turns -->
+              <func type="tl" formula="t"/> <!-- top to left -->
+              <func type="rt" formula="t"/> <!-- right to top -->
+              <func type="br" formula="t"/> <!-- bottom to right -->
+              <func type="lb" formula="t"/> <!-- left to bottom -->
+          </switchfuncs>
+          <!-- L16 Drivers -->
+          <wireconn num_conns="3*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L16" to_switchpoint="0"/>
+          <wireconn num_conns="11*to" from_type="L4" from_switchpoint="0,3,2,1" to_type="L16" to_switchpoint="0"/>
+
+          <!-- L4 Drivers -->
+          <wireconn num_conns="2*to" from_order="shuffled">
+              <from type="L16" switchpoint="0,12,8,4"/>
+              <from type="L4" switchpoint="0"/>
+              <to type="L4" switchpoint="0"/>
+          </wireconn>
+          <!--<wireconn num_conns="1*to" from_type="L4" from_switchpoint="0" to_type="L4" to_switchpoint="0"/>-->
+          <!--<wireconn num_conns="1*to" from_type="L16" from_switchpoint="0,12,8,4" to_type="L4" to_switchpoint="0"/>-->
+      </switchblock>
+
+      <switchblock name="wilton_turn_fringe" type="unidir">
+          <!-- Non-corner perimeter SBs -->
+          <switchblock_location type="FRINGE"/>
+          <switchfuncs>
+              <!-- Counter-clock-wise turns -->
+              <func type="lt" formula="W-t"/>     <!-- left to top -->
+              <func type="tr" formula="t+1"/>     <!-- top to right -->
+              <func type="rb" formula="2*W-2-t"/> <!-- right to bottom -->
+              <func type="bl" formula="t+1"/>     <!-- bottom to left -->
+
+              <!-- Clock-wise turns -->
+              <func type="tl" formula="W-t"/>     <!-- top to left -->
+              <func type="rt" formula="t+1"/>     <!-- right to top -->
+              <func type="br" formula="2*W-2-t"/> <!-- bottom to right -->
+              <func type="lb" formula="t+1"/>     <!-- left to bottom -->
+          </switchfuncs>
+          <!-- We use 'max' style connections here to ensure there are no dangling wires, otherwise like core turns -->
+          <!-- L16 drivers -->
+          <wireconn num_conns="3*max(from,to)" from_type="L16" from_switchpoint="0,12,8,4" to_type="L16" to_switchpoint="0"/>
+          <wireconn num_conns="21*max(from,to)" from_type="L4" from_switchpoint="0" to_type="L16" to_switchpoint="0"/>
+
+
+          <!-- L4 drivers -->
+          <wireconn num_conns="1*max(from,to)" from_type="L16" from_switchpoint="0,12,8,4" from_order="fixed" to_type="L4" to_switchpoint="0"/>
+          <wireconn num_conns="1*max(from,to)" from_type="L4" from_switchpoint="0,1,2,3" from_order="shuffled" to_type="L4" to_switchpoint="0"/>
+      </switchblock>
+
+  </switchblocklist>
 
 </architecture>

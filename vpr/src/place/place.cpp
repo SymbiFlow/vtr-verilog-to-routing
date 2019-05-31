@@ -573,6 +573,11 @@ void try_place(t_placer_opts placer_opts,
         VTR_LOG("Initial placement estimated setup slack histogram:\n");
         print_histogram(create_setup_slack_histogram(*timing_info->setup_analyzer()));
     }
+    size_t num_macro_members = 0;
+    for (auto& macro : g_vpr_ctx.placement().pl_macros) {
+        num_macro_members += macro.members.size();
+    }
+    VTR_LOG("Placement contains %zu placement macros involving %zu blocks (average macro size %f)\n", g_vpr_ctx.placement().pl_macros.size(), num_macro_members, float(num_macro_members) / g_vpr_ctx.placement().pl_macros.size());
     VTR_LOG("\n");
 
     //Table header
@@ -979,9 +984,13 @@ static void placement_inner_loop(float t, float rlim, t_placer_opts placer_opts,
 static void recompute_costs_from_scratch(const t_placer_opts& placer_opts, const PlaceDelayModel& delay_model, t_placer_costs* costs) {
     float new_bb_cost = recompute_bb_cost();
     if (fabs(new_bb_cost - costs->bb_cost) > costs->bb_cost * ERROR_TOL) {
-        vpr_throw(VPR_ERROR_PLACE, __FILE__, __LINE__,
-                  "in recompute_costs_from_scratch: new_bb_cost = %g, old bb_cost = %g\n",
-                  new_bb_cost, costs->bb_cost);
+        std::string msg = vtr::string_fmt("in recompute_costs_from_scratch: new_bb_cost = %g, old bb_cost = %g\n",
+                                          new_bb_cost, costs->bb_cost);
+        if (placer_opts.strict_checks) {
+            vpr_throw(VPR_ERROR_PLACE, __FILE__, __LINE__, msg.c_str());
+        } else {
+            VTR_LOG_WARN(msg.c_str());
+        }
     }
     costs->bb_cost = new_bb_cost;
 
@@ -990,14 +999,22 @@ static void recompute_costs_from_scratch(const t_placer_opts& placer_opts, const
         float new_delay_cost = 0.;
         comp_td_costs(delay_model, &new_timing_cost, &new_delay_cost);
         if (fabs(new_timing_cost - costs->timing_cost) > costs->timing_cost * ERROR_TOL) {
-            VTR_LOG_WARN(
-                "in recompute_costs_from_scratch: new_timing_cost = %g, old timing_cost = %g, ERROR_TOL = %g\n",
-                new_timing_cost, costs->timing_cost, ERROR_TOL);
+            std::string msg = vtr::string_fmt("in recompute_costs_from_scratch: new_timing_cost = %g, old timing_cost = %g, ERROR_TOL = %g\n",
+                                              new_timing_cost, costs->timing_cost, ERROR_TOL);
+            if (placer_opts.strict_checks) {
+                vpr_throw(VPR_ERROR_PLACE, __FILE__, __LINE__, msg.c_str());
+            } else {
+                VTR_LOG_WARN(msg.c_str());
+            }
         }
         if (fabs(new_delay_cost - costs->delay_cost) > costs->delay_cost * ERROR_TOL) {
-            VTR_LOG_WARN(
-                "in recompute_costs_from_scratch: new_delay_cost = %g, old delay_cost = %g, ERROR_TOL = %g\n",
-                new_delay_cost, costs->delay_cost, ERROR_TOL);
+            std::string msg = vtr::string_fmt("in recompute_costs_from_scratch: new_delay_cost = %g, old delay_cost = %g, ERROR_TOL = %g\n",
+                                              new_delay_cost, costs->delay_cost, ERROR_TOL);
+            if (placer_opts.strict_checks) {
+                vpr_throw(VPR_ERROR_PLACE, __FILE__, __LINE__, msg.c_str());
+            } else {
+                VTR_LOG_WARN(msg.c_str());
+            }
         }
         costs->timing_cost = new_timing_cost;
     } else {
@@ -3541,9 +3558,8 @@ static int check_placement_costs(const t_placer_costs& costs,
         comp_td_costs(delay_model, &timing_cost_check, &delay_cost_check);
         //VTR_LOG("timing_cost recomputed from scratch: %g\n", timing_cost_check);
         if (fabs(timing_cost_check - costs.timing_cost) > costs.timing_cost * ERROR_TOL) {
-            VTR_LOG_WARN(
-                "timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
-                timing_cost_check, costs.timing_cost);
+            VTR_LOG_WARN("timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
+                         timing_cost_check, costs.timing_cost);
         }
         //VTR_LOG("delay_cost recomputed from scratch: %g\n", delay_cost_check);
         if (fabs(delay_cost_check - costs.delay_cost) > costs.delay_cost * ERROR_TOL) {

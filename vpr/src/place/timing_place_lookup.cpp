@@ -563,7 +563,6 @@ static float find_neightboring_average(vtr::Matrix<float>& matrix, int x, int y,
                 if (matrix[delx][dely] == EMPTY_DELTA || matrix[delx][dely] == IMPOSSIBLE_DELTA) {
                     continue;
                 }
-
                 counter++;
                 sum += matrix[delx][dely];
             }

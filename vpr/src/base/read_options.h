@@ -49,6 +49,7 @@ struct t_options {
     argparse::ArgValue<e_constant_net_method> constant_net_method;
     argparse::ArgValue<e_clock_modeling> clock_modeling;
     argparse::ArgValue<bool> exit_before_pack;
+    argparse::ArgValue<bool> strict_checks;
 
     /* Atom netlist options */
     argparse::ArgValue<bool> absorb_buffer_luts;
@@ -71,7 +72,8 @@ struct t_options {
     argparse::ArgValue<std::vector<std::string>> target_external_pin_util;
     argparse::ArgValue<bool> enable_round_robin_prepacking;
     argparse::ArgValue<bool> pack_prioritize_transitive_connectivity;
-    argparse::ArgValue<int> pack_high_fanout_threshold;
+    argparse::ArgValue<int> pack_transitive_fanout_threshold;
+    argparse::ArgValue<std::vector<std::string>> pack_high_fanout_threshold;
     argparse::ArgValue<int> pack_verbosity;
 
     /* Placement options */
@@ -144,7 +146,6 @@ struct t_options {
     argparse::ArgValue<int> timing_report_npaths;
     argparse::ArgValue<e_timing_report_detail> timing_report_detail;
     argparse::ArgValue<bool> timing_report_skew;
-
     /* Router diag tool Options */
     argparse::ArgValue<int> source_rr_node;
     argparse::ArgValue<int> sink_rr_node;

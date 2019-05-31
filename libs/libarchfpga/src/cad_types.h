@@ -83,6 +83,14 @@ struct t_pack_pattern_connections {
  *                          connected to a cluster-level block pin that can be drive from the preceding cluster.
  *                          If the cluster has more than one chain of this pack pattern type this vector will
  *                          have a pointer to each primitive pin that can represent a starting point for this chain.
+ *                          The first dimension size is greater than one if the cluster has more than one chain
+ *                          of this type. For example, an architecture with two independent adder carry chains
+ *                          with different cluster level Cin and Cout pins. The second dimension size is greater
+ *                          than one if cin of the cluster can reach more than one adder. This means that there is
+ *                          a mux in front of the cin pin of one or more adders in the middle of this chain that
+ *                          chooses between the cout of the preceding adder and the cin pin of the cluster. Which will
+ *                          give more freedom to the packer when placing small adders that are driven by a constant
+ *                          net (gnd/vdd)  [0...num_of_chains][0...num_of_tie_offs]
  *      usage             : How many atoms have been packed into molecules using this pack pattern.
  */
 struct t_pack_patterns {
@@ -96,7 +104,7 @@ struct t_pack_patterns {
     bool* is_block_optional;
 
     bool is_chain;
-    std::vector<t_pb_graph_pin*> chain_root_pins;
+    std::vector<std::vector<t_pb_graph_pin*>> chain_root_pins;
 
     int usage;
 

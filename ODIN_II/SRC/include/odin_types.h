@@ -96,12 +96,6 @@ typedef struct adder_def_t_t adder_def_t;
 
 #define verify_i_o_availabilty(node, expected_input_size, expected_output_size) passed_verify_i_o_availabilty(node, expected_input_size, expected_output_size, __FILE__, __LINE__)
 
-typedef enum {
-	NO_SIMULATION = 0,
-	TEST_EXISTING_VECTORS,
-	GENERATE_VECTORS,
-}simulation_type;
-
 /* the global arguments of the software */
 struct global_args_t_t
 {
@@ -206,14 +200,21 @@ typedef enum
 
 typedef enum
 {
+	UNDEFINED_SENSITIVITY,
 	FALLING_EDGE_SENSITIVITY,
 	RISING_EDGE_SENSITIVITY,
 	ACTIVE_HIGH_SENSITIVITY,
 	ACTIVE_LOW_SENSITIVITY,
 	ASYNCHRONOUS_SENSITIVITY,
-	UNDEFINED_SENSITIVITY,
 	edge_type_e_END
 } edge_type_e;
+
+typedef enum
+{
+	COMBINATIONAL,
+	SEQUENTIAL,
+	circuit_type_e_END
+} circuit_type_e;
 
 typedef enum
 {
@@ -287,6 +288,7 @@ typedef enum
 	INTEGER,
 	GENVAR,
 	PARAMETER,
+	LOCALPARAM,
 	INITIALS,
 	PORT,
 	/* OTHER MODULE ITEMS */
@@ -380,6 +382,7 @@ struct typ_t
 	struct
 	{
 		short is_parameter;
+		short is_localparam;
 		short is_port;
 		short is_input;
 		short is_output;
@@ -535,6 +538,8 @@ struct npin_t_t
 	nnode_t *node;    // related node
 	int pin_node_idx; // pin on the node where we're located
 	char *mapping;    // name of mapped port from hard block
+
+	edge_type_e sensitivity;
 
 	////////////////////
 	// For simulation

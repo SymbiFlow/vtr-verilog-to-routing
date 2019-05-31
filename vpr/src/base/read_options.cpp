@@ -924,6 +924,17 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .default_value("off")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    gen_grp.add_argument<bool, ParseOnOff>(args.strict_checks, "--strict_checks")
+        .help(
+            "Controls whether VPR enforces some consistency checks strictly (as errors) or treats them as warnings."
+            " Usually these checks indicate an issue with either the targetted architecture, or consistency issues"
+            " with VPR's internal data structures/algorithms (possibly harming optimization quality)."
+            " In specific circumstances on specific architectures these checks may be too restrictive and can be turned off."
+            " However exercise extreme caution when turning this option off -- be sure you completely understand why the issue"
+            " is being flagged, and why it is OK to treat as a warning instead of an error.")
+        .default_value("on")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
     auto& file_grp = parser.add_argument_group("file options");
 
     file_grp.add_argument(args.BlifFile, "--circuit_file")
@@ -1079,11 +1090,6 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .default_value("on")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
-    pack_grp.add_argument<bool, ParseOnOff>(args.enable_round_robin_prepacking, "--round_robin_prepacking")
-        .help("")
-        .default_value("off")
-        .show_in(argparse::ShowIn::HELP_ONLY);
-
     pack_grp.add_argument<e_balance_block_type_util, ParseBalanceBlockTypeUtil>(args.balance_block_type_utilization, "--balance_block_type_utilization")
         .help(
             "If enabled, when a primitive can potentially be mapped to multiple block types the packer will\n"
@@ -1136,8 +1142,31 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     pack_grp.add_argument(args.pack_high_fanout_threshold, "--pack_high_fanout_threshold")
-        .help("Packer high fanout threshold")
-        .default_value("64")
+        .help(
+            "Sets the high fanout threshold during clustering.\n"
+            "\n"
+            "Typically reducing the threshold reduces packing density\n"
+            "and improves routability."
+            "\n"
+            "This option can take multiple specifications in several\n"
+            "formats:\n"
+            "* auto (i.e. 'auto'): VPR will determine the target pin\n"
+            "                      utilizations automatically\n"
+            "* Single Value (e.g. '256'): the high fanout threshold\n"
+            "                             for all block types\n"
+            "* Block Value (e.g. 'clb:16'): the high fanout threshold\n"
+            "                               for a specific block type\n"
+            "These can be used in combination. For example:\n"
+            "   '--pack_high_fanout_threshold 256 clb:16'\n"
+            "would set the high fanout threshold for clb blocks to 16\n"
+            "and all other blocks to 256\n")
+        .nargs('+')
+        .default_value({"auto"})
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    pack_grp.add_argument(args.pack_transitive_fanout_threshold, "--pack_transitive_fanout_threshold")
+        .help("Packer transitive fanout threshold")
+        .default_value("4")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     pack_grp.add_argument<int>(args.pack_verbosity, "--pack_verbosity")
@@ -1175,7 +1204,7 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .help(
             "Temperature scaling factor for manual annealing schedule."
             " Old temperature is multiplied by alpha_t")
-        .default_value("0.01")
+        .default_value("0.8")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     place_grp.add_argument(args.pad_loc_file, "--fix_pins")
@@ -1265,7 +1294,7 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
 
     place_timing_grp.add_argument(args.place_delay_ramp_delta_threshold, "--place_delay_ramp_delta_threshold")
         .help(
-            "The delta distance beyond which --place_delay_ramp is applied. Negative values disable delay ramp."
+            "The delta distance beyond which --place_delay_ramp is applied."
             " Negative values disable the placer delay ramp.")
         .default_value("-1")
         .show_in(argparse::ShowIn::HELP_ONLY);
@@ -1480,28 +1509,6 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .default_value("64")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
-    route_timing_grp.add_argument(args.router_debug_net, "--router_debug_net")
-        .help(
-            "Controls when router debugging is enabled.\n"
-            " * For values >= 0, the value is taken as the net ID for\n"
-            "   which to enable router debug output.\n"
-            " * For value == -1, router debug output is enabled for\n"
-            "   all nets.\n"
-            " * For values < -1, all net-sbased router debug output is disabled.\n"
-            "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
-        .default_value("-2")
-        .show_in(argparse::ShowIn::HELP_ONLY);
-
-    route_timing_grp.add_argument(args.router_debug_sink_rr, "--router_debug_sink_rr")
-        .help(
-            "Controls when router debugging is enabled for the specified sink RR.\n"
-            " * For values >= 0, the value is taken as the sink RR Node ID for\n"
-            "   which to enable router debug output.\n"
-            " * For values < 0, sink-based router debug output is disabled.\n"
-            "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
-        .default_value("-2")
-        .show_in(argparse::ShowIn::HELP_ONLY);
-
     route_timing_grp.add_argument<e_router_lookahead, ParseRouterLookahead>(args.router_lookahead_type, "--router_lookahead")
         .help(
             "Controls what lookahead the router uses to calculate cost of completing a connection.\n"
@@ -1534,6 +1541,28 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
     route_timing_grp.add_argument<bool, ParseOnOff>(args.disable_check_route, "--disable_check_route")
         .help("Disables check_route once routing step has finished or when routing file is loaded")
         .default_value("off")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    route_timing_grp.add_argument(args.router_debug_net, "--router_debug_net")
+        .help(
+            "Controls when router debugging is enabled.\n"
+            " * For values >= 0, the value is taken as the net ID for\n"
+            "   which to enable router debug output.\n"
+            " * For value == -1, router debug output is enabled for\n"
+            "   all nets.\n"
+            " * For values < -1, all net-sbased router debug output is disabled.\n"
+            "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
+        .default_value("-2")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    route_timing_grp.add_argument(args.router_debug_sink_rr, "--router_debug_sink_rr")
+        .help(
+            "Controls when router debugging is enabled for the specified sink RR.\n"
+            " * For values >= 0, the value is taken as the sink RR Node ID for\n"
+            "   which to enable router debug output.\n"
+            " * For values < 0, sink-based router debug output is disabled.\n"
+            "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
+        .default_value("-2")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     auto& analysis_grp = parser.add_argument_group("analysis options");

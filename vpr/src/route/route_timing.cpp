@@ -115,6 +115,12 @@ class OveruseInfo {
     size_t worst_overuse_;
 };
 
+struct t_timing_driven_node_costs {
+    float backward_cost = 0.;
+    float total_cost = 0.;
+    float R_upstream = 0.;
+};
+
 struct RoutingMetrics {
     size_t used_wirelength = 0;
 
@@ -135,9 +141,26 @@ bool f_router_debug = false;
 
 /******************** Subroutines local to route_timing.c ********************/
 
-static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int target_pin, const t_conn_cost_params cost_params, float pres_fac, int high_fanout_threshold, t_rt_node* rt_root, t_rt_node** rt_node_of_sink, const RouterLookahead& router_lookahead, SpatialRouteTreeLookup& spatial_rt_lookup, RouterStats& router_stats);
+static bool timing_driven_route_sink(ClusterNetId net_id,
+                                     unsigned itarget,
+                                     int target_pin,
+                                     const t_conn_cost_params cost_params,
+                                     float pres_fac,
+                                     int high_fanout_threshold,
+                                     t_rt_node* rt_root,
+                                     t_rt_node** rt_node_of_sink,
+                                     const RouterLookahead& router_lookahead,
+                                     SpatialRouteTreeLookup& spatial_rt_lookup,
+                                     RouterStats& router_stats);
 
-static t_heap* timing_driven_route_connection_from_route_tree_high_fanout(t_rt_node* rt_root, int sink_node, const t_conn_cost_params cost_params, t_bb bounding_box, const RouterLookahead& router_lookahead, const SpatialRouteTreeLookup& spatial_rt_lookup, std::vector<int>& modified_rr_node_inf, RouterStats& router_stats);
+static t_heap* timing_driven_route_connection_from_route_tree_high_fanout(t_rt_node* rt_root,
+                                                                          int sink_node,
+                                                                          const t_conn_cost_params cost_params,
+                                                                          t_bb bounding_box,
+                                                                          const RouterLookahead& router_lookahead,
+                                                                          const SpatialRouteTreeLookup& spatial_rt_lookup,
+                                                                          std::vector<int>& modified_rr_node_inf,
+                                                                          RouterStats& router_stats);
 
 static t_heap* timing_driven_route_connection_from_heap(int sink_node,
                                                         const t_conn_cost_params cost_params,
@@ -162,9 +185,19 @@ static void timing_driven_expand_cheapest(t_heap* cheapest,
 
 static t_rt_node* setup_routing_resources(int itry, ClusterNetId net_id, unsigned num_sinks, float pres_fac, int min_incremental_reroute_fanout, CBRR& incremental_rerouting_res, t_rt_node** rt_node_of_sink);
 
-static void add_route_tree_to_heap(t_rt_node* rt_node, int target_node, const t_conn_cost_params cost_params, const RouterLookahead& router_lookahead, RouterStats& router_stats);
+static void add_route_tree_to_heap(t_rt_node* rt_node,
+                                   int target_node,
+                                   const t_conn_cost_params cost_params,
+                                   const RouterLookahead& router_lookahead,
+                                   RouterStats& router_stats);
 
-static t_bb add_high_fanout_route_tree_to_heap(t_rt_node* rt_root, int target_node, const t_conn_cost_params cost_params, const RouterLookahead& router_lookahead, const SpatialRouteTreeLookup& spatial_route_tree_lookup, t_bb net_bounding_box, RouterStats& router_stats);
+static t_bb add_high_fanout_route_tree_to_heap(t_rt_node* rt_root,
+                                               int target_node,
+                                               const t_conn_cost_params cost_params,
+                                               const RouterLookahead& router_lookahead,
+                                               const SpatialRouteTreeLookup& spatial_route_tree_lookup,
+                                               t_bb net_bounding_box,
+                                               RouterStats& router_stats);
 
 static t_bb adjust_highfanout_bounding_box(t_bb highfanout_bb);
 
@@ -192,15 +225,14 @@ static void timing_driven_expand_neighbour(t_heap* current,
                                            const t_bb target_bb,
                                            RouterStats& router_stats);
 
-static void timing_driven_add_to_heap(
-    const t_conn_cost_params cost_params,
-    const RouterLookahead& router_lookahead,
-    const t_heap* current,
-    const int from_node,
-    const int to_node,
-    const int iconn,
-    const int target_node,
-    RouterStats& router_stats);
+static void timing_driven_add_to_heap(const t_conn_cost_params cost_params,
+                                      const RouterLookahead& router_lookahead,
+                                      const t_heap* current,
+                                      const int from_node,
+                                      const int to_node,
+                                      const int iconn,
+                                      const int target_node,
+                                      RouterStats& router_stats);
 
 static void timing_driven_expand_node(const t_conn_cost_params cost_params,
                                       const RouterLookahead& router_lookahead,
@@ -210,13 +242,23 @@ static void timing_driven_expand_node(const t_conn_cost_params cost_params,
                                       const int iconn,
                                       const int target_node);
 
-static void evaluate_timing_driven_node_costs(t_heap* from,
-                                              const t_conn_cost_params cost_params,
-                                              const RouterLookahead& router_lookahead,
-                                              const int from_node,
-                                              const int to_node,
-                                              const int iconn,
-                                              const int target_node);
+static void timing_driven_expand_node_non_configurable_recurr(
+    const t_conn_cost_params cost_params,
+    const RouterLookahead& router_lookahead,
+    t_heap* current,
+    const int from_node,
+    const int to_node,
+    const int iconn,
+    const int target_node,
+    std::set<int>& visited);
+
+static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timing_driven_node_costs old_costs,
+                                                                    const t_conn_cost_params cost_params,
+                                                                    const RouterLookahead& router_lookahead,
+                                                                    const int from_node,
+                                                                    const int to_node,
+                                                                    const int iconn,
+                                                                    const int target_node);
 
 static bool timing_driven_check_net_delays(vtr::vector<ClusterNetId, float*>& net_delay);
 
@@ -239,7 +281,15 @@ static WirelengthInfo calculate_wirelength_info();
 static OveruseInfo calculate_overuse_info();
 
 static void print_route_status_header();
-static void print_route_status(int itry, double elapsed_sec, float pres_fac, int num_bb_updated, const RouterStats& router_stats, const OveruseInfo& overuse_info, const WirelengthInfo& wirelength_info, std::shared_ptr<const SetupHoldTimingInfo> timing_info, float est_success_iteration);
+static void print_route_status(int itry,
+                               double elapsed_sec,
+                               float pres_fac,
+                               int num_bb_updated,
+                               const RouterStats& router_stats,
+                               const OveruseInfo& overuse_info,
+                               const WirelengthInfo& wirelength_info,
+                               std::shared_ptr<const SetupHoldTimingInfo> timing_info,
+                               float est_success_iteration);
 static void pretty_print_uint(const char* prefix, size_t value, int num_digits, int scientific_precision);
 static void pretty_print_float(const char* prefix, double value, int num_digits, int scientific_precision);
 
@@ -249,6 +299,8 @@ static bool is_high_fanout(int fanout, int fanout_threshold);
 
 static size_t dynamic_update_bounding_boxes(int high_fanout_threshold);
 static t_bb calc_current_bb(const t_trace* head);
+
+static void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr);
 
 static bool is_better_quality_routing(const vtr::vector<ClusterNetId, t_traceback>& best_routing,
                                       const RoutingMetrics& best_routing_metrics,
@@ -266,14 +318,13 @@ static void generate_route_timing_reports(const t_router_opts& router_opts,
                                           const RoutingDelayCalculator& delay_calc);
 
 /************************ Subroutine definitions *****************************/
-bool try_timing_driven_route(
-    const t_router_opts& router_opts,
-    const t_analysis_opts& analysis_opts,
-    vtr::vector<ClusterNetId, float*>& net_delay,
-    const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
-    std::shared_ptr<SetupHoldTimingInfo> timing_info,
-    std::shared_ptr<RoutingDelayCalculator> delay_calc,
-    ScreenUpdatePriority first_iteration_priority) {
+bool try_timing_driven_route(const t_router_opts& router_opts,
+                             const t_analysis_opts& analysis_opts,
+                             vtr::vector<ClusterNetId, float*>& net_delay,
+                             const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
+                             std::shared_ptr<SetupHoldTimingInfo> timing_info,
+                             std::shared_ptr<RoutingDelayCalculator> delay_calc,
+                             ScreenUpdatePriority first_iteration_priority) {
     /* Timing-driven routing algorithm.  The timing graph (includes slack)   *
      * must have already been allocated, and net_delay must have been allocated. *
      * Returns true if the routing succeeds, false otherwise.                    */
@@ -703,7 +754,19 @@ bool try_timing_driven_route(
     return routing_is_successful;
 }
 
-bool try_timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, t_router_opts router_opts, CBRR& connections_inf, RouterStats& router_stats, float* pin_criticality, t_rt_node** rt_node_of_sink, vtr::vector<ClusterNetId, float*>& net_delay, const RouterLookahead& router_lookahead, const ClusteredPinAtomPinsLookup& netlist_pin_lookup, std::shared_ptr<SetupTimingInfo> timing_info, route_budgets& budgeting_inf) {
+bool try_timing_driven_route_net(ClusterNetId net_id,
+                                 int itry,
+                                 float pres_fac,
+                                 t_router_opts router_opts,
+                                 CBRR& connections_inf,
+                                 RouterStats& router_stats,
+                                 float* pin_criticality,
+                                 t_rt_node** rt_node_of_sink,
+                                 vtr::vector<ClusterNetId, float*>& net_delay,
+                                 const RouterLookahead& router_lookahead,
+                                 const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
+                                 std::shared_ptr<SetupTimingInfo> timing_info,
+                                 route_budgets& budgeting_inf) {
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& route_ctx = g_vpr_ctx.mutable_routing();
 
@@ -721,7 +784,9 @@ bool try_timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, 
         // track time spent vs fanout
         profiling::net_fanout_start();
 
-        is_routed = timing_driven_route_net(net_id, itry, pres_fac,
+        is_routed = timing_driven_route_net(net_id,
+                                            itry,
+                                            pres_fac,
                                             router_opts,
                                             connections_inf,
                                             router_stats,
@@ -730,7 +795,8 @@ bool try_timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, 
                                             net_delay[net_id],
                                             router_lookahead,
                                             netlist_pin_lookup,
-                                            timing_info, budgeting_inf);
+                                            timing_info,
+                                            budgeting_inf);
 
         profiling::net_fanout_end(cluster_ctx.clb_nlist.net_sinks(net_id).size());
 
@@ -845,7 +911,19 @@ struct Criticality_comp {
     }
 };
 
-bool timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, const t_router_opts& router_opts, CBRR& connections_inf, RouterStats& router_stats, float* pin_criticality, t_rt_node** rt_node_of_sink, float* net_delay, const RouterLookahead& router_lookahead, const ClusteredPinAtomPinsLookup& netlist_pin_lookup, std::shared_ptr<const SetupTimingInfo> timing_info, route_budgets& budgeting_inf) {
+bool timing_driven_route_net(ClusterNetId net_id,
+                             int itry,
+                             float pres_fac,
+                             const t_router_opts& router_opts,
+                             CBRR& connections_inf,
+                             RouterStats& router_stats,
+                             float* pin_criticality,
+                             t_rt_node** rt_node_of_sink,
+                             float* net_delay,
+                             const RouterLookahead& router_lookahead,
+                             const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
+                             std::shared_ptr<const SetupTimingInfo> timing_info,
+                             route_budgets& budgeting_inf) {
     /* Returns true as long as found some way to hook up this net, even if that *
      * way resulted in overuse of resources (congestion).  If there is no way   *
      * to route this net, even ignoring congestion, it returns false.  In this  *
@@ -927,7 +1005,9 @@ bool timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, cons
         }
 
         // build a branch in the route tree to the target
-        if (!timing_driven_route_sink(net_id, itarget, target_pin,
+        if (!timing_driven_route_sink(net_id,
+                                      itarget,
+                                      target_pin,
                                       cost_params,
                                       pres_fac,
                                       router_opts.high_fanout_threshold,
@@ -964,7 +1044,17 @@ bool timing_driven_route_net(ClusterNetId net_id, int itry, float pres_fac, cons
     return (true);
 }
 
-static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int target_pin, const t_conn_cost_params cost_params, float pres_fac, int high_fanout_threshold, t_rt_node* rt_root, t_rt_node** rt_node_of_sink, const RouterLookahead& router_lookahead, SpatialRouteTreeLookup& spatial_rt_lookup, RouterStats& router_stats) {
+static bool timing_driven_route_sink(ClusterNetId net_id,
+                                     unsigned itarget,
+                                     int target_pin,
+                                     const t_conn_cost_params cost_params,
+                                     float pres_fac,
+                                     int high_fanout_threshold,
+                                     t_rt_node* rt_root,
+                                     t_rt_node** rt_node_of_sink,
+                                     const RouterLookahead& router_lookahead,
+                                     SpatialRouteTreeLookup& spatial_rt_lookup,
+                                     RouterStats& router_stats) {
     /* Build a path from the existing route tree rooted at rt_root to the target_node
      * add this branch to the existing route tree and update pathfinder costs and rr_node_route_inf to reflect this */
     auto& route_ctx = g_vpr_ctx.mutable_routing();
@@ -991,7 +1081,8 @@ static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int 
     //However, if the current sink is 'critical' from a timing perspective, we put the entire route tree back onto
     //the heap to ensure it has more flexibility to find the best path.
     if (high_fanout && !sink_critical && !net_is_global) {
-        cheapest = timing_driven_route_connection_from_route_tree_high_fanout(rt_root, sink_node,
+        cheapest = timing_driven_route_connection_from_route_tree_high_fanout(rt_root,
+                                                                              sink_node,
                                                                               cost_params,
                                                                               bounding_box,
                                                                               router_lookahead,
@@ -999,7 +1090,8 @@ static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int 
                                                                               modified_rr_node_inf,
                                                                               router_stats);
     } else {
-        cheapest = timing_driven_route_connection_from_route_tree(rt_root, sink_node,
+        cheapest = timing_driven_route_connection_from_route_tree(rt_root,
+                                                                  sink_node,
                                                                   cost_params,
                                                                   bounding_box,
                                                                   router_lookahead,
@@ -1019,14 +1111,6 @@ static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int 
             update_screen(ScreenUpdatePriority::MAJOR, "Unable to route connection.", ROUTING, nullptr);
         }
         return false;
-    } else {
-        //Record final link to target
-        add_to_mod_list(cheapest->index, modified_rr_node_inf);
-
-        route_ctx.rr_node_route_inf[cheapest->index].prev_node = cheapest->u.prev.node;
-        route_ctx.rr_node_route_inf[cheapest->index].prev_edge = cheapest->u.prev.edge;
-        route_ctx.rr_node_route_inf[cheapest->index].path_cost = cheapest->cost;
-        route_ctx.rr_node_route_inf[cheapest->index].backward_path_cost = cheapest->backward_path_cost;
     }
 
     profiling::sink_criticality_end(cost_params.criticality);
@@ -1069,7 +1153,13 @@ static bool timing_driven_route_sink(ClusterNetId net_id, unsigned itarget, int 
 //as valid start locations for the current connection.
 //
 //Returns either the last element of the path, or nullptr if no path is found
-t_heap* timing_driven_route_connection_from_route_tree(t_rt_node* rt_root, int sink_node, const t_conn_cost_params cost_params, t_bb bounding_box, const RouterLookahead& router_lookahead, std::vector<int>& modified_rr_node_inf, RouterStats& router_stats) {
+t_heap* timing_driven_route_connection_from_route_tree(t_rt_node* rt_root,
+                                                       int sink_node,
+                                                       const t_conn_cost_params cost_params,
+                                                       t_bb bounding_box,
+                                                       const RouterLookahead& router_lookahead,
+                                                       std::vector<int>& modified_rr_node_inf,
+                                                       RouterStats& router_stats) {
     // re-explore route tree from root to add any new nodes (buildheap afterwards)
     // route tree needs to be repushed onto the heap since each node's cost is target specific
     add_route_tree_to_heap(rt_root, sink_node, cost_params, router_lookahead, router_stats);
@@ -1109,7 +1199,14 @@ t_heap* timing_driven_route_connection_from_route_tree(t_rt_node* rt_root, int s
 //
 //Unlike timing_driven_route_connection_from_route_tree(), only part of the route tree
 //which is spatially close to the sink is added to the heap.
-static t_heap* timing_driven_route_connection_from_route_tree_high_fanout(t_rt_node* rt_root, int sink_node, const t_conn_cost_params cost_params, t_bb net_bounding_box, const RouterLookahead& router_lookahead, const SpatialRouteTreeLookup& spatial_rt_lookup, std::vector<int>& modified_rr_node_inf, RouterStats& router_stats) {
+static t_heap* timing_driven_route_connection_from_route_tree_high_fanout(t_rt_node* rt_root,
+                                                                          int sink_node,
+                                                                          const t_conn_cost_params cost_params,
+                                                                          t_bb net_bounding_box,
+                                                                          const RouterLookahead& router_lookahead,
+                                                                          const SpatialRouteTreeLookup& spatial_rt_lookup,
+                                                                          std::vector<int>& modified_rr_node_inf,
+                                                                          RouterStats& router_stats) {
     // re-explore route tree from root to add any new nodes (buildheap afterwards)
     // route tree needs to be repushed onto the heap since each node's cost is target specific
     t_bb high_fanout_bb = add_high_fanout_route_tree_to_heap(rt_root, sink_node, cost_params, router_lookahead, spatial_rt_lookup, net_bounding_box, router_stats);
@@ -1308,29 +1405,31 @@ static void timing_driven_expand_cheapest(t_heap* cheapest,
 
     if (old_total_cost > new_total_cost && old_back_cost > new_back_cost) {
         VTR_LOGV_DEBUG(f_router_debug, "    Better cost to %d\n", inode);
-        VTR_LOGV_DEBUG(f_router_debug, "      Setting path costs for assicated node %d (from %d edge %d)\n", cheapest->index, cheapest->u.prev.node, cheapest->u.prev.edge);
+        for (t_heap_prev prev : cheapest->nodes) {
+            VTR_LOGV_DEBUG(f_router_debug, "      Setting path costs for assicated node %d (from %d edge %d)\n", prev.to_node, prev.from_node, prev.from_edge);
 
-        add_to_mod_list(cheapest->index, modified_rr_node_inf);
+            add_to_mod_list(prev.to_node, modified_rr_node_inf);
 
-        route_ctx.rr_node_route_inf[cheapest->index].prev_node = cheapest->u.prev.node;
-        route_ctx.rr_node_route_inf[cheapest->index].prev_edge = cheapest->u.prev.edge;
-        route_ctx.rr_node_route_inf[cheapest->index].path_cost = new_total_cost;
-        route_ctx.rr_node_route_inf[cheapest->index].backward_path_cost = new_back_cost;
+            route_ctx.rr_node_route_inf[prev.to_node].prev_node = prev.from_node;
+            route_ctx.rr_node_route_inf[prev.to_node].prev_edge = prev.from_edge;
+            route_ctx.rr_node_route_inf[prev.to_node].path_cost = new_total_cost;
+            route_ctx.rr_node_route_inf[prev.to_node].backward_path_cost = new_back_cost;
+        }
 
         timing_driven_expand_neighbours(cheapest, cost_params, bounding_box,
                                         router_lookahead,
                                         target_node,
                                         router_stats);
-    } else {
-        VTR_LOGV_DEBUG(f_router_debug, "    Worse cost to %d\n", inode);
-        VTR_LOGV_DEBUG(f_router_debug, "    Old total cost: %g\n", old_total_cost);
-        VTR_LOGV_DEBUG(f_router_debug, "    Old back cost: %g\n", old_back_cost);
-        VTR_LOGV_DEBUG(f_router_debug, "    New total cost: %g\n", new_total_cost);
-        VTR_LOGV_DEBUG(f_router_debug, "    New back cost: %g\n", new_back_cost);
     }
 }
 
-static t_rt_node* setup_routing_resources(int itry, ClusterNetId net_id, unsigned num_sinks, float pres_fac, int min_incremental_reroute_fanout, CBRR& connections_inf, t_rt_node** rt_node_of_sink) {
+static t_rt_node* setup_routing_resources(int itry,
+                                          ClusterNetId net_id,
+                                          unsigned num_sinks,
+                                          float pres_fac,
+                                          int min_incremental_reroute_fanout,
+                                          CBRR& connections_inf,
+                                          t_rt_node** rt_node_of_sink) {
     /* Build and return a partial route tree from the legal connections from last iteration.
      * along the way do:
      * 	update pathfinder costs to be accurate to the partial route tree
@@ -1454,7 +1553,11 @@ static t_rt_node* setup_routing_resources(int itry, ClusterNetId net_id, unsigne
     return rt_root;
 }
 
-static void add_route_tree_to_heap(t_rt_node* rt_node, int target_node, const t_conn_cost_params cost_params, const RouterLookahead& router_lookahead, RouterStats& router_stats) {
+static void add_route_tree_to_heap(t_rt_node* rt_node,
+                                   int target_node,
+                                   const t_conn_cost_params cost_params,
+                                   const RouterLookahead& router_lookahead,
+                                   RouterStats& router_stats) {
     /* Puts the entire partial routing below and including rt_node onto the heap *
      * (except for those parts marked as not to be expanded) by calling itself   *
      * recursively.                                                              */
@@ -1635,17 +1738,19 @@ static void timing_driven_expand_neighbours(t_heap* current,
     }
 
     //For each node associated with the current heap element, expand all of it's neighbours
-    int num_edges = device_ctx.rr_nodes[current->index].num_edges();
-    for (int iconn = 0; iconn < num_edges; iconn++) {
-        int to_node = device_ctx.rr_nodes[current->index].edge_sink_node(iconn);
-        timing_driven_expand_neighbour(current,
-                                       current->index, iconn, to_node,
-                                       cost_params,
-                                       bounding_box,
-                                       router_lookahead,
-                                       target_node,
-                                       target_bb,
-                                       router_stats);
+    for (const t_heap_prev& prev : current->nodes) {
+        int num_edges = device_ctx.rr_nodes[prev.to_node].num_edges();
+        for (int iconn = 0; iconn < num_edges; iconn++) {
+            int to_node = device_ctx.rr_nodes[prev.to_node].edge_sink_node(iconn);
+            timing_driven_expand_neighbour(current,
+                                           prev.to_node, iconn, to_node,
+                                           cost_params,
+                                           bounding_box,
+                                           router_lookahead,
+                                           target_node,
+                                           target_bb,
+                                           router_stats);
+        }
     }
 }
 
@@ -1721,9 +1826,30 @@ static void timing_driven_add_to_heap(
     next->backward_path_cost = current->backward_path_cost;
     next->R_upstream = current->R_upstream;
 
-    timing_driven_expand_node(cost_params,
-                              router_lookahead,
-                              next, from_node, to_node, iconn, target_node);
+    auto& device_ctx = g_vpr_ctx.device();
+    if (device_ctx.rr_nodes[to_node].num_non_configurable_edges() == 0) {
+        //The common case where there are no non-configurable edges
+        timing_driven_expand_node(cost_params,
+                                  router_lookahead,
+                                  next, from_node, to_node, iconn, target_node);
+    } else {
+        //The 'to_node' which we just expanded to has non-configurable
+        //out-going edges which must also be expanded.
+        //
+        //Note that we only call the recursive version if there *are* non-configurable
+        //edges since creating/destroying the 'visited' tracker is very expensive (since
+        //it is in the router's inner loop). Since non-configurable edges are relatively
+        //rare this is reasonable.
+        //
+        //TODO: use a more efficient method of tracking visited nodes (e.g. if
+        //      non-configurable edges become more common)
+        std::set<int> visited;
+        timing_driven_expand_node_non_configurable_recurr(
+            cost_params,
+            router_lookahead,
+            next, from_node, to_node, iconn, target_node,
+            visited);
+    }
 
     add_to_heap(next);
     ++router_stats.heap_pushes;
@@ -1750,25 +1876,76 @@ static void timing_driven_expand_node(const t_conn_cost_params cost_params,
     }
 #endif
 
-    evaluate_timing_driven_node_costs(current,
-                                      cost_params,
-                                      router_lookahead,
-                                      from_node, to_node, iconn, target_node);
+    t_timing_driven_node_costs old_costs;
+    old_costs.backward_cost = current->backward_path_cost;
+    old_costs.total_cost = current->cost;
+    old_costs.R_upstream = current->R_upstream;
+
+    auto new_costs = evaluate_timing_driven_node_costs(old_costs,
+                                                       cost_params,
+                                                       router_lookahead,
+                                                       from_node, to_node, iconn, target_node);
 
     //Record how we reached this node
-    current->index = to_node;
-    current->u.prev.edge = iconn;
-    current->u.prev.node = from_node;
+    current->nodes.emplace_back(to_node, from_node, iconn);
+
+    //Since this heap element may represent multiple (non-configurably connected) nodes,
+    //keep the minimum cost to the target
+    if (new_costs.total_cost < current->cost) {
+        current->cost = new_costs.total_cost;
+        current->backward_path_cost = new_costs.backward_cost;
+        current->R_upstream = new_costs.R_upstream;
+        current->index = to_node;
+    }
+}
+
+//Updates current (path stage and costs) to account for the step taken to reach to_node,
+//and any of it's non-configurably connected nodes
+static void timing_driven_expand_node_non_configurable_recurr(
+    const t_conn_cost_params cost_params,
+    const RouterLookahead& router_lookahead,
+    t_heap* current,
+    const int from_node,
+    const int to_node,
+    const int iconn,
+    const int target_node,
+    std::set<int>& visited) {
+    VTR_ASSERT(current);
+
+    if (visited.count(to_node)) {
+        return;
+    }
+
+    visited.insert(to_node);
+
+    auto& device_ctx = g_vpr_ctx.device();
+
+    timing_driven_expand_node(
+        cost_params,
+        router_lookahead,
+        current, from_node, to_node, iconn, target_node);
+
+    //Consider any non-configurable edges which must be expanded for correctness
+    for (int iconn_next : device_ctx.rr_nodes[to_node].non_configurable_edges()) {
+        VTR_ASSERT_SAFE(!device_ctx.rr_nodes[to_node].edge_is_configurable(iconn_next)); //Forced expansion
+
+        int to_to_node = device_ctx.rr_nodes[to_node].edge_sink_node(iconn_next);
+
+        timing_driven_expand_node_non_configurable_recurr(
+            cost_params,
+            router_lookahead,
+            current, to_node, to_to_node, iconn_next, target_node, visited);
+    }
 }
 
 //Calculates the cost of reaching to_node
-static void evaluate_timing_driven_node_costs(t_heap* to,
-                                              const t_conn_cost_params cost_params,
-                                              const RouterLookahead& router_lookahead,
-                                              const int from_node,
-                                              const int to_node,
-                                              const int iconn,
-                                              const int target_node) {
+static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timing_driven_node_costs old_costs,
+                                                                    const t_conn_cost_params cost_params,
+                                                                    const RouterLookahead& router_lookahead,
+                                                                    const int from_node,
+                                                                    const int to_node,
+                                                                    const int iconn,
+                                                                    const int target_node) {
     /* new_costs.backward_cost: is the "known" part of the cost to this node -- the
      * congestion cost of all the routing resources back to the existing route
      * plus the known delay of the total path back to the source.
@@ -1778,6 +1955,8 @@ static void evaluate_timing_driven_node_costs(t_heap* to,
      * new_costs.R_upstream: is the upstream resistance at the end of this node
      */
     auto& device_ctx = g_vpr_ctx.device();
+
+    t_timing_driven_node_costs new_costs;
 
     //Switch info
     int iswitch = device_ctx.rr_nodes[from_node].edge_switch(iconn);
@@ -1791,30 +1970,29 @@ static void evaluate_timing_driven_node_costs(t_heap* to,
 
     //Update R_upstream
     if (switch_buffered) {
-        to->R_upstream = 0.; //No upstream resistance
+        new_costs.R_upstream = 0.; //No upstream resistance
     } else {
-        //R_Upstream already initialized
+        new_costs.R_upstream = old_costs.R_upstream; //Upstream resistance
     }
-
-    to->R_upstream += switch_R; //Switch resistance
-    to->R_upstream += node_R;   //Node resistance
+    new_costs.R_upstream += switch_R; //Switch resistance
+    new_costs.R_upstream += node_R;   //Node resistance
 
     //Calculate delay
-    float Rdel = to->R_upstream - 0.5 * node_R; //Only consider half node's resistance for delay
+    float Rdel = new_costs.R_upstream - 0.5 * node_R; //Only consider half node's resistance for delay
     float Tdel = switch_Tdel + Rdel * node_C;
 
-    //Update the backward cost (upstream already included)
-    to->backward_path_cost += (1. - cost_params.criticality) * get_rr_cong_cost(to_node); //Congestion cost
-    to->backward_path_cost += cost_params.criticality * Tdel;                             //Delay cost
+    //Update the backward cost
+    new_costs.backward_cost = old_costs.backward_cost;                                     //Back cost to 'from_node'
+    new_costs.backward_cost += (1. - cost_params.criticality) * get_rr_cong_cost(to_node); //Congestion cost
+    new_costs.backward_cost += cost_params.criticality * Tdel;                             //Delay cost
     if (cost_params.bend_cost != 0.) {
         t_rr_type from_type = device_ctx.rr_nodes[from_node].type();
         t_rr_type to_type = device_ctx.rr_nodes[to_node].type();
         if ((from_type == CHANX && to_type == CHANY) || (from_type == CHANY && to_type == CHANX)) {
-            to->backward_path_cost += cost_params.bend_cost; //Bend cost
+            new_costs.backward_cost += cost_params.bend_cost; //Bend cost
         }
     }
 
-    float total_cost = 0.;
     const t_conn_delay_budget* delay_budget = cost_params.delay_budget;
     if (delay_budget) {
         //If budgets specified calculate cost as described by RCV paper:
@@ -1823,16 +2001,16 @@ static void evaluate_timing_driven_node_costs(t_heap* to,
         //     Integrated Circuits and Systems, vol. 27, no. 4, pp. 686-697, April 2008.
 
         //TODO: Since these targets are delays, shouldn't we be using Tdel instead of new_costs.total_cost on RHS?
-        total_cost += (delay_budget->short_path_criticality + cost_params.criticality) * max(0.f, delay_budget->target_delay - total_cost);
-        total_cost += pow(max(0.f, total_cost - delay_budget->max_delay), 2) / 100e-12;
-        total_cost += pow(max(0.f, delay_budget->min_delay - total_cost), 2) / 100e-12;
+        new_costs.total_cost += (delay_budget->short_path_criticality + cost_params.criticality) * max(0.f, delay_budget->target_delay - new_costs.total_cost);
+        new_costs.total_cost += pow(max(0.f, new_costs.total_cost - delay_budget->max_delay), 2) / 100e-12;
+        new_costs.total_cost += pow(max(0.f, delay_budget->min_delay - new_costs.total_cost), 2) / 100e-12;
     }
 
     //Update total cost
-    float expected_cost = router_lookahead.get_expected_cost(to_node, target_node, cost_params, to->R_upstream);
-    total_cost = to->backward_path_cost + cost_params.astar_fac * expected_cost;
+    float expected_cost = router_lookahead.get_expected_cost(to_node, target_node, cost_params, new_costs.R_upstream);
+    new_costs.total_cost = new_costs.backward_cost + cost_params.astar_fac * expected_cost;
 
-    to->cost = total_cost;
+    return new_costs;
 }
 
 void update_rr_base_costs(int fanout) {
@@ -2467,7 +2645,7 @@ static t_bb calc_current_bb(const t_trace* head) {
     return bb;
 }
 
-void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr) {
+static void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr) {
     bool all_net_debug = (router_opts.router_debug_net == -1);
 
     bool specific_net_debug = (router_opts.router_debug_net >= 0);

@@ -116,7 +116,7 @@ static std::string handle_fasm_prefix(const t_metadata_dict *meta,
       return "";
   }
 
-  auto fasm_prefix_unsplit = pb_type->meta.one("fasm_prefix")->as_string();
+  auto fasm_prefix_unsplit = meta->one("fasm_prefix")->as_string();
   auto fasm_prefix = vtr::split(fasm_prefix_unsplit, " \t\n");
   VTR_ASSERT(pb_type->num_pb >= 0);
   if(fasm_prefix.size() != static_cast<size_t>(pb_type->num_pb)) {

@@ -145,11 +145,9 @@ float NoCongestionDelayModel::delay(int from_x, int from_y, int from_pin, int to
     if (!successfully_routed) {
         net_delay_value = std::numeric_limits<float>::infinity();
     }
-
     delay_cache_.insert(std::make_pair(key, net_delay_value));
 
     return net_delay_value;
 }
-
 void NoCongestionDelayModel::dump_echo(std::string filepath) const {
 }

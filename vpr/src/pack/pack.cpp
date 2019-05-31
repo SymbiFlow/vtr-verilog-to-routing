@@ -28,8 +28,12 @@ using namespace std;
 
 static std::unordered_set<AtomNetId> alloc_and_load_is_clock(bool global_clocks);
 static bool try_size_device_grid(const t_arch& arch, const std::map<t_type_ptr, size_t>& num_type_instances, float target_device_utilization, std::string device_layout_name);
+
 static t_ext_pin_util_targets parse_target_external_pin_util(std::vector<std::string> specs);
 static std::string target_external_pin_util_to_string(const t_ext_pin_util_targets& ext_pin_utils);
+
+static t_pack_high_fanout_thresholds parse_high_fanout_thresholds(std::vector<std::string> specs);
+static std::string high_fanout_thresholds_to_string(const t_pack_high_fanout_thresholds& hf_thresholds);
 
 bool try_pack(t_packer_opts* packer_opts,
               const t_arch* arch,
@@ -95,9 +99,10 @@ bool try_pack(t_packer_opts* packer_opts,
     }
 
     t_ext_pin_util_targets target_external_pin_util = parse_target_external_pin_util(packer_opts->target_external_pin_util);
+    t_pack_high_fanout_thresholds high_fanout_thresholds = parse_high_fanout_thresholds(packer_opts->high_fanout_threshold);
 
     VTR_LOG("Packing with pin utilization targets: %s\n", target_external_pin_util_to_string(target_external_pin_util).c_str());
-
+    VTR_LOG("Packing with high fanout thresholds: %s\n", high_fanout_thresholds_to_string(high_fanout_thresholds).c_str());
     bool allow_unrelated_clustering = false;
     if (packer_opts->allow_unrelated_clustering == e_unrelated_clustering::ON) {
         allow_unrelated_clustering = true;
@@ -123,7 +128,8 @@ bool try_pack(t_packer_opts* packer_opts,
                                                 allow_unrelated_clustering,
                                                 balance_block_type_util,
                                                 lb_type_rr_graphs,
-                                                target_external_pin_util);
+                                                target_external_pin_util,
+                                                high_fanout_thresholds);
 
         //Try to size/find a device
         bool fits_on_device = try_size_device_grid(*arch, num_type_instances, packer_opts->target_device_utilization, packer_opts->device_layout);
@@ -410,6 +416,99 @@ static std::string target_external_pin_util_to_string(const t_ext_pin_util_targe
 
         auto pin_util = ext_pin_utils.get_pin_util(blk_name);
         ss << pin_util.input_pin_util << ',' << pin_util.output_pin_util;
+
+        if (itype != device_ctx.num_block_types - 1) {
+            ss << " ";
+        }
+    }
+
+    return ss.str();
+}
+
+static t_pack_high_fanout_thresholds parse_high_fanout_thresholds(std::vector<std::string> specs) {
+    t_pack_high_fanout_thresholds high_fanout_thresholds(128);
+
+    if (specs.size() == 1 && specs[0] == "auto") {
+        //No user-specified high fanout thresholds, infer them automatically.
+        //
+        //We set the high fanout threshold a based on the block type, with
+        //the logic block having a lower threshold than other blocks.
+        //(Since logic blocks are the ones which tend to be too densely
+        //clustered.)
+
+        auto& device_ctx = g_vpr_ctx.device();
+        auto& grid = device_ctx.grid;
+        t_type_ptr logic_block_type = infer_logic_block_type(grid);
+
+        if (logic_block_type != nullptr) {
+            constexpr float LOGIC_BLOCK_TYPE_HIGH_FANOUT_THRESHOLD = 32;
+
+            high_fanout_thresholds.set(logic_block_type->name, LOGIC_BLOCK_TYPE_HIGH_FANOUT_THRESHOLD);
+        } else {
+            VTR_LOG_WARN("Unable to identify logic block type to apply default packer high fanout thresholds; this may result in denser packing than desired\n");
+        }
+    } else {
+        //Process user specified overrides
+
+        bool default_set = false;
+        std::set<std::string> seen_block_types;
+
+        for (auto spec : specs) {
+            auto block_values = vtr::split(spec, ":");
+            std::string block_type;
+            std::string value;
+            if (block_values.size() == 1) {
+                value = block_values[0];
+            } else if (block_values.size() == 2) {
+                block_type = block_values[0];
+                value = block_values[1];
+            } else {
+                std::stringstream msg;
+                msg << "In valid block high fanout threshold specification '" << spec << "' (expected at most one ':' between block name and value";
+                VPR_THROW(VPR_ERROR_PACK, msg.str().c_str());
+            }
+
+            int threshold = vtr::atoi(value);
+
+            if (block_type.empty()) {
+                //Default value
+                if (default_set) {
+                    std::stringstream msg;
+                    msg << "Only one default high fanout threshold should be specified";
+                    VPR_THROW(VPR_ERROR_PACK, msg.str().c_str());
+                }
+                high_fanout_thresholds.set_default(threshold);
+                default_set = true;
+            } else {
+                if (seen_block_types.count(block_type)) {
+                    std::stringstream msg;
+                    msg << "Only one high fanout threshold should be specified for block type '" << block_type << "'";
+                    VPR_THROW(VPR_ERROR_PACK, msg.str().c_str());
+                }
+
+                high_fanout_thresholds.set(block_type, threshold);
+                seen_block_types.insert(block_type);
+            }
+        }
+    }
+
+    return high_fanout_thresholds;
+}
+
+static std::string high_fanout_thresholds_to_string(const t_pack_high_fanout_thresholds& hf_thresholds) {
+    std::stringstream ss;
+
+    auto& device_ctx = g_vpr_ctx.device();
+
+    for (int itype = 0; itype < device_ctx.num_block_types; ++itype) {
+        if (is_empty_type(&device_ctx.block_types[itype])) continue;
+
+        auto blk_name = device_ctx.block_types[itype].name;
+
+        ss << blk_name << ":";
+
+        auto threshold = hf_thresholds.get_threshold(blk_name);
+        ss << threshold;
 
         if (itype != device_ctx.num_block_types - 1) {
             ss << " ";

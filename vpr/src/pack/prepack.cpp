@@ -86,10 +86,11 @@ static t_pb_graph_node* get_expected_lowest_cost_primitive_for_atom_block(const 
 
 static t_pb_graph_node* get_expected_lowest_cost_primitive_for_atom_block_in_pb_graph_node(const AtomBlockId blk_id, t_pb_graph_node* curr_pb_graph_node, float* cost);
 
-static AtomBlockId find_new_root_atom_for_chain(const AtomBlockId blk_id, const t_pack_patterns* list_of_pack_pattern, const std::multimap<AtomBlockId, t_pack_molecule*>& atom_molecules);
 static bool check_atom_feasible_for_pattern(const AtomBlockId blk_id, t_pack_patterns* pattern);
 static int find_best_pattern(AtomBlockId blk_id, t_pack_patterns* list_of_pack_patterns, const std::vector<bool>& feasible_patterns, int num_packing_patterns, const std::multimap<AtomBlockId, t_pack_molecule*>& atom_molecules);
 static bool check_blocks_in_chain(AtomBlockId cur_blk_id, AtomBlockId next_blk_id, t_pack_patterns* pattern);
+
+static AtomBlockId find_new_root_atom_for_chain(const AtomBlockId blk_id, const t_pack_patterns* list_of_pack_pattern, const std::multimap<AtomBlockId, t_pack_molecule*>& atom_molecules);
 
 static std::vector<t_pb_graph_pin*> find_end_of_path(t_pb_graph_pin* input_pin, int pattern_index);
 
@@ -102,11 +103,15 @@ static void update_chain_root_pins(t_pack_patterns* chain_pattern,
 
 static t_pb_graph_pin* get_connected_primitive_pin(const t_pb_graph_pin* input_pin, const int pack_pattern);
 
+static void get_all_connected_primitive_pins(const t_pb_graph_pin* cluster_input_pin, std::vector<t_pb_graph_pin*>& connected_primitive_pins);
+
 static void init_molecule_chain_info(const AtomBlockId blk_id, t_pack_molecule* molecule, const std::multimap<AtomBlockId, t_pack_molecule*>& atom_molecules);
 
 static AtomBlockId get_sink_block(const AtomBlockId block_id, const t_model_ports* model_port, const BitIndex pin_number);
 
 static AtomBlockId get_driving_block(const AtomBlockId block_id, const t_model_ports* model_port, const BitIndex pin_number);
+
+static void print_chain_starting_points(t_pack_patterns* chain_pattern);
 
 /*****************************************/
 /*Function Definitions					 */
@@ -169,6 +174,7 @@ t_pack_patterns* alloc_and_load_pack_patterns(int* num_packing_patterns) {
             // are multiple equivalent chains with different starting and ending points
             if (list_of_packing_patterns[i].is_chain) {
                 find_all_equivalent_chains(&list_of_packing_patterns[i], device_ctx.block_types[j].pb_graph_head);
+                print_chain_starting_points(&list_of_packing_patterns[i]);
             }
 
             // if pack pattern i is found to belong to block j, go to next pack pattern
@@ -553,7 +559,7 @@ static void forward_expand_pack_pattern_from_edge(
             if (((t_pack_pattern_block*)destination_pb_graph_node->temp_scratch_pad)->pattern_index == curr_pattern_index) {
                 // if this pb_graph_node is known to be the root of the chain, update the root block and root pin
                 if (make_root_of_chain == true) {
-                    list_of_packing_patterns[curr_pattern_index].chain_root_pins.push_back(expansion_edge->output_pins[i]);
+                    list_of_packing_patterns[curr_pattern_index].chain_root_pins = {{expansion_edge->output_pins[i]}};
                     list_of_packing_patterns[curr_pattern_index].root_block = destination_block;
                 }
             }
@@ -991,7 +997,6 @@ t_pack_molecule* alloc_and_load_pack_molecules(
             }
         }
     }
-
     free(is_used);
 
     /* List all atom blocks as a molecule for blocks that do not belong to any molecules.
@@ -1069,7 +1074,6 @@ static t_pack_molecule* try_create_molecule(
     const int pack_pattern_index,
     AtomBlockId blk_id,
     int* num_packed_atoms) {
-    int i;
     *num_packed_atoms = 0;
     t_pack_molecule* molecule;
 
@@ -1437,7 +1441,7 @@ static AtomBlockId find_new_root_atom_for_chain(const AtomBlockId blk_id, const 
 
     VTR_ASSERT(list_of_pack_pattern->is_chain == true);
     VTR_ASSERT(list_of_pack_pattern->chain_root_pins.size());
-    root_ipin = list_of_pack_pattern->chain_root_pins[0];
+    root_ipin = list_of_pack_pattern->chain_root_pins[0][0];
     root_pb_graph_node = root_ipin->parent_node;
 
     if (primitive_type_feasible(blk_id, root_pb_graph_node->pb_type) == false) {
@@ -1615,6 +1619,7 @@ static void find_all_equivalent_chains(t_pack_patterns* chain_pattern, const t_p
     // if this chain has only one cluster input, then
     // there is no need to proceed with the search
     if (chain_input_pins.size() == 1) {
+        update_chain_root_pins(chain_pattern, chain_input_pins);
         return;
     }
 
@@ -1665,17 +1670,13 @@ static void find_all_equivalent_chains(t_pack_patterns* chain_pattern, const t_p
  */
 static void update_chain_root_pins(t_pack_patterns* chain_pattern,
                                    const std::vector<t_pb_graph_pin*>& chain_input_pins) {
-    std::vector<t_pb_graph_pin*> primitive_input_pins;
+    std::vector<std::vector<t_pb_graph_pin*>> primitive_input_pins;
 
-    VTR_LOGV(chain_input_pins.size(), "\nThere are %zu starting point(s) for chain pattern \"%s\":\n",
-             chain_input_pins.size(), chain_pattern->name);
-
-    for (const auto& pin_ptr : chain_input_pins) {
-        primitive_input_pins.push_back(get_connected_primitive_pin(pin_ptr, chain_pattern->index));
-        VTR_LOG("\t%s\n", primitive_input_pins.back()->to_string().c_str());
+    for (const auto pin_ptr : chain_input_pins) {
+        std::vector<t_pb_graph_pin*> connected_primitive_pins;
+        get_all_connected_primitive_pins(pin_ptr, connected_primitive_pins);
+        primitive_input_pins.push_back(connected_primitive_pins);
     }
-
-    VTR_LOGV(chain_input_pins.size(), "\n");
 
     chain_pattern->chain_root_pins = primitive_input_pins;
 }
@@ -1705,6 +1706,27 @@ static t_pb_graph_pin* get_connected_primitive_pin(const t_pb_graph_pin* cluster
 }
 
 /**
+ *  This function takes a pin as an input an does a depth first search on all the output edges
+ *  of this pin till it finds all the primitive input pins connected to this pin. For example,
+ *  if the input pin given to this function is the Cin pin of the cluster. This pin will return
+ *  the Cin pin of all the adder primitives connected to this pin. Which is for typical architectures
+ *  will be only one pin connected to the very first adder in the cluster.
+ */
+static void get_all_connected_primitive_pins(const t_pb_graph_pin* cluster_input_pin, std::vector<t_pb_graph_pin*>& connected_primitive_pins) {
+    for (int iedge = 0; iedge < cluster_input_pin->num_output_edges; iedge++) {
+        const auto& output_edge = cluster_input_pin->output_edges[iedge];
+        for (int ipin = 0; ipin < output_edge->num_output_pins; ipin++) {
+            if (output_edge->output_pins[ipin]->is_primitive_pin()) {
+                connected_primitive_pins.push_back(output_edge->output_pins[ipin]);
+            } else {
+                get_all_connected_primitive_pins(output_edge->output_pins[ipin], connected_primitive_pins);
+            }
+        }
+    }
+
+    VTR_ASSERT(connected_primitive_pins.size());
+}
+/**
  * This function initializes the chain info data structure of the molecule.
  * If this is the furthest molecule up the chain, the chain_info data
  * structure is created. Otherwise, the input pack_molecule is set to
@@ -1723,7 +1745,7 @@ static void init_molecule_chain_info(const AtomBlockId blk_id, t_pack_molecule* 
 
     auto& atom_ctx = g_vpr_ctx.atom();
 
-    auto root_ipin = molecule->pack_pattern->chain_root_pins[0];
+    auto root_ipin = molecule->pack_pattern->chain_root_pins[0][0];
     auto model_pin = root_ipin->port->model_port;
     auto pin_bit = root_ipin->pin_number;
 
@@ -1751,4 +1773,26 @@ static void init_molecule_chain_info(const AtomBlockId blk_id, t_pack_molecule* 
         // this new molecule should share the same chain_info
         molecule->chain_info = prev_molecule->chain_info;
     }
+}
+
+/**
+ * This function prints all the starting points of the carry chains in the architecture
+ */
+static void print_chain_starting_points(t_pack_patterns* chain_pattern) {
+    const auto& chain_root_pins = chain_pattern->chain_root_pins;
+
+    VTR_LOGV(chain_root_pins.size() > 1, "\nThere are %zu independent chains for chain pattern \"%s\":\n",
+             chain_pattern->chain_root_pins.size(), chain_pattern->name);
+    VTR_LOGV(chain_root_pins.size() == 1, "\nThere is one chain in this architecture called \"%s\" with the following starting points:\n", chain_pattern->name);
+
+    size_t chainId = 0;
+    for (const auto& chain : chain_root_pins) {
+        VTR_LOGV(chain_root_pins.size() > 1 && chain.size() > 1, "\n There are %zu starting points for chain id #%zu:\n", chain.size(), chainId++);
+        VTR_LOGV(chain_root_pins.size() > 1 && chain.size() == 1, "\n There is 1 starting point for chain id #%zu:\n", chainId++);
+        for (const auto& pin_ptr : chain) {
+            VTR_LOG("\t%s\n", pin_ptr->to_string().c_str());
+        }
+    }
+
+    VTR_LOG("\n");
 }

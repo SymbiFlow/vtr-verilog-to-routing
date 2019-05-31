@@ -100,7 +100,7 @@ TEST_CASE("fasm_integration_test", "[fasm]") {
             auto pos = line.find("LUT[");
             if(pos != std::string::npos) {
                 CHECK_THAT(line.substr(pos), Equals(
-                           "LUT[31:0]=32'b00000000000000000000000100000000"));
+                           "LUT[31:0]=32'b00000000000000010000000000000000"));
                 found_lut5 = true;
             }
 

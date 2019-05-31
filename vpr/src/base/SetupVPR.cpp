@@ -348,6 +348,8 @@ static void SetupRouterOpts(const t_options& Options, t_router_opts* RouterOpts)
     RouterOpts->reconvergence_cpd_threshold = Options.router_reconvergence_cpd_threshold;
     RouterOpts->first_iteration_timing_report_file = Options.router_first_iteration_timing_report_file;
     RouterOpts->disable_check_route = Options.disable_check_route;
+
+    RouterOpts->strict_checks = Options.strict_checks;
 }
 
 static void SetupAnnealSched(const t_options& Options,
@@ -404,12 +406,12 @@ void SetupPackerOpts(const t_options& Options,
     PackerOpts->beta = Options.beta_clustering;
     PackerOpts->pack_verbosity = Options.pack_verbosity;
     PackerOpts->enable_pin_feasibility_filter = Options.enable_clustering_pin_feasibility_filter;
-    PackerOpts->enable_round_robin_prepacking = Options.enable_round_robin_prepacking;
     PackerOpts->balance_block_type_utilization = Options.balance_block_type_utilization;
     PackerOpts->target_external_pin_util = Options.target_external_pin_util;
     PackerOpts->target_device_utilization = Options.target_device_utilization;
     PackerOpts->prioritize_transitive_connectivity = Options.pack_prioritize_transitive_connectivity;
     PackerOpts->high_fanout_threshold = Options.pack_high_fanout_threshold;
+    PackerOpts->transitive_fanout_threshold = Options.pack_transitive_fanout_threshold;
 
     //TODO: document?
     PackerOpts->inter_cluster_net_delay = 1.0; /* DEFAULT */
@@ -473,6 +475,8 @@ static void SetupPlacerOpts(const t_options& Options, t_placer_opts* PlacerOpts)
     PlacerOpts->post_place_timing_report_file = Options.post_place_timing_report_file;
 
     PlacerOpts->rlim_escape_fraction = Options.place_rlim_escape_fraction;
+
+    PlacerOpts->strict_checks = Options.strict_checks;
 }
 
 static void SetupAnalysisOpts(const t_options& Options, t_analysis_opts& analysis_opts) {

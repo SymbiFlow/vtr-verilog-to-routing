@@ -26,7 +26,6 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <set>
 #include "arch_types.h"
 #include "atom_netlist_fwd.h"
 #include "clustered_netlist_fwd.h"
@@ -178,6 +177,27 @@ class t_ext_pin_util_targets {
   private:
     t_ext_pin_util defaults_;
     std::map<std::string, t_ext_pin_util> overrides_;
+};
+
+class t_pack_high_fanout_thresholds {
+  public:
+    t_pack_high_fanout_thresholds() = default;
+    t_pack_high_fanout_thresholds(int threshold);
+
+    int get_threshold(std::string block_type_name) const;
+
+  public:
+    //Sets the pin util for the specified block type
+    //Returns true if non-default was previously set
+    void set(std::string block_type_name, int threshold);
+
+    //Sets the default pin util
+    //Returns true if a default was previously set
+    void set_default(int threshold);
+
+  private:
+    int default_;
+    std::map<std::string, int> overrides_;
 };
 
 /* these are defined later, but need to declare here because it is used */
@@ -705,7 +725,8 @@ struct t_packer_opts {
     e_balance_block_type_util balance_block_type_utilization;
     std::vector<std::string> target_external_pin_util;
     bool prioritize_transitive_connectivity;
-    int high_fanout_threshold;
+    std::vector<std::string> high_fanout_threshold;
+    int transitive_fanout_threshold;
     e_stage_action doPacking;
     enum e_packer_algorithm packer_algorithm;
     std::string device_layout;
@@ -794,6 +815,8 @@ struct t_placer_opts {
     float tsu_abs_margin;
 
     std::string post_place_timing_report_file;
+
+    bool strict_checks;
 };
 
 /* All the parameters controlling the router's operation are in this        *
@@ -925,6 +948,7 @@ struct t_router_opts {
     float reconvergence_cpd_threshold;
     std::string first_iteration_timing_report_file;
     bool disable_check_route;
+    bool strict_checks;
 };
 
 struct t_analysis_opts {
@@ -1190,27 +1214,6 @@ struct t_rr_node_route_inf {
 struct t_net_routing_status {
     bool is_routed = false; //Whether the net has been legally routed
     bool is_fixed = false;  //Whether the net is fixed (i.e. not to be re-routed)
-};
-
-struct t_node_edge {
-    t_node_edge(int fnode, int tnode) {
-        from_node = fnode;
-        to_node = tnode;
-    }
-
-    int from_node;
-    int to_node;
-
-    //For std::set
-    friend bool operator<(const t_node_edge& lhs, const t_node_edge& rhs) {
-        return std::tie(lhs.from_node, lhs.to_node) < std::tie(rhs.from_node, rhs.to_node);
-    }
-};
-
-//Non-configurably connected nodes and edges in the RR graph
-struct t_non_configurable_rr_sets {
-    std::set<std::set<int>> node_sets;
-    std::set<std::set<t_node_edge>> edge_sets;
 };
 
 #define NO_PREVIOUS -1

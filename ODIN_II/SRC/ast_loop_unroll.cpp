@@ -80,7 +80,7 @@ void update_module_instantiations(ast_node_t *ast_module, ast_node_t ****instanc
 
 				vtr::free(new_instance_name);
 			}		
-}
+		}
 		else 
 		{
 			error_message(NETLIST_ERROR, ast_module->line_number, ast_module->file_number,
@@ -89,7 +89,7 @@ void update_module_instantiations(ast_node_t *ast_module, ast_node_t ****instanc
 
 		vtr::free(instance_name);
 	}
-
+	
 }
 
 /*
@@ -123,30 +123,30 @@ long find_module_instance(ast_node_t *ast_module, char *instance_name)
  */
 ast_node_t* for_preprocessor(ast_node_t *ast_module, ast_node_t* node, ast_node_t ****instances, int *num_unrolled, int *num_original)
 {
-    if(!node)
-        return nullptr;
-    /* If this is a for node, something has gone wrong */
-    oassert(!is_for_node(node));
-    
-    /* If this node has for loops as children, replace them */
-    bool for_loops = false;
-    for(int i=0; i<node->num_children && !for_loops; i++){
-        for_loops = is_for_node(node->children[i]);
-    }
+	if(!node)
+		return nullptr;
+	/* If this is a for node, something has gone wrong */
+	oassert(!is_for_node(node));
+	
+	/* If this node has for loops as children, replace them */
+	bool for_loops = false;
+	for(int i=0; i<node->num_children && !for_loops; i++){
+		for_loops = is_for_node(node->children[i]);
+	}
 
 	ast_node_t* new_node = for_loops ? replace_fors(ast_module, node, instances, num_unrolled, num_original) : node;
-    
-    /* Run this function recursively on the children */
-    for(int i=0; i<new_node->num_children; i++){
+
+	/* Run this function recursively on the children */
+	for(int i=0; i<new_node->num_children; i++){
 		ast_node_t* new_child = for_preprocessor(ast_module, new_node->children[i], instances, num_unrolled, num_original);
 
-        /* Cleanup replaced child */
-        if(new_node->children[i] != new_child){
-            free_whole_tree(new_node->children[i]);
-            new_node->children[i] = new_child;
-        }
-    }
-    return new_node;
+		/* Cleanup replaced child */
+		if(new_node->children[i] != new_child){
+			free_whole_tree(new_node->children[i]);
+			new_node->children[i] = new_child;
+		}
+	}
+	return new_node;
 }
 
 /*
@@ -154,24 +154,24 @@ ast_node_t* for_preprocessor(ast_node_t *ast_module, ast_node_t* node, ast_node_
  */
 ast_node_t* replace_fors(ast_node_t *ast_module, ast_node_t* node, ast_node_t ****instances, int *num_unrolled, int *num_original)
 {
-    oassert(!is_for_node(node));
-    oassert(node != nullptr);
+	oassert(!is_for_node(node));
+	oassert(node != nullptr);
 
-    ast_node_t* new_node = ast_node_deep_copy(node);
-    if(!new_node)
-        return nullptr;
+	ast_node_t* new_node = ast_node_deep_copy(node);
+	if(!new_node)
+		return nullptr;
 
-    /* process children one at a time */
-    for(int i=0; i<new_node->num_children; i++){
-        /* unroll `for` children */
-        if(is_for_node(new_node->children[i])){
+	/* process children one at a time */
+	for(int i=0; i<new_node->num_children; i++){
+		/* unroll `for` children */
+		if(is_for_node(new_node->children[i])){
 			ast_node_t* unrolled_for = resolve_for(ast_module, new_node->children[i], instances, num_unrolled, num_original);
-            oassert(unrolled_for != nullptr);
-            free_whole_tree(new_node->children[i]);
-            new_node->children[i] = unrolled_for;
-        }
-    }
-    return new_node;
+			oassert(unrolled_for != nullptr);
+			free_whole_tree(new_node->children[i]);
+			new_node->children[i] = unrolled_for;
+		}
+	}
+	return new_node;
 }
 
 /*
@@ -179,53 +179,53 @@ ast_node_t* replace_fors(ast_node_t *ast_module, ast_node_t* node, ast_node_t **
  */
 ast_node_t* resolve_for(ast_node_t *ast_module, ast_node_t* node, ast_node_t ****instances, int *num_unrolled, int *num_original)
 {
-    oassert(is_for_node(node));
-    oassert(node != nullptr);
-    ast_node_t* body_parent = nullptr;
+	oassert(is_for_node(node));
+	oassert(node != nullptr);
+	ast_node_t* body_parent = nullptr;
 
-    ast_node_t* pre  = node->children[0];
-    ast_node_t* cond = node->children[1];
-    ast_node_t* post = node->children[2];
-    ast_node_t* body = node->children[3];
-    
-    ast_node_t* value = 0;
-    if(resolve_pre_condition(pre, &value))
-    {
-        error_message(PARSE_ERROR, pre->line_number, pre->file_number, "%s", "Unsupported pre-condition node in for loop");
-    }
+	ast_node_t* pre  = node->children[0];
+	ast_node_t* cond = node->children[1];
+	ast_node_t* post = node->children[2];
+	ast_node_t* body = node->children[3];
+	
+	ast_node_t* value = 0;
+	if(resolve_pre_condition(pre, &value))
+	{
+		error_message(PARSE_ERROR, pre->line_number, pre->file_number, "%s", "Unsupported pre-condition node in for loop");
+	}
 
-    int error_code = 0;
-    condition_function cond_func = resolve_condition(cond, pre->children[0], &error_code);
-    if(error_code)
-    {
-        error_message(PARSE_ERROR, cond->line_number, cond->file_number, "%s", "Unsupported condition node in for loop");
-    }
+	int error_code = 0;
+	condition_function cond_func = resolve_condition(cond, pre->children[0], &error_code);
+	if(error_code)
+	{
+		error_message(PARSE_ERROR, cond->line_number, cond->file_number, "%s", "Unsupported condition node in for loop");
+	}
 
-    post_condition_function post_func = resolve_post_condition(post, pre->children[0], &error_code);
-    if(error_code)
-    {
-        error_message(PARSE_ERROR, post->line_number, post->file_number, "%s", "Unsupported post-condition node in for loop");
-    }
-    bool dup_body = cond_func(value->types.number.value);
-    while(dup_body)
-    {
+	post_condition_function post_func = resolve_post_condition(post, pre->children[0], &error_code);
+	if(error_code)
+	{
+		error_message(PARSE_ERROR, post->line_number, post->file_number, "%s", "Unsupported post-condition node in for loop");
+	}
+	bool dup_body = cond_func(value->types.number.value);
+	while(dup_body)
+	{
 		ast_node_t* new_body = dup_and_fill_body(ast_module, body, pre, &value, &error_code, instances, num_unrolled, num_original);
-        if(error_code)
-        {
-            error_message(PARSE_ERROR, pre->line_number, pre->file_number, "%s", "Unsupported pre-condition node in for loop");
-        }
-        value->types.number.value = post_func(value->types.number.value);
-        body_parent = body_parent ? newList_entry(body_parent, new_body) : newList(BLOCK, new_body);
-        dup_body = cond_func(value->types.number.value);
+		if(error_code)
+		{
+			error_message(PARSE_ERROR, pre->line_number, pre->file_number, "%s", "Unsupported pre-condition node in for loop");
+		}
+		value->types.number.value = post_func(value->types.number.value);
+		body_parent = body_parent ? newList_entry(body_parent, new_body) : newList(BLOCK, new_body);
+		dup_body = cond_func(value->types.number.value);
 
 		if (*instances)
 		{
 			(*num_unrolled)++;
-    }
+		}
 	}
 
 	free_whole_tree(value);
-    return body_parent;
+	return body_parent;
 }
 
 /*
@@ -239,20 +239,20 @@ ast_node_t* resolve_for(ast_node_t *ast_module, ast_node_t* node, ast_node_t ***
  */
 int resolve_pre_condition(ast_node_t* node, ast_node_t** number_node)
 {
-    /* Add new for loop support here. Keep current work in the TODO
-     * Currently supporting:
-     *     for(VAR = NUM; ...; ...) ...
-     * TODO:
-     *     for(VAR = function(PARAMS...); ...; ...) ...
-     */
-    /* IMPORTANT: if support for more complex continue conditions is added, update this inline function. */
-    if(is_unsupported_pre(node))
-    {
-        return UNSUPPORTED_PRE_CONDITION_NODE;
-    }
+	/* Add new for loop support here. Keep current work in the TODO
+	 * Currently supporting:
+	 *     for(VAR = NUM; ...; ...) ...
+	 * TODO:
+	 *     for(VAR = function(PARAMS...); ...; ...) ...
+	 */
+	/* IMPORTANT: if support for more complex continue conditions is added, update this inline function. */
+	if(is_unsupported_pre(node))
+	{
+		return UNSUPPORTED_PRE_CONDITION_NODE;
+	}
 	if (*number_node) free_whole_tree(*number_node);
-    *number_node = ast_node_deep_copy(node->children[1]);
-    return 0;
+	*number_node = ast_node_deep_copy(node->children[1]);
+	return 0;
 }
 
 /** IMPORTANT: as support for more complex continue conditions is added, update this function. 
@@ -261,43 +261,43 @@ int resolve_pre_condition(ast_node_t* node, ast_node_t** number_node)
  *  to true or false if the symbol is replaced with some value.
  */
 bool is_unsupported_condition(ast_node_t* node, ast_node_t* symbol){
-    bool invalid_inequality = ( node->type != BINARY_OPERATION ||
-            !(  node->types.operation.op == LT ||
-	            node->types.operation.op == GT ||
-        	    node->types.operation.op == LOGICAL_EQUAL ||
-        	    node->types.operation.op == NOT_EQUAL ||
-        	    node->types.operation.op == LTE ||
-        	    node->types.operation.op == GTE) ||
-            node->num_children != 2 ||
-            node->children[1] == nullptr ||
-            !(  node->children[1]->type == NUMBERS ||
-                node->children[1]->type == IDENTIFIERS ) ||
-            node->children[0] == nullptr ||
-            !(  node->children[0]->type == NUMBERS ||
-                node->children[0]->type == IDENTIFIERS ));
+	bool invalid_inequality = ( node->type != BINARY_OPERATION ||
+			!(  node->types.operation.op == LT ||
+				node->types.operation.op == GT ||
+				node->types.operation.op == LOGICAL_EQUAL ||
+				node->types.operation.op == NOT_EQUAL ||
+				node->types.operation.op == LTE ||
+				node->types.operation.op == GTE) ||
+			node->num_children != 2 ||
+			node->children[1] == nullptr ||
+			!(  node->children[1]->type == NUMBERS ||
+				node->children[1]->type == IDENTIFIERS ) ||
+			node->children[0] == nullptr ||
+			!(  node->children[0]->type == NUMBERS ||
+				node->children[0]->type == IDENTIFIERS ));
 
-    bool invalid_logical_concatenation = ( node->type != BINARY_OPERATION ||
-            !(  node->types.operation.op == LOGICAL_OR ||
-                node->types.operation.op == LOGICAL_AND) ||
-            node->num_children != 2 ||
-            node->children[1] == nullptr ||
-            is_unsupported_condition(node->children[1], symbol) ||
-            node->children[0] == nullptr ||
-            is_unsupported_condition(node->children[0], symbol));
+	bool invalid_logical_concatenation = ( node->type != BINARY_OPERATION ||
+			!(  node->types.operation.op == LOGICAL_OR ||
+				node->types.operation.op == LOGICAL_AND) ||
+			node->num_children != 2 ||
+			node->children[1] == nullptr ||
+			is_unsupported_condition(node->children[1], symbol) ||
+			node->children[0] == nullptr ||
+			is_unsupported_condition(node->children[0], symbol));
 
-    bool invalid_negation = ( node->type != UNARY_OPERATION ||
-            node->types.operation.op != LOGICAL_NOT ||
-            node->num_children != 1 ||
-            node->children[0] == nullptr ||
-            is_unsupported_condition(node->children[0], symbol));
+	bool invalid_negation = ( node->type != UNARY_OPERATION ||
+			node->types.operation.op != LOGICAL_NOT ||
+			node->num_children != 1 ||
+			node->children[0] == nullptr ||
+			is_unsupported_condition(node->children[0], symbol));
 
-    bool contains_unknown_symbols = !(invalid_inequality) && (
-            (   node->children[0]->type == IDENTIFIERS &&
-                strcmp(node->children[0]->types.identifier, symbol->types.identifier)) ||
-            (   node->children[1]->type == IDENTIFIERS &&
-                strcmp(node->children[1]->types.identifier, symbol->types.identifier)));
+	bool contains_unknown_symbols = !(invalid_inequality) && (
+			(   node->children[0]->type == IDENTIFIERS &&
+				strcmp(node->children[0]->types.identifier, symbol->types.identifier)) ||
+			(   node->children[1]->type == IDENTIFIERS &&
+				strcmp(node->children[1]->types.identifier, symbol->types.identifier)));
 
-    return ((invalid_inequality || contains_unknown_symbols) && invalid_logical_concatenation && invalid_negation);
+	return ((invalid_inequality || contains_unknown_symbols) && invalid_logical_concatenation && invalid_negation);
 }
 
 /*
@@ -306,76 +306,76 @@ bool is_unsupported_condition(ast_node_t* node, ast_node_t* symbol){
  */
 condition_function resolve_condition(ast_node_t* node, ast_node_t* symbol, int* error_code)
 {
-    /* Add new for loop support here. Keep current work in the TODO
-     * Currently supporting:
-     *     for(...; VAR {<, >, ==, !=, <=, >=} NUM; ...) ...
-     *     for(...; CONDITION_A {&&, ||} CONDITION_B;...) ...
-     *     for(...; !(CONDITION);...) ...
-     * TODO:
-     *     for(...; {EXPRESSION_OF_VAR, NUM} {<, >, ==, !=, <=, >=} {EXPRESSION_OF_VAR, NUM}; ...) ...
-     */
-    /* IMPORTANT: if support for more complex continue conditions is added, update this inline function. */
-    if(is_unsupported_condition(node, symbol))
-    {
-        *error_code = UNSUPPORTED_CONDITION_NODE;
-        return nullptr;
-    }
-    *error_code = 0;
-    /* Resursive calls need to report errors before returning a lambda */
-    condition_function left = nullptr;
-    condition_function right = nullptr;
-    condition_function inner = nullptr;
-    switch(node->types.operation.op){
-        case LOGICAL_OR:
-            left = resolve_condition(node->children[0], symbol, error_code);
-            if(*error_code)
-                return nullptr;
-            right = resolve_condition(node->children[1], symbol, error_code);
-            if(*error_code)
-                return nullptr;
-            return [=](long value) {
-                return (left(value) || right(value));
-            };
-        case LOGICAL_AND:
-            left = resolve_condition(node->children[0], symbol, error_code);
-            if(*error_code)
-                return nullptr;
-            right = resolve_condition(node->children[1], symbol, error_code);
-            if(*error_code)
-                return nullptr;
-            return [=](long value) {
-                return (left(value) && right(value));
-            };
-        case LOGICAL_NOT:
-            inner = resolve_condition(node->children[0], symbol, error_code);
-            if(*error_code) 
-                return nullptr;
-            return [=](long value) {
-                bool inner_true = inner(value);
-                return !inner_true;
-            };
-        default:
-            break;
-    }
-    /* Non-recursive calls can type check in the lambda to save copy/paste */
-    return [=](long value) {
-        switch(node->types.operation.op){
-            case LT:
-                return value <  node->children[1]->types.number.value;
-            case GT:
-                return value >  node->children[1]->types.number.value;
-            case NOT_EQUAL:
-                return value != node->children[1]->types.number.value;
-            case LOGICAL_EQUAL:
-                return value == node->children[1]->types.number.value;
-            case LTE:
-                return value <= node->children[1]->types.number.value;
-            case GTE:
-                return value >= node->children[1]->types.number.value; 
-            default:
-               return false;
-       }
-    };
+	/* Add new for loop support here. Keep current work in the TODO
+	 * Currently supporting:
+	 *     for(...; VAR {<, >, ==, !=, <=, >=} NUM; ...) ...
+	 *     for(...; CONDITION_A {&&, ||} CONDITION_B;...) ...
+	 *     for(...; !(CONDITION);...) ...
+	 * TODO:
+	 *     for(...; {EXPRESSION_OF_VAR, NUM} {<, >, ==, !=, <=, >=} {EXPRESSION_OF_VAR, NUM}; ...) ...
+	 */
+	/* IMPORTANT: if support for more complex continue conditions is added, update this inline function. */
+	if(is_unsupported_condition(node, symbol))
+	{
+		*error_code = UNSUPPORTED_CONDITION_NODE;
+		return nullptr;
+	}
+	*error_code = 0;
+	/* Resursive calls need to report errors before returning a lambda */
+	condition_function left = nullptr;
+	condition_function right = nullptr;
+	condition_function inner = nullptr;
+	switch(node->types.operation.op){
+		case LOGICAL_OR:
+			left = resolve_condition(node->children[0], symbol, error_code);
+			if(*error_code)
+				return nullptr;
+			right = resolve_condition(node->children[1], symbol, error_code);
+			if(*error_code)
+				return nullptr;
+			return [=](long value) {
+				return (left(value) || right(value));
+			};
+		case LOGICAL_AND:
+			left = resolve_condition(node->children[0], symbol, error_code);
+			if(*error_code)
+				return nullptr;
+			right = resolve_condition(node->children[1], symbol, error_code);
+			if(*error_code)
+				return nullptr;
+			return [=](long value) {
+				return (left(value) && right(value));
+			};
+		case LOGICAL_NOT:
+			inner = resolve_condition(node->children[0], symbol, error_code);
+			if(*error_code) 
+				return nullptr;
+			return [=](long value) {
+				bool inner_true = inner(value);
+				return !inner_true;
+			};
+		default:
+			break;
+	}
+	/* Non-recursive calls can type check in the lambda to save copy/paste */
+	return [=](long value) {
+		switch(node->types.operation.op){
+			case LT:
+				return value <  node->children[1]->types.number.value;
+			case GT:
+				return value >  node->children[1]->types.number.value;
+			case NOT_EQUAL:
+				return value != node->children[1]->types.number.value;
+			case LOGICAL_EQUAL:
+				return value == node->children[1]->types.number.value;
+			case LTE:
+				return value <= node->children[1]->types.number.value;
+			case GTE:
+				return value >= node->children[1]->types.number.value; 
+			default:
+			   return false;
+	   }
+	};
 }
 
 
@@ -385,57 +385,57 @@ condition_function resolve_condition(ast_node_t* node, ast_node_t* symbol, int* 
  * can currently be unrolled statically
  */
 bool is_unsupported_post(ast_node_t* node, ast_node_t* symbol){
-    return  (node == nullptr ||
-            node->type != BINARY_OPERATION ||
-            !(  node->types.operation.op == ADD ||
-                node->types.operation.op == MINUS ||
-                node->types.operation.op == MULTIPLY ||
-                node->types.operation.op == DIVIDE) ||
-            node->num_children != 2 ||
-            node->children[1] == nullptr ||
-            !(  (   node->children[1]->type == IDENTIFIERS &&
-                    !strcmp(node->children[1]->types.identifier, symbol->types.identifier))||
-                node->children[1]->type == NUMBERS ||
-                !is_unsupported_post(node->children[0], symbol)) ||
-            node->children[0] == nullptr ||
-            !(  (   node->children[0]->type == IDENTIFIERS &&
-                    !strcmp(node->children[0]->types.identifier, symbol->types.identifier))||
-                node->children[0]->type == NUMBERS ||
-                !is_unsupported_post(node->children[0], symbol)));
+	return  (node == nullptr ||
+			node->type != BINARY_OPERATION ||
+			!(  node->types.operation.op == ADD ||
+				node->types.operation.op == MINUS ||
+				node->types.operation.op == MULTIPLY ||
+				node->types.operation.op == DIVIDE) ||
+			node->num_children != 2 ||
+			node->children[1] == nullptr ||
+			!(  (   node->children[1]->type == IDENTIFIERS &&
+					!strcmp(node->children[1]->types.identifier, symbol->types.identifier))||
+				node->children[1]->type == NUMBERS ||
+				!is_unsupported_post(node->children[0], symbol)) ||
+			node->children[0] == nullptr ||
+			!(  (   node->children[0]->type == IDENTIFIERS &&
+					!strcmp(node->children[0]->types.identifier, symbol->types.identifier))||
+				node->children[0]->type == NUMBERS ||
+				!is_unsupported_post(node->children[0], symbol)));
 }
 
 post_condition_function resolve_binary_operation(ast_node_t* node)
 {
-    if(node->type == NUMBERS){
-        return [=](long value){
-            /* 
-             * this lambda triggers a warning for unused variable unless
-             * we use value to generate a 0
-             */
-            return node->types.number.value + (value - value);
-        };
-    } else if (node->type == IDENTIFIERS) {
-        return [=](long value){
-            return value;
-        };
-    } else {
-        return [=](long value) {
-            post_condition_function left_func = resolve_binary_operation(node->children[0]);
-            post_condition_function right_func = resolve_binary_operation(node->children[1]);
-            switch(node->types.operation.op){
-                case ADD:
-                    return left_func(value) + right_func(value);
-                case MINUS:
-                    return left_func(value) - right_func(value);
-                case MULTIPLY:
-                    return left_func(value) * right_func(value);
-                case DIVIDE:
-                    return left_func(value) / right_func(value);
-                default:
-                    return 0x0L;
-            }
-        };
-    }
+	if(node->type == NUMBERS){
+		return [=](long value){
+			/* 
+			 * this lambda triggers a warning for unused variable unless
+			 * we use value to generate a 0
+			 */
+			return node->types.number.value + (value - value);
+		};
+	} else if (node->type == IDENTIFIERS) {
+		return [=](long value){
+			return value;
+		};
+	} else {
+		return [=](long value) {
+			post_condition_function left_func = resolve_binary_operation(node->children[0]);
+			post_condition_function right_func = resolve_binary_operation(node->children[1]);
+			switch(node->types.operation.op){
+				case ADD:
+					return left_func(value) + right_func(value);
+				case MINUS:
+					return left_func(value) - right_func(value);
+				case MULTIPLY:
+					return left_func(value) * right_func(value);
+				case DIVIDE:
+					return left_func(value) / right_func(value);
+				default:
+					return 0x0L;
+			}
+		};
+	}
 }
 
 /*
@@ -446,35 +446,35 @@ post_condition_function resolve_binary_operation(ast_node_t* node)
  */
 post_condition_function resolve_post_condition(ast_node_t* assignment, ast_node_t* symbol, int* error_code)
 {
-    /* Add new for loop support here. Keep current work in the TODO
-     * Given iteration t, and VAR[t] is the value of VAR at iteration t,
-     * VAR[0] is init, EXPRESSION_OF_VAR[t] is the value of the post 
-     * expression evaluated at iteration t, and VAR[t+1] is the 
-     * value of VAR after the current iteration:
-     *     Currently supporting:
-     *         for(...; ...; VAR = VAR {+, -, *, /} NUM) ...
-     *         for(...; ...; VAR[t+1] = EXPRESSION_OF_VAR[t])
-     *     TODO:
-     *         for(...; ...; VAR[t+1] = function_call(VAR[t]))
-     */
-    ast_node_t* node = nullptr;
-    /* Check that the post condition assignment node is a valid assignment */
-    if( assignment != nullptr &&
-        assignment->type == BLOCKING_STATEMENT &&
-        assignment->num_children == 2 &&
-        assignment->children[0] != nullptr &&
-        assignment->children[1] != nullptr)
-    {
-        node = assignment->children[1];
-    }
-    /* IMPORTANT: If support for more complex post conditions is added, update this inline function */
-    if(is_unsupported_post(node, symbol)) 
-    {
-        *error_code = UNSUPPORTED_POST_CONDITION_NODE;
-        return nullptr;
-    }
-    *error_code = 0;
-    return resolve_binary_operation(node);
+	/* Add new for loop support here. Keep current work in the TODO
+	 * Given iteration t, and VAR[t] is the value of VAR at iteration t,
+	 * VAR[0] is init, EXPRESSION_OF_VAR[t] is the value of the post 
+	 * expression evaluated at iteration t, and VAR[t+1] is the 
+	 * value of VAR after the current iteration:
+	 *     Currently supporting:
+	 *         for(...; ...; VAR = VAR {+, -, *, /} NUM) ...
+	 *         for(...; ...; VAR[t+1] = EXPRESSION_OF_VAR[t])
+	 *     TODO:
+	 *         for(...; ...; VAR[t+1] = function_call(VAR[t]))
+	 */
+	ast_node_t* node = nullptr;
+	/* Check that the post condition assignment node is a valid assignment */
+	if( assignment != nullptr &&
+		assignment->type == BLOCKING_STATEMENT &&
+		assignment->num_children == 2 &&
+		assignment->children[0] != nullptr &&
+		assignment->children[1] != nullptr)
+	{
+		node = assignment->children[1];
+	}
+	/* IMPORTANT: If support for more complex post conditions is added, update this inline function */
+	if(is_unsupported_post(node, symbol)) 
+	{
+		*error_code = UNSUPPORTED_POST_CONDITION_NODE;
+		return nullptr;
+	}
+	*error_code = 0;
+	return resolve_binary_operation(node);
 }
 
 ast_node_t* replace_named_module(ast_node_t* module, ast_node_t** value)
@@ -498,19 +498,19 @@ ast_node_t* replace_named_module(ast_node_t* module, ast_node_t** value)
 
 ast_node_t* dup_and_fill_body(ast_node_t *ast_module, ast_node_t* body, ast_node_t* pre, ast_node_t** value, int* error_code, ast_node_t ****instances, int *num_unrolled, int *num_original)
 {
-    ast_node_t* copy = ast_node_deep_copy(body);
+	ast_node_t* copy = ast_node_deep_copy(body);
 	for(long i = 0; i<copy->num_children; i++)
 	{
-        ast_node_t* child = copy->children[i];
+		ast_node_t* child = copy->children[i];
 		if (child) {
 			if(child->type == IDENTIFIERS)
 			{
 				if(!strcmp(child->types.identifier, pre->children[0]->types.identifier))
 				{
-                ast_node_t* new_num = ast_node_deep_copy(*value);
+					ast_node_t* new_num = ast_node_deep_copy(*value);
 					child = free_whole_tree(child);
-                copy->children[i] = new_num;
-            }
+					copy->children[i] = new_num;
+				}
 			} 
 			else if(child->type == MODULE_INSTANCE)
 			{
@@ -582,9 +582,9 @@ ast_node_t* dup_and_fill_body(ast_node_t *ast_module, ast_node_t* body, ast_node
 					if (copy->children[i]->children[j] != child->children[j]) free_whole_tree(copy->children[i]->children[j]);
 				}
 				copy->children[i] = dup_and_fill_body(ast_module, child, pre, value, error_code, instances, num_unrolled, num_original);
-            free_whole_tree(child);
-        }
-    }
+				free_whole_tree(child);
+			}
+		}
 	}
-    return copy;
+	return copy;
 }
