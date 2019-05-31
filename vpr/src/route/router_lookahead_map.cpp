@@ -61,12 +61,16 @@ class Cost_Entry {
     float congestion;
 
     Cost_Entry() {
-        delay = -1.0;
-        congestion = -1.0;
+        delay = std::numeric_limits<float>::infinity();
+        congestion = std::numeric_limits<float>::infinity();
     }
     Cost_Entry(float set_delay, float set_congestion) {
         delay = set_delay;
         congestion = set_congestion;
+    }
+
+    bool valid() const {
+        return std::isfinite(delay) && std::isfinite(congestion);
     }
 };
 
@@ -456,7 +460,7 @@ static void fill_in_missing_lookahead_entries(int segment_index, e_rr_type chan_
         for (unsigned iy = 0; iy < device_ctx.grid.height(); iy++) {
             Cost_Entry cost_entry = f_cost_map[chan_index][segment_index][ix][iy];
 
-            if (cost_entry.delay < 0 && cost_entry.congestion < 0) {
+            if (!cost_entry.valid()) {
                 Cost_Entry copied_entry = get_nearby_cost_entry(ix, iy, segment_index, chan_index);
                 f_cost_map[chan_index][segment_index][ix][iy] = copied_entry;
             }
@@ -469,7 +473,7 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
     /* compute the slope from x,y to 0,0 and then move towards 0,0 by one unit to get the coordinates
      * of the cost entry to be copied */
 
-    //VTR_ASSERT(x > 0 || y > 0); //Asertion fails in practise. TODO: debug
+    VTR_ASSERT(x >= 0 && y >= 0);
 
     float slope;
     if (x == 0) {
@@ -489,12 +493,16 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
         copy_y = vtr::nint((float)x * slope);
     }
 
-    //VTR_ASSERT(copy_x > 0 || copy_y > 0); //Asertion fails in practise. TODO: debug
+    if (copy_x < 0 || copy_y < 0) {
+        return Cost_Entry();
+    }
+
+    VTR_ASSERT(copy_x >= 0 && copy_y >= 0);
 
     Cost_Entry copy_entry = f_cost_map[chan_index][segment_index][copy_x][copy_y];
 
     /* if the entry to be copied is also empty, recurse */
-    if (copy_entry.delay < 0 && copy_entry.congestion < 0) {
+    if (!copy_entry.valid()) {
         copy_entry = get_nearby_cost_entry(copy_x, copy_y, segment_index, chan_index);
     }
 
@@ -506,7 +514,7 @@ Cost_Entry Expansion_Cost_Entry::get_smallest_entry() {
     Cost_Entry smallest_entry;
 
     for (auto entry : this->cost_vector) {
-        if (smallest_entry.delay < 0 || entry.delay < smallest_entry.delay) {
+        if (!smallest_entry.valid() || entry.delay < smallest_entry.delay) {
             smallest_entry = entry;
         }
     }
@@ -556,10 +564,10 @@ Cost_Entry Expansion_Cost_Entry::get_median_entry() {
     Cost_Entry min_del_entry;
     Cost_Entry max_del_entry;
     for (auto entry : this->cost_vector) {
-        if (min_del_entry.delay < 0 || entry.delay < min_del_entry.delay) {
+        if (!min_del_entry.valid() || entry.delay < min_del_entry.delay) {
             min_del_entry = entry;
         }
-        if (max_del_entry.delay < 0 || entry.delay > max_del_entry.delay) {
+        if (!max_del_entry.valid() || entry.delay > max_del_entry.delay) {
             max_del_entry = entry;
         }
     }
