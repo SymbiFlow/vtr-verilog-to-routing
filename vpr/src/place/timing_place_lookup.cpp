@@ -136,6 +136,8 @@ std::unique_ptr<PlaceDelayModel> compute_place_delay_model(
         auto delta_delays = compute_delta_delay_model(placer_opts, router_opts, measure_directconnect, longest_length);
         place_delay_model = std::make_unique<DeltaDelayModel>(std::move(delta_delays), router_opts);
 
+    } else if (placer_opts.delay_model_type == PlaceDelayModelType::NO_CONGESTION) {
+        place_delay_model = std::make_unique<NoCongestionDelayModel>(router_opts);
     } else {
         VTR_ASSERT_MSG(false, "Invalid placer delay model");
     }
@@ -145,8 +147,10 @@ std::unique_ptr<PlaceDelayModel> compute_place_delay_model(
         place_delay_model = compute_override_delay_model(router_opts, std::move(place_delay_model));
     }
 
-    /*free all data structures that are no longer needed */
-    free_routing_structs();
+    if (placer_opts.delay_model_type != PlaceDelayModelType::NO_CONGESTION) {
+        /*free all data structures that are no longer needed */
+        free_routing_structs();
+    }
 
     return place_delay_model;
 }

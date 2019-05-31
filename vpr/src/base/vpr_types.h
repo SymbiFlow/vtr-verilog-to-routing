@@ -732,6 +732,7 @@ enum e_place_algorithm {
 enum class PlaceDelayModelType {
     DELTA,          //Delta x/y based delay model
     DELTA_OVERRIDE, //Delta x/y based delay model with special case delay overrides
+    NO_CONGESTION,  //Delay model that consults routing graph assuming no congestion.
 };
 
 enum class e_reducer {

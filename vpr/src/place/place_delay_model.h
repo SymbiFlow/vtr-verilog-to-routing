@@ -67,4 +67,19 @@ class OverrideDelayModel : public PlaceDelayModel {
 
 };
 
+// An expensive delay model that simply asks the routing graph for the delay,
+// with an LRU cache for repeated delay requests.
+class NoCongestionDelayModel : public PlaceDelayModel {
+    public:
+        NoCongestionDelayModel(t_router_opts router_opts) :
+        router_opts_(router_opts) {}
+
+        float delay(int from_x, int from_y, int from_pin, int to_x, int to_y, int to_pin) const override;
+        void dump_echo(std::string filepath) const override;
+    private:
+        mutable std::map<std::tuple<int, int, int, int, int, int>,
+                float> delay_cache_;
+        t_router_opts router_opts_;
+};
+
 #endif

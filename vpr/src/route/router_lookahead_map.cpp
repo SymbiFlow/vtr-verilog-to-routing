@@ -32,8 +32,8 @@ using namespace std;
 
 
 /* the cost map is computed by running a Dijkstra search from channel segment rr nodes at the specified reference coordinate */
-#define REF_X 3
-#define REF_Y 3
+#define REF_X 10
+#define REF_Y 10
 
 /* we will profile delay/congestion using this many tracks for each wire type */
 #define MAX_TRACK_OFFSET 16
@@ -65,13 +65,17 @@ public:
 	float congestion;
 
 	Cost_Entry(){
-		delay = -1.0;
-		congestion = -1.0;
+		delay = std::numeric_limits<float>::infinity();
+		congestion = std::numeric_limits<float>::infinity();
 	}
 	Cost_Entry(float set_delay, float set_congestion){
 		delay = set_delay;
 		congestion = set_congestion;
 	}
+
+    bool valid() const {
+        return std::isfinite(delay) && std::isfinite(congestion);
+    }
 };
 
 
@@ -206,7 +210,7 @@ static void free_cost_map();
 static int get_start_node_ind(int start_x, int start_y, int target_x, int target_y, t_rr_type rr_type, int seg_index, int track_offset);
 /* runs Dijkstra's algorithm from specified node until all nodes have been visited. Each time a pin is visited, the delay/congestion information
    to that pin is stored is added to an entry in the routing_cost_map */
-static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing_cost_map &routing_cost_map);
+static int64_t run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing_cost_map &routing_cost_map);
 /* iterates over the children of the specified node and selectively pushes them onto the priority queue */
 static void expand_dijkstra_neighbours(PQ_Entry parent_entry, vector<float> &node_visited_costs, vector<bool> &node_expanded, priority_queue<PQ_Entry> &pq);
 /* sets the lookahead cost map entries based on representative cost entries from routing_cost_map */
@@ -218,7 +222,7 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
 /* returns the absolute delta_x and delta_y offset required to reach to_node from from_node */
 static void get_xy_deltas(int from_node_ind, int to_node_ind, int *delta_x, int *delta_y);
 
-static void print_cost_map();
+static void print_cost_map(const std::vector<t_segment_inf>& segment_inf);
 
 /******** Function Definitions ********/
 /* queries the lookahead_map (should have been computed prior to routing) to get the expected cost
@@ -255,7 +259,8 @@ float get_lookahead_map_cost(int from_node_ind, int to_node_ind, float criticali
 
 /* Computes the lookahead map to be used by the router. If a map was computed prior to this, a new one will not be computed again.
    The rr graph must have been built before calling this function. */
-void compute_router_lookahead(int num_segments){
+void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf){
+    size_t num_segments = segment_inf.size();
     vtr::ScopedStartFinishTimer timer("Computing router lookahead map");
 
     f_cost_map.clear();
@@ -265,6 +270,7 @@ void compute_router_lookahead(int num_segments){
 	/* free previous delay map and allocate new one */
 	free_cost_map();
 	alloc_cost_map(num_segments);
+    int64_t entries = 0;
 
 	/* run Dijkstra's algorithm for each segment type & channel type combination */
 	for (int iseg = 0; iseg < num_segments; iseg++){
@@ -284,7 +290,7 @@ void compute_router_lookahead(int num_segments){
 					}
 
 					/* run Dijkstra's algorithm */
-					run_dijkstra(start_node_ind, REF_X+ref_inc, REF_Y+ref_inc, routing_cost_map);
+					entries += run_dijkstra(start_node_ind, REF_X+ref_inc, REF_Y+ref_inc, routing_cost_map);
 				}
 			}
 
@@ -298,7 +304,7 @@ void compute_router_lookahead(int num_segments){
 		}
 	}
 
-    if (false) print_cost_map();
+    if (true) print_cost_map(segment_inf);
 }
 
 /* returns index of a node from which to start routing */
@@ -361,7 +367,7 @@ static void free_cost_map(){
 
 /* runs Dijkstra's algorithm from specified node until all nodes have been visited. Each time a pin is visited, the delay/congestion information
    to that pin is stored is added to an entry in the routing_cost_map */
-static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing_cost_map &routing_cost_map){
+static int64_t run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing_cost_map &routing_cost_map){
 	auto& device_ctx = g_vpr_ctx.device();
 
 	/* a list of boolean flags (one for each rr node) to figure out if a certain node has already been expanded */
@@ -376,6 +382,8 @@ static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing
 	PQ_Entry first_entry(start_node_ind, UNDEFINED, 0, 0, 0, true);
 
 	pq.push( first_entry );
+
+    int64_t entries = 0;
 
 	/* now do routing */
 	while( !pq.empty() ){
@@ -399,12 +407,15 @@ static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing
 				get_xy_deltas(start_node_ind, node_ind, &delta_x, &delta_y);
 
 				routing_cost_map[delta_x][delta_y].add_cost_entry(current.delay, current.congestion_upstream);
+                entries += 1;
 			}
 		}
 
 		expand_dijkstra_neighbours(current, node_visited_costs, node_expanded, pq);
 		node_expanded[node_ind] = true;
 	}
+
+    return entries;
 }
 
 
@@ -475,7 +486,7 @@ static void fill_in_missing_lookahead_entries(int segment_index, e_rr_type chan_
 		for (unsigned iy = 0; iy < device_ctx.grid.height(); iy++){
 			Cost_Entry cost_entry = f_cost_map[chan_index][segment_index][ix][iy];
 
-			if (cost_entry.delay < 0 && cost_entry.congestion < 0){
+			if (!cost_entry.valid()) {
 				Cost_Entry copied_entry = get_nearby_cost_entry(ix, iy, segment_index, chan_index);
 				f_cost_map[chan_index][segment_index][ix][iy] = copied_entry;
 			}
@@ -489,7 +500,7 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
 	/* compute the slope from x,y to 0,0 and then move towards 0,0 by one unit to get the coordinates
 	   of the cost entry to be copied */
 
-	//VTR_ASSERT(x > 0 || y > 0); //Asertion fails in practise. TODO: debug
+	VTR_ASSERT(x >= 0 && y >= 0);
 
 	float slope;
 	if (x == 0){
@@ -509,12 +520,16 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
 		copy_y = vtr::nint( (float)x * slope );
 	}
 
-	//VTR_ASSERT(copy_x > 0 || copy_y > 0); //Asertion fails in practise. TODO: debug
+    if(copy_x < 0 || copy_y < 0) {
+        return Cost_Entry();
+    }
+
+	VTR_ASSERT(copy_x >= 0 && copy_y >= 0);
 
 	Cost_Entry copy_entry = f_cost_map[chan_index][segment_index][copy_x][copy_y];
 
 	/* if the entry to be copied is also empty, recurse */
-	if (copy_entry.delay < 0 && copy_entry.congestion < 0){
+	if (!copy_entry.valid()) {
 		copy_entry = get_nearby_cost_entry(copy_x, copy_y, segment_index, chan_index);
 	}
 
@@ -528,7 +543,7 @@ Cost_Entry Expansion_Cost_Entry::get_smallest_entry(){
 	Cost_Entry smallest_entry;
 
 	for (auto entry : this->cost_vector){
-		if (smallest_entry.delay < 0 || entry.delay < smallest_entry.delay){
+		if (!smallest_entry.valid() || entry.delay < smallest_entry.delay){
 			smallest_entry = entry;
 		}
 	}
@@ -580,10 +595,10 @@ Cost_Entry Expansion_Cost_Entry::get_median_entry(){
 	Cost_Entry min_del_entry;
 	Cost_Entry max_del_entry;
 	for(auto entry : this->cost_vector){
-		if (min_del_entry.delay < 0 || entry.delay < min_del_entry.delay){
+		if (!min_del_entry.valid() || entry.delay < min_del_entry.delay){
 			min_del_entry = entry;
 		}
-		if (max_del_entry.delay < 0 || entry.delay > max_del_entry.delay){
+		if (!max_del_entry.valid() || entry.delay > max_del_entry.delay){
 			max_del_entry = entry;
 		}
 	}
@@ -689,15 +704,16 @@ static void get_xy_deltas(int from_node_ind, int to_node_ind, int *delta_x, int 
 	}
 }
 
-static void print_cost_map() {
+static void print_cost_map(const std::vector<t_segment_inf>& segment_inf) {
 	auto& device_ctx = g_vpr_ctx.device();
 
     for (size_t chan_index = 0; chan_index < f_cost_map.dim_size(0); chan_index++){
         for (size_t iseg = 0; iseg < f_cost_map.dim_size(1); iseg++){
-            vtr::printf("Seg %d CHAN %d\n", iseg, chan_index);
+            vtr::printf("Seg %s(%d) CHAN %d\n", segment_inf.at(iseg).name.c_str(),
+                    iseg, chan_index);
             for (size_t iy = 0; iy < device_ctx.grid.height(); iy++){
                 for (size_t ix = 0; ix < device_ctx.grid.width(); ix++){
-                    vtr::printf("%d,%d: %.3e\t", ix, iy, f_cost_map[chan_index][iseg][ix][iy].delay);
+                    vtr::printf("%d,%d: %.3g\t", ix, iy, f_cost_map[chan_index][iseg][ix][iy].delay);
                 }
                 vtr::printf("\n");
             }

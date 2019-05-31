@@ -594,6 +594,7 @@ struct ParsePlaceDelayModel {
         ConvertedValue<PlaceDelayModelType> conv_value;
         if      (str == "delta") conv_value.set_value(PlaceDelayModelType::DELTA);
         else if (str == "delta_override") conv_value.set_value(PlaceDelayModelType::DELTA_OVERRIDE);
+        else if (str == "no_congestion") conv_value.set_value(PlaceDelayModelType::NO_CONGESTION);
         else {
             std::stringstream msg;
             msg << "Invalid conversion from '" << str << "' to PlaceDelayModelType (expected one of: " << argparse::join(default_choices(), ", ") << ")";
@@ -606,6 +607,7 @@ struct ParsePlaceDelayModel {
         ConvertedValue<std::string> conv_value;
         if (val == PlaceDelayModelType::DELTA) conv_value.set_value("delta");
         else if (val == PlaceDelayModelType::DELTA_OVERRIDE) conv_value.set_value("delta_override");
+        else if (val == PlaceDelayModelType::NO_CONGESTION) conv_value.set_value("no_congestion");
         else { 
             std::stringstream msg;
             msg << "Unrecognized PlaceDelayModelType";
@@ -615,7 +617,7 @@ struct ParsePlaceDelayModel {
     }
 
     std::vector<std::string> default_choices() {
-        return {"delta", "delta_override"};
+        return {"delta", "delta_override", "no_congestion"};
     }
 };
 
@@ -1425,6 +1427,14 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
 
     power_grp.add_argument(args.ActFile, "--activity_file")
             .help("Signal activities file for all nets (see documentation).")
+            .show_in(argparse::ShowIn::HELP_ONLY);
+
+    auto& route_diag_grp = parser.add_argument_group("route diagnostic options");
+    route_diag_grp.add_argument(args.sink_rr_node, "--sink_rr_node")
+            .help("Sink RR node to route for route_diag.")
+            .show_in(argparse::ShowIn::HELP_ONLY);
+    route_diag_grp.add_argument(args.source_rr_node, "--source_rr_node")
+            .help("Source RR node to route for route_diag.")
             .show_in(argparse::ShowIn::HELP_ONLY);
 
     return parser;

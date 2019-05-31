@@ -5,6 +5,7 @@
 #include "rr_graph2.h"
 
 #include "timing_place_lookup.h"
+#include "router_delay_profiling.h"
 
 #include "vtr_log.h"
 #include "vtr_math.h"
@@ -115,3 +116,45 @@ void OverrideDelayModel::dump_echo(std::string filepath) const {
 
 }
 
+float NoCongestionDelayModel::delay(int from_x, int from_y, int from_pin, int to_x, int to_y, int to_pin) const {
+
+    std::tuple <int, int, int, int, int, int> key = std::make_tuple(
+            from_x, from_y, from_pin, to_x, to_y, to_pin);
+
+    auto iter = delay_cache_.find(key);
+    if(iter != delay_cache_.end()) {
+        return iter->second;
+    }
+
+    const auto& device_ctx = g_vpr_ctx.device();
+
+    t_type_ptr source_blk_type = device_ctx.grid[from_x][from_y].type;
+    VTR_ASSERT(from_pin < source_blk_type->num_pins);
+    int source_pin = source_blk_type->pin_class[from_pin];
+    int source_rr_node = get_rr_node_index(device_ctx.rr_node_indices,
+            from_x, from_y, SOURCE, source_pin);
+    VTR_ASSERT(source_rr_node != OPEN);
+
+    t_type_ptr sink_blk_type = device_ctx.grid[to_x][to_y].type;
+    VTR_ASSERT(to_pin < sink_blk_type->num_pins);
+    int sink_pin = sink_blk_type->pin_class[to_pin];
+    int sink_rr_node = get_rr_node_index(device_ctx.rr_node_indices,
+            to_x, to_y, SINK, sink_pin);
+    VTR_ASSERT(sink_rr_node != OPEN);
+
+    float net_delay_value;
+    bool successfully_routed = calculate_delay(
+            source_rr_node, sink_rr_node,
+            router_opts_,
+            &net_delay_value);
+    if(!successfully_routed) {
+        net_delay_value = std::numeric_limits<float>::infinity();
+    }
+
+    delay_cache_.insert(std::make_pair(key, net_delay_value));
+
+    return net_delay_value;
+}
+
+void NoCongestionDelayModel::dump_echo(std::string filepath) const {
+}

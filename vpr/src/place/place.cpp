@@ -36,6 +36,7 @@ using namespace std;
 #include "timing_info.h"
 #include "tatum/echo_writer.hpp"
 #include "tatum/TimingReporter.hpp"
+#include "router_delay_profiling.h"
 
 /************** Types and defines local to place.c ***************************/
 
@@ -855,6 +856,9 @@ void try_place(t_placer_opts placer_opts,
 			|| placer_opts.enable_timing_computations) {
 		free_lookups_and_criticalities();
 	}
+    if (placer_opts.delay_model_type == PlaceDelayModelType::NO_CONGESTION) {
+        free_routing_structs();
+    }
 
 	free_try_swap_arrays();
 }

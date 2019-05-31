@@ -344,7 +344,7 @@ void create_rr_graph(
     print_rr_graph_stats();
 
     if (router_lookahead_type == e_router_lookahead::MAP) {
-        compute_router_lookahead(segment_inf.size());
+        compute_router_lookahead(segment_inf);
     }
 
     //Write out rr graph file if needed
