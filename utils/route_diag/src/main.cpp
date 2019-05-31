@@ -1,0 +1,179 @@
+// Tool to test routing from one node to another node.
+//
+// This tool is intended to allow extremely verbose router output on exactly
+// one path to diagnose router behavior, e.g. look ahead and A* characteristics.
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <fstream>
+using namespace std;
+
+#include "vtr_error.h"
+#include "vtr_memory.h"
+#include "vtr_log.h"
+
+#include "tatum/error.hpp"
+
+#include "vpr_error.h"
+#include "vpr_api.h"
+#include "vpr_signal_handler.h"
+
+#include "globals.h"
+
+#include "net_delay.h"
+#include "RoutingDelayCalculator.h"
+#include "place_and_route.h"
+#include "router_delay_profiling.h"
+#include "route_tree_type.h"
+#include "route_common.h"
+#include "route_timing.h"
+#include "route_tree_timing.h"
+#include "route_export.h"
+
+/*
+ * Exit codes to signal success/failure to scripts
+ * calling vpr
+ */
+constexpr int SUCCESS_EXIT_CODE = 0; //Everything OK
+constexpr int ERROR_EXIT_CODE = 1; //Something went wrong internally
+constexpr int UNIMPLEMENTABLE_EXIT_CODE = 2; //Could not implement (e.g. unroutable)
+constexpr int INTERRUPTED_EXIT_CODE = 3; //VPR was interrupted by the user (e.g. SIGINT/ctr-C)
+
+static void do_route_diag(int source_node, int sink_node,
+        const t_router_opts& router_opts) {
+    /* Returns true as long as found some way to hook up this net, even if that *
+     * way resulted in overuse of resources (congestion).  If there is no way   *
+     * to route this net, even ignoring congestion, it returns false.  In this  *
+     * case the rr_graph is disconnected and you can give up.                   */
+    auto& device_ctx = g_vpr_ctx.device();
+    auto& route_ctx = g_vpr_ctx.routing();
+
+    t_rt_node* rt_root = init_route_tree_to_source_no_net(source_node);
+    enable_router_debug(router_opts, ClusterNetId(), sink_node);
+
+    /* Update base costs according to fanout and criticality rules */
+    update_rr_base_costs(1);
+
+    //maximum bounding box for placement
+    t_bb bounding_box;
+    bounding_box.xmin = 0;
+    bounding_box.xmax = device_ctx.grid.width() + 1;
+    bounding_box.ymin = 0;
+    bounding_box.ymax = device_ctx.grid.height() + 1;
+
+    t_conn_cost_params cost_params;
+    cost_params.criticality = 1.;
+    cost_params.astar_fac = router_opts.astar_fac;
+    cost_params.bend_cost = router_opts.bend_cost;
+
+    route_budgets budgeting_inf;
+
+    init_heap(device_ctx.grid);
+
+    std::vector<int> modified_rr_node_inf;
+    RouterStats router_stats;
+    auto router_lookahead = make_router_lookahead(router_opts.lookahead_type);
+    t_heap* cheapest = timing_driven_route_connection_from_route_tree(rt_root, sink_node, cost_params, bounding_box, *router_lookahead, modified_rr_node_inf, router_stats);
+
+    bool found_path = (cheapest != nullptr);
+    if (found_path) {
+        VTR_ASSERT(cheapest->index == sink_node);
+
+        t_rt_node* rt_node_of_sink = update_route_tree(cheapest, nullptr);
+        free_heap_data(cheapest);
+
+        //find delay
+        float net_delay = rt_node_of_sink->Tdel;
+        VTR_LOG("Routed successfully, delay = %g!", net_delay);
+        print_route_tree_node(rt_node_of_sink);
+
+        VTR_ASSERT_MSG(route_ctx.rr_node_route_inf[rt_root->inode].occ() <= device_ctx.rr_nodes[rt_root->inode].capacity(), "SOURCE should never be congested");
+        free_route_tree(rt_root);
+    } else {
+        VTR_LOG("Routed failed");
+    }
+
+    //Reset for the next router call
+    empty_heap();
+    reset_path_costs(modified_rr_node_inf);
+}
+
+static t_chan_width setup_chan_width(t_router_opts router_opts,
+        t_chan_width_dist chan_width_dist) {
+    /*we give plenty of tracks, this increases routability for the */
+    /*lookup table generation */
+
+    int width_fac;
+
+    if (router_opts.fixed_channel_width == NO_FIXED_CHANNEL_WIDTH) {
+        auto& device_ctx = g_vpr_ctx.device();
+
+        auto type = find_most_common_block_type(device_ctx.grid);
+
+        width_fac = 4 * type->num_pins;
+        /*this is 2x the value that binary search starts */
+        /*this should be enough to allow most pins to   */
+        /*connect to tracks in the architecture */
+    } else {
+        width_fac = router_opts.fixed_channel_width;
+    }
+
+    return init_chan(width_fac, chan_width_dist);
+}
+
+int main(int argc, const char **argv) {
+    t_options Options = t_options();
+    t_arch Arch = t_arch();
+    t_vpr_setup vpr_setup = t_vpr_setup();
+
+    try {
+        vpr_install_signal_handler();
+
+        /* Read options, architecture, and circuit netlist */
+        vpr_init(argc, argv, &Options, &vpr_setup, &Arch);
+
+        vpr_create_device(vpr_setup, Arch);
+
+        t_chan_width chan_width = setup_chan_width(
+                vpr_setup.RouterOpts,
+                Arch.Chans);
+        alloc_routing_structs(
+                chan_width,
+                vpr_setup.RouterOpts,
+                &vpr_setup.RoutingArch,
+                vpr_setup.Segments,
+                Arch.Directs,
+                Arch.num_directs
+                );
+
+        do_route_diag(
+                Options.source_rr_node, Options.sink_rr_node,
+                vpr_setup.RouterOpts);
+        free_routing_structs();
+
+        /* free data structures */
+        vpr_free_all(Arch, vpr_setup);
+
+    } catch (const tatum::Error& tatum_error) {
+        vtr::printf_error(__FILE__, __LINE__, "STA Engine: %s\n", tatum_error.what());
+
+        return ERROR_EXIT_CODE;
+
+    } catch (const VprError& vpr_error) {
+        vpr_print_error(vpr_error);
+
+        if (vpr_error.type() == VPR_ERROR_INTERRUPTED) {
+            return INTERRUPTED_EXIT_CODE;
+        } else {
+            return ERROR_EXIT_CODE;
+        }
+
+    } catch (const vtr::VtrError& vtr_error) {
+        vtr::printf_error(__FILE__, __LINE__, "%s:%d %s\n", vtr_error.filename_c_str(), vtr_error.line(), vtr_error.what());
+
+        return ERROR_EXIT_CODE;
+    }
+
+    /* Signal success to scripts */
+    return SUCCESS_EXIT_CODE;
+}

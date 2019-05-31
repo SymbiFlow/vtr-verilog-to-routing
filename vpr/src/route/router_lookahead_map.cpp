@@ -208,7 +208,7 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
 /* returns the absolute delta_x and delta_y offset required to reach to_node from from_node */
 static void get_xy_deltas(int from_node_ind, int to_node_ind, int* delta_x, int* delta_y);
 
-static void print_cost_map();
+static void print_cost_map(const std::vector<t_segment_inf>& segment_inf);
 
 /******** Function Definitions ********/
 /* queries the lookahead_map (should have been computed prior to routing) to get the expected cost
@@ -244,7 +244,8 @@ float get_lookahead_map_cost(int from_node_ind, int to_node_ind, float criticali
 
 /* Computes the lookahead map to be used by the router. If a map was computed prior to this, a new one will not be computed again.
  * The rr graph must have been built before calling this function. */
-void compute_router_lookahead(int num_segments) {
+void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf) {
+    size_t num_segments = segment_inf.size();
     vtr::ScopedStartFinishTimer timer("Computing router lookahead map");
 
     f_cost_map.clear();
@@ -287,7 +288,7 @@ void compute_router_lookahead(int num_segments) {
         }
     }
 
-    if (false) print_cost_map();
+    if (true) print_cost_map(segment_inf);
 }
 
 /* returns index of a node from which to start routing */
@@ -663,15 +664,16 @@ static void get_xy_deltas(int from_node_ind, int to_node_ind, int* delta_x, int*
     }
 }
 
-static void print_cost_map() {
+static void print_cost_map(const std::vector<t_segment_inf>& segment_inf) {
     auto& device_ctx = g_vpr_ctx.device();
 
     for (size_t chan_index = 0; chan_index < f_cost_map.dim_size(0); chan_index++) {
         for (size_t iseg = 0; iseg < f_cost_map.dim_size(1); iseg++) {
-            vtr::printf("Seg %d CHAN %d\n", iseg, chan_index);
+            vtr::printf("Seg %s(%d) CHAN %d\n", segment_inf.at(iseg).name.c_str(),
+                        iseg, chan_index);
             for (size_t iy = 0; iy < device_ctx.grid.height(); iy++) {
                 for (size_t ix = 0; ix < device_ctx.grid.width(); ix++) {
-                    vtr::printf("%d,%d: %.3e\t", ix, iy, f_cost_map[chan_index][iseg][ix][iy].delay);
+                    vtr::printf("%d,%d: %.3g\t", ix, iy, f_cost_map[chan_index][iseg][ix][iy].delay);
                 }
                 vtr::printf("\n");
             }

@@ -1610,6 +1610,14 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .help("Signal activities file for all nets (see documentation).")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    auto& route_diag_grp = parser.add_argument_group("route diagnostic options");
+    route_diag_grp.add_argument(args.sink_rr_node, "--sink_rr_node")
+        .help("Sink RR node to route for route_diag.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+    route_diag_grp.add_argument(args.source_rr_node, "--source_rr_node")
+        .help("Source RR node to route for route_diag.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
     return parser;
 }
 

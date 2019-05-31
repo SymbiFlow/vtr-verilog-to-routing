@@ -300,8 +300,6 @@ static bool is_high_fanout(int fanout, int fanout_threshold);
 static size_t dynamic_update_bounding_boxes(int high_fanout_threshold);
 static t_bb calc_current_bb(const t_trace* head);
 
-static void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr);
-
 static bool is_better_quality_routing(const vtr::vector<ClusterNetId, t_traceback>& best_routing,
                                       const RoutingMetrics& best_routing_metrics,
                                       const WirelengthInfo& wirelength_info,
@@ -2645,7 +2643,7 @@ static t_bb calc_current_bb(const t_trace* head) {
     return bb;
 }
 
-static void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr) {
+void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int sink_rr) {
     bool all_net_debug = (router_opts.router_debug_net == -1);
 
     bool specific_net_debug = (router_opts.router_debug_net >= 0);
