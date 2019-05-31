@@ -56,11 +56,11 @@ struct t_pb_graph_pin_power;
 struct t_mode;
 struct t_pb_graph_node_power;
 struct t_port;
-struct t_pb_graph_node;
+class t_pb_graph_node;
 struct t_pin_to_pin_annotation;
 struct t_interconnect;
-struct t_pb_graph_pin;
-struct t_pb_graph_edge;
+class t_pb_graph_pin;
+class t_pb_graph_edge;
 struct t_cluster_placement_primitive;
 struct t_arch;
 enum class e_sb_type;
@@ -170,21 +170,8 @@ enum e_pin_location_distr {
 
 /* pb_type class */
 enum e_pb_type_class {
-    UNKNOWN_CLASS = 0,
-    LUT_CLASS = 1,
-    LATCH_CLASS = 2,
-    MEMORY_CLASS = 3,
-    NUM_CLASSES
+	UNKNOWN_CLASS = 0, LUT_CLASS = 1, LATCH_CLASS = 2, MEMORY_CLASS = 3
 };
-
-// Set of all pb_type classes
-constexpr std::array<e_pb_type_class, NUM_CLASSES> TYPE_CLASSES = {
-    {UNKNOWN_CLASS, LUT_CLASS, LATCH_CLASS, MEMORY_CLASS} };
-
-// String versions of pb_type class values
-constexpr std::array<const char*, NUM_CLASSES> TYPE_CLASS_STRING = {
-    {"unknown", "lut", "flipflop", "memory"} };
-
 
 /* Annotations for pin-to-pin connections */
 enum e_pin_to_pin_annotation_type {
@@ -880,7 +867,7 @@ struct t_pin_to_pin_annotation {
  *      parent_pb_graph_node  : parent pb graph node
  *      total_primitive_count : Total number of this primitive type in the cluster. If there are 10 ALMs per cluster
  *                              and 2 FFs per ALM (given the mode of the parent of this primitive) then the total is 20.
- *      illegal_modes         : vector containing illigal modes that result in conflicts during routing.
+ *      illegal_modes         : vector containing illigal modes that result in conflicts during routing
  */
 class t_pb_graph_node {
 public:
@@ -888,6 +875,24 @@ public:
 
 	int placement_index;
 
+	/* Contains a collection of mode indices that cannot be used as they produce conflicts during VPR packing stage
+	 *
+	 * Illegal modes do arise when children of a graph_node do have inconsistent `edge_modes` with respect to
+	 * the parent_pb.
+	 * Example: Edges that connect LUTs A, B and C to the parent pb_graph_node refer to the correct parent's mode which is set to "LUTs",
+	 *          but edges of LUT D have the mode of edge corresponding to a wrong parent's pb_graph_node mode, namely "LUTRAM".
+	 *          This situation is unfeasible as the edge modes are incosistent between siblings of the same parent pb_graph_node.
+	 *          In this case, the "LUTs" mode of the parent pb_graph_node cannot be used as the LUT D is not able to have a feasible
+	 *          edge mode that does relate with the other sibling's edge modes.
+	 *
+	 *          The "LUTs" index mode is added to the illegal_modes vector. The conflicting mode marked as illegal is the most restrictive one.
+	 *          This means that LUT D is unable to be routed if using the parent's "LUTs" mode (otherwise "LUTs" mode would be selected for LUT D
+	 *          as well), but LUTs A, B and C could still be routed using the parent pb_graph_node's mode "LUTRAM".
+	 *          Therefore, "LUTs" is marked as illegal and all the LUTs (A, B, C and D) will have a consistent parent pb_graph_node mode, namely "LUTRAM".
+	 *
+	 * Usage: cluster_router uses this information to exclude the expansion of a node which has a not cosistent mode.
+	 *        Everytime the mode consistency check fails, the index of the mode that causes the conflict is added to this vector.
+	 * */
 	std::vector<int> illegal_modes;
 
 	t_pb_graph_pin **input_pins; /* [0..num_input_ports-1] [0..num_port_pins-1]*/
@@ -1172,7 +1177,6 @@ struct t_segment_inf {
 	std::vector<bool> cb;
 	std::vector<bool> sb;
 	//float Cmetal_per_m; /* Wire capacitance (per meter) */
-	t_metadata_dict *meta = nullptr;
 };
 
 enum class SwitchType {
@@ -1198,7 +1202,6 @@ enum class BufferSize {
  * R:  Equivalent resistance of the buffer/switch.                           *
  * Cin:  Input capacitance.                                                  *
  * Cout:  Output capacitance.                                                *
- * Cinternal: Internal capacitance in a buffer with fanout.                  *
  * Tdel_map: A map where the key is the number of inputs and the entry       *
  *           is the corresponding delay. If there is only one entry at key   *
  *           UNDEFINED, then delay is a constant (doesn't vary with fan-in). *
@@ -1216,7 +1219,6 @@ struct t_arch_switch_inf {
         float R = 0.;
         float Cin = 0.;
         float Cout = 0.;
-        float Cinternal = 0.; // defined the property Cinternal 
         float mux_trans_size = 1.;
         BufferSize buf_size_type = BufferSize::AUTO;
         float buf_size = 0.;
@@ -1265,7 +1267,6 @@ struct t_arch_switch_inf {
  * R:  Equivalent resistance of the buffer/switch.                           *
  * Cin:  Input capacitance.                                                  *
  * Cout:  Output capacitance.                                                *
- * Cinternal: Internal capacitance in a buffer.                              *
  * Tdel:  Intrinsic delay.  The delay through an unloaded switch is          *
  *        Tdel + R * Cout.                                                   *
  * mux_trans_size:  The area of each transistor in the segment's driving mux *
@@ -1276,7 +1277,6 @@ struct t_rr_switch_inf {
 	float R = 0.;
 	float Cin = 0.;
 	float Cout = 0.;
-	float Cinternal = 0.; //defined the property Cinternal
 	float Tdel = 0.;
 	float mux_trans_size = 0.;
 	float buf_size = 0.;

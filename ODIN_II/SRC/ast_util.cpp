@@ -178,16 +178,28 @@ ast_node_t *free_single_node(ast_node_t *node)
 }
 
 /*---------------------------------------------------------------------------
- * (function: free_whole_tree)
+ * (function: free_all_children)
  *-------------------------------------------------------------------------*/
-ast_node_t *free_whole_tree(ast_node_t *node)
+void free_all_children(ast_node_t *node)
 {
 	long i;
 
 	if (node){
 		for (i = 0; i < node->num_children; i++)
 			node->children[i] = free_whole_tree(node->children[i]);
+		vtr::free(node->children);
+		node->children = NULL;
+		node->num_children = 0;
 	}
+	
+}
+
+/*---------------------------------------------------------------------------
+ * (function: free_whole_tree)
+ *-------------------------------------------------------------------------*/
+ast_node_t *free_whole_tree(ast_node_t *node)
+{
+	free_all_children(node);
 	return free_single_node(node);
 }
 
@@ -389,6 +401,26 @@ void add_child_at_the_beginning_of_the_node(ast_node_t* node, ast_node_t *child)
 }
 
 /*---------------------------------------------------------------------------------------------
+ * (function: expand_node_list_at)
+ *-------------------------------------------------------------------------------------------*/
+ast_node_t **expand_node_list_at(ast_node_t **list, long old_size, long to_add, long start_idx)
+{
+	if (list)
+	{
+		long new_size = old_size + to_add;
+		list = (ast_node_t **)vtr::realloc(list, sizeof(ast_node_t*) * new_size);
+
+		long i;
+		for (i = new_size-1; i >= (start_idx + to_add); i--)
+		{
+			list[i] = list[i-to_add];
+		}
+		return list;
+	}
+	return NULL;
+}
+
+/*---------------------------------------------------------------------------------------------
  * (function: make_concat_into_list_of_strings)
  * 	0th idx will be the MSbit
  *-------------------------------------------------------------------------------------------*/
@@ -522,6 +554,7 @@ void change_to_number_node(ast_node_t *node, long value)
 		temp_ident = strdup(node->types.identifier);
 	}
 	free_assignement_of_node_keep_tree(node);
+	free_all_children(node);
 	
 	long len = snprintf(NULL,0,"%ld", value);
 	char *number = (char *)vtr::calloc(len+1,sizeof(char));

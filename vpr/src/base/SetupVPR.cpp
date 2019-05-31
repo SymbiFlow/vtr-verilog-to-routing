@@ -196,8 +196,8 @@ void SetupVPR(t_options *Options,
 
     {
         vtr::ScopedStartFinishTimer t("Building complex block graph");
-	alloc_and_load_all_pb_graphs(PowerOpts->do_power);
-	*PackerRRGraphs = alloc_and_load_all_lb_type_rr_graph();
+        alloc_and_load_all_pb_graphs(PowerOpts->do_power);
+        *PackerRRGraphs = alloc_and_load_all_lb_type_rr_graph();
     }
 
     if ((Options->clock_modeling == ROUTED_CLOCK) ||
@@ -395,11 +395,11 @@ void SetupPackerOpts(const t_options& Options,
 
 	PackerOpts->blif_file_name = Options.BlifFile;
 
-	if (Options.do_packing) {
-		PackerOpts->doPacking = STAGE_DO;
-	}
+    if (Options.do_packing) {
+        PackerOpts->doPacking = STAGE_DO;
+    }
 
-	//TODO: document?
+    //TODO: document?
 	PackerOpts->global_clocks = true; /* DEFAULT */
 	PackerOpts->hill_climbing_flag = false; /* DEFAULT */
 
@@ -414,9 +414,11 @@ void SetupPackerOpts(const t_options& Options,
 	PackerOpts->enable_round_robin_prepacking = Options.enable_round_robin_prepacking;
 	PackerOpts->balance_block_type_utilization = Options.balance_block_type_utilization;
 	PackerOpts->target_external_pin_util = Options.target_external_pin_util;
-	PackerOpts->target_device_utilization = Options.target_device_utilization;
+    PackerOpts->target_device_utilization = Options.target_device_utilization;
+    PackerOpts->prioritize_transitive_connectivity = Options.pack_prioritize_transitive_connectivity;
+    PackerOpts->high_fanout_threshold = Options.pack_high_fanout_threshold;
 
-	//TODO: document?
+    //TODO: document?
 	PackerOpts->inter_cluster_net_delay = 1.0; /* DEFAULT */
 	PackerOpts->auto_compute_inter_cluster_net_delay = true;
 	PackerOpts->packer_algorithm = PACK_GREEDY; /* DEFAULT */

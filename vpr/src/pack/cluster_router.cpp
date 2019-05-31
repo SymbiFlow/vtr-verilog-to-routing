@@ -80,14 +80,32 @@ static void fix_duplicate_equivalent_pins(t_lb_router_data *router_data);
 
 static void commit_remove_rt(t_lb_trace *rt, t_lb_router_data *router_data, e_commit_remove op,
 		std::unordered_map<const t_pb_graph_node *, const t_mode *> *mode_map,
-		bool *is_mode_conflict);
+		t_mode_selection_status * mode_status);
 static bool is_skip_route_net(t_lb_trace *rt, t_lb_router_data *router_data);
 static void add_source_to_rt(t_lb_router_data *router_data, int inet);
 static void expand_rt(t_lb_router_data *router_data, int inet, reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int irt_net);
 static void expand_rt_rec(t_lb_trace *rt, int prev_index, t_explored_node_tb *explored_node_tb,
 	reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int irt_net, int explore_id_index);
+static bool try_expand_nodes(t_lb_router_data *router_data,
+		t_intra_lb_net * lb_net,
+		t_expansion_node * exp_node,
+		reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq,
+		int itarget,
+		bool try_other_modes,
+		int verbosity);
+
+static void expand_edges(t_lb_router_data *router_data,
+		int mode,
+		int cur_inode,
+		float cur_cost,
+		int net_fanout,
+		reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq);
+
 static void expand_node(t_lb_router_data *router_data, t_expansion_node exp_node,
 	reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int net_fanout);
+static void expand_node_all_modes(t_lb_router_data *router_data, t_expansion_node exp_node,
+	reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int net_fanout);
+
 static bool add_to_rt(t_lb_trace *rt, int node_index, t_lb_router_data *router_data, int irt_net);
 static bool is_route_success(t_lb_router_data *router_data);
 static t_lb_trace *find_node_in_rt(t_lb_trace *rt, int rt_index);
@@ -203,11 +221,15 @@ static bool check_edge_for_route_conflicts(
 				mode->name, result.first->second->name,
 				edge->interconnect->name) << std::endl;
 
+			// The illegal mode is added to the pb_graph_node as it resulted in a conflict during atom-to-atom routing. This mode cannot be used in the consequent cluster
+			// generation try.
 			if (std::find(pb_graph_node->illegal_modes.begin(), pb_graph_node->illegal_modes.end(), result.first->second->index) == pb_graph_node->illegal_modes.end()) {
 				pb_graph_node->illegal_modes.push_back(result.first->second->index);
 			}
 
-			if (pb_graph_node->illegal_modes.size() >= pb_graph_node->pb_type->num_modes) {
+			// If the number of illegal modes equals the number of available mode for a specific pb_graph_node it means that no cluster can be generated. This resuts
+			// in a fatal error.
+			if ((int) pb_graph_node->illegal_modes.size() >= pb_graph_node->pb_type->num_modes) {
 				VPR_THROW(VPR_ERROR_PACK, "There are no more available modes to be used. Routing Failed!");
 			}
 
@@ -315,17 +337,78 @@ void set_reset_pb_modes(t_lb_router_data *router_data, const t_pb *pb, const boo
 	}
 }
 
+/* Expand all the nodes for a given lb_net */
+static bool try_expand_nodes(t_lb_router_data *router_data,
+		t_intra_lb_net * lb_net,
+		t_expansion_node * exp_node,
+		reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq,
+		int itarget,
+		bool try_other_modes,
+		int verbosity) {
+	bool is_impossible = false;
+
+	do {
+		if (pq.empty()) {
+			/* No connection possible */
+			is_impossible = true;
+
+			if (verbosity > 3) {
+				//Print detailed debug info
+				auto& atom_nlist = g_vpr_ctx.atom().nlist;
+				AtomNetId net_id = lb_net->atom_net_id;
+				AtomPinId driver_pin = lb_net->atom_pins[0];
+				AtomPinId sink_pin = lb_net->atom_pins[itarget];
+				int driver_rr_node = lb_net->terminals[0];
+				int sink_rr_node = lb_net->terminals[itarget];
+
+				VTR_LOG("\t\t\tNo possible routing path from %s to %s: needed for net '%s' from net pin '%s'",
+							describe_lb_type_rr_node(driver_rr_node, router_data).c_str(),
+							describe_lb_type_rr_node(sink_rr_node, router_data).c_str(),
+							atom_nlist.net_name(net_id).c_str(),
+							atom_nlist.pin_name(driver_pin).c_str());
+				VTR_LOGV(sink_pin, " to net pin '%s'", atom_nlist.pin_name(sink_pin).c_str());
+				VTR_LOG("\n");
+			}
+		} else {
+			*exp_node = pq.top();
+			pq.pop();
+			int exp_inode = exp_node->node_index;
+
+			if (router_data->explored_node_tb[exp_inode].explored_id != router_data->explore_id_index) {
+				/* First time node is popped implies path to this node is the lowest cost.
+					If the node is popped a second time, then the path to that node is higher than this path so
+					ignore.
+				*/
+				router_data->explored_node_tb[exp_inode].explored_id = router_data->explore_id_index;
+				router_data->explored_node_tb[exp_inode].prev_index = exp_node->prev_index;
+				if (exp_inode != lb_net->terminals[itarget]) {
+					if (!try_other_modes) {
+						expand_node(router_data, *exp_node, pq, lb_net->terminals.size() - 1);
+					} else {
+						expand_node_all_modes(router_data, *exp_node, pq, lb_net->terminals.size() - 1);
+					}
+				}
+			}
+		}
+	} while (exp_node->node_index != lb_net->terminals[itarget] && !is_impossible);
+
+	return is_impossible;
+}
+
 /* Attempt to route routing driver/targets on the current architecture
    Follows pathfinder negotiated congestion algorithm
 */
 bool try_intra_lb_route(t_lb_router_data *router_data,
                         int verbosity,
-                        bool *is_mode_conflict) {
+                        t_mode_selection_status * mode_status) {
 	vector <t_intra_lb_net> & lb_nets = *router_data->intra_lb_nets;
 	vector <t_lb_type_rr_node> & lb_type_graph = *router_data->lb_type_graph;
 	bool is_routed = false;
 	bool is_impossible = false;
-	*is_mode_conflict = false;
+
+	mode_status->is_mode_conflict = false;
+	mode_status->try_expand_all_modes = false;
+
 	t_expansion_node exp_node;
 
 	/* Stores state info during route */
@@ -356,7 +439,7 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 			if (is_skip_route_net(lb_nets[idx].rt_tree, router_data)) {
 				continue;
 			}
-			commit_remove_rt(lb_nets[idx].rt_tree, router_data, RT_REMOVE, &mode_map, is_mode_conflict);
+			commit_remove_rt(lb_nets[idx].rt_tree, router_data, RT_REMOVE, &mode_map, mode_status);
 			free_lb_net_rt(lb_nets[idx].rt_tree);
 			lb_nets[idx].rt_tree = nullptr;
 			add_source_to_rt(router_data, idx);
@@ -367,47 +450,16 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 				/* Get lowest cost next node, repeat until a path is found or if it is impossible to route */
 
 				expand_rt(router_data, idx, pq, idx);
-				do {
-					if(pq.empty()) {
-						/* No connection possible */
-						is_impossible = true;
 
-                        if (verbosity > 3) {
-                            //Print detailed debug info
-                            auto& atom_nlist = g_vpr_ctx.atom().nlist;
-                            AtomNetId net_id = lb_nets[inet].atom_net_id;
-                            AtomPinId driver_pin = lb_nets[inet].atom_pins[0];
-                            AtomPinId sink_pin = lb_nets[inet].atom_pins[itarget];
-                            int driver_rr_node = lb_nets[inet].terminals[0];
-                            int sink_rr_node = lb_nets[inet].terminals[itarget];
+				is_impossible = try_expand_nodes(router_data, &lb_nets[idx], &exp_node, pq, itarget, mode_status->expand_all_modes, verbosity);
 
-                            VTR_LOG("\t\t\tNo possible routing path from %s to %s: needed for net '%s' from net pin '%s'",
-                                        describe_lb_type_rr_node(driver_rr_node, router_data).c_str(),
-                                        describe_lb_type_rr_node(sink_rr_node, router_data).c_str(),
-                                        atom_nlist.net_name(net_id).c_str(),
-                                        atom_nlist.pin_name(driver_pin).c_str());
-                            VTR_LOGV(sink_pin, " to net pin '%s'", atom_nlist.pin_name(sink_pin).c_str());
-                            VTR_LOG("\n");
+				if (is_impossible && !mode_status->expand_all_modes) {
+					mode_status->try_expand_all_modes = true;
+					mode_status->expand_all_modes = true;
+					break;
                         }
-					} else {
-						exp_node = pq.top();
-						pq.pop();
 
-                        if(router_data->explored_node_tb[exp_node.node_index].explored_id != router_data->explore_id_index) {
-							/* First time node is popped implies path to this node is the lowest cost.
-								If the node is popped a second time, then the path to that node is higher than this path so
-								ignore.
-							*/
-							router_data->explored_node_tb[exp_node.node_index].explored_id = router_data->explore_id_index;
-							router_data->explored_node_tb[exp_node.node_index].prev_index = exp_node.prev_index;
-							if(exp_node.node_index != lb_nets[idx].terminals[itarget]) {
-							   expand_node(router_data, exp_node, pq, lb_nets[idx].terminals.size() - 1);
-							}
-                        }
-					}
-				} while(exp_node.node_index != lb_nets[idx].terminals[itarget] && !is_impossible);
-
-				if(exp_node.node_index == lb_nets[idx].terminals[itarget]) {
+				if (exp_node.node_index == lb_nets[idx].terminals[itarget]) {
 					/* Net terminal is routed, add this to the route tree, clear data structures, and keep going */
 					is_impossible = add_to_rt(lb_nets[idx].rt_tree, exp_node.node_index, router_data, idx);
 				}
@@ -421,7 +473,7 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 
 				if (is_impossible) {
 					vtr::printf("Routing was impossible!\n");
-				} else {
+				} else if (mode_status->expand_all_modes) {
 					is_impossible = route_has_conflict(lb_nets[idx].rt_tree, router_data);
 					if (is_impossible) {
 						vtr::printf("Routing was impossible due to modes!\n");
@@ -439,10 +491,12 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 				}
 			}
 
-			commit_remove_rt(lb_nets[idx].rt_tree, router_data, RT_COMMIT, &mode_map, is_mode_conflict);
-			if (*is_mode_conflict) {
+			if (!is_impossible) {
+				commit_remove_rt(lb_nets[idx].rt_tree, router_data, RT_COMMIT, &mode_map, mode_status);
+				if (mode_status->is_mode_conflict) {
 				is_impossible = true;
 			}
+		}
 		}
 
 		if(!is_impossible) {
@@ -460,7 +514,7 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
 	if (is_routed) {
 		save_and_reset_lb_route(router_data);
 	} else {
-        //Unroutable
+		//Unroutable
 #ifdef PRINT_INTRA_LB_ROUTE
 		print_route("intra_lb_failed_route.echo", router_data);
 #endif
@@ -473,7 +527,7 @@ bool try_intra_lb_route(t_lb_router_data *router_data,
             }
 		}
 
-        //Clean-up
+		//Clean-up
 		for (unsigned int inet = 0; inet < lb_nets.size(); inet++) {
 			free_lb_net_rt(lb_nets[inet].rt_tree);
 			lb_nets[inet].rt_tree = nullptr;
@@ -935,7 +989,7 @@ static void fix_duplicate_equivalent_pins(t_lb_router_data *router_data) {
 /* Commit or remove route tree from currently routed solution */
 static void commit_remove_rt(t_lb_trace *rt, t_lb_router_data *router_data, e_commit_remove op,
 		std::unordered_map<const t_pb_graph_node *, const t_mode *> *mode_map,
-		bool *is_mode_conflict) {
+		t_mode_selection_status * mode_status) {
 	t_lb_rr_node_stats *lb_rr_node_stats;
 	t_explored_node_tb *explored_node_tb;
 	vector <t_lb_type_rr_node> & lb_type_graph = *router_data->lb_type_graph;
@@ -974,16 +1028,16 @@ static void commit_remove_rt(t_lb_trace *rt, t_lb_router_data *router_data, e_co
 		// Check to see if there is no mode conflict between previous nets.
 		// A conflict is present if there are differing modes between a pb_graph_node
 		// and its children.
-		if (op == RT_COMMIT) {
+		if (op == RT_COMMIT && mode_status->try_expand_all_modes) {
 			auto &node = lb_type_graph[rt->next_nodes[i].current_node];
 			auto *pin = node.pb_graph_pin;
 
 			if (check_edge_for_route_conflicts(mode_map, driver_pin, pin)) {
-				*is_mode_conflict = true;
+				mode_status->is_mode_conflict = true;
 			}
 		}
 
-		commit_remove_rt(&rt->next_nodes[i], router_data, op, mode_map, is_mode_conflict);
+		commit_remove_rt(&rt->next_nodes[i], router_data, op, mode_map, mode_status);
 	}
 }
 
@@ -1060,53 +1114,29 @@ static void expand_rt_rec(t_lb_trace *rt, int prev_index, t_explored_node_tb *ex
 	}
 }
 
-
-/* Expand all nodes found in route tree into priority queue */
-static void expand_node(t_lb_router_data *router_data, t_expansion_node exp_node,
-	reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int net_fanout) {
-
+/* Expand all edges of an expantion node */
+static void expand_edges(t_lb_router_data *router_data,
+		int mode,
+		int cur_inode,
+		float cur_cost,
+		int net_fanout,
+		reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq) {
 	vector <t_lb_type_rr_node> & lb_type_graph = *router_data->lb_type_graph;
 	t_lb_rr_node_stats *lb_rr_node_stats = router_data->lb_rr_node_stats;
-
-	auto cur_inode = exp_node.node_index;
-	auto cur_cost = exp_node.cost;
-	auto cur_mode = lb_rr_node_stats[cur_inode].mode;
-	auto &node = lb_type_graph[cur_inode];
-	auto *pin = node.pb_graph_pin;
 	t_lb_router_params params = router_data->params;
-
-	for (int mode = 0; mode < lb_type_graph[cur_inode].num_modes; mode++) {
-		/* If a mode has been forced, only add edges from that mode, otherwise add edges from all modes. */
-		if (cur_mode != -1 && mode != cur_mode) {
-			continue;
-		}
-
-		/* Check whether a mode is illegal. If it is then the node will not be expanded */
-		bool is_illegal = false;
-		if(pin != nullptr) {
-			auto *pb_graph_node = pin->parent_node;
-			for (auto illegal_mode : pb_graph_node->illegal_modes) {
-				if (mode == illegal_mode) {
-					is_illegal = true;
-					break;
-				}
-			}
-		}
-
-		if (is_illegal == true) {
-			continue;
-		}
+	t_expansion_node enode;
+	int usage;
+	float incr_cost;
 
 		for(int iedge = 0; iedge < lb_type_graph[cur_inode].num_fanout[mode]; iedge++) {
 		/* Init new expansion node */
-			t_expansion_node enode;
 			enode.prev_index = cur_inode;
 			enode.node_index = lb_type_graph[cur_inode].outedges[mode][iedge].node_index;
 		enode.cost = cur_cost;
 
 		/* Determine incremental cost of using expansion node */
-			auto usage = lb_rr_node_stats[enode.node_index].occ + 1 - lb_type_graph[enode.node_index].capacity;
-			auto incr_cost = lb_type_graph[enode.node_index].intrinsic_cost;
+		usage = lb_rr_node_stats[enode.node_index].occ + 1 - lb_type_graph[enode.node_index].capacity;
+		incr_cost = lb_type_graph[enode.node_index].intrinsic_cost;
 			incr_cost += lb_type_graph[cur_inode].outedges[mode][iedge].intrinsic_cost;
 		incr_cost += params.hist_fac * lb_rr_node_stats[enode.node_index].historical_usage;
 		if(usage > 0) {
@@ -1141,6 +1171,64 @@ static void expand_node(t_lb_router_data *router_data, t_expansion_node exp_node
 		}
 	}
 }
+
+/* Expand all nodes found in route tree into priority queue */
+static void expand_node(t_lb_router_data *router_data, t_expansion_node exp_node,
+        reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int net_fanout) {
+
+	int cur_node;
+	float cur_cost;
+	int mode;
+	t_expansion_node enode;
+	t_lb_rr_node_stats *lb_rr_node_stats = router_data->lb_rr_node_stats;
+
+	cur_node = exp_node.node_index;
+	cur_cost = exp_node.cost;
+	mode = lb_rr_node_stats[cur_node].mode;
+	if (mode == -1) {
+		mode = 0;
+	}
+
+	expand_edges(router_data, mode, cur_node, cur_cost, net_fanout, pq);
+}
+
+/* Expand all nodes using all possible modes found in route tree into priority queue */
+static void expand_node_all_modes(t_lb_router_data *router_data, t_expansion_node exp_node,
+		reservable_pq<t_expansion_node, vector <t_expansion_node>, compare_expansion_node> &pq, int net_fanout) {
+
+	vector <t_lb_type_rr_node> & lb_type_graph = *router_data->lb_type_graph;
+	t_lb_rr_node_stats *lb_rr_node_stats = router_data->lb_rr_node_stats;
+
+	int cur_inode = exp_node.node_index;
+	float cur_cost = exp_node.cost;
+	int cur_mode = lb_rr_node_stats[cur_inode].mode;
+	auto &node = lb_type_graph[cur_inode];
+	auto *pin = node.pb_graph_pin;
+
+	for (int mode = 0; mode < lb_type_graph[cur_inode].num_modes; mode++) {
+		/* If a mode has been forced, only add edges from that mode, otherwise add edges from all modes. */
+		if (cur_mode != -1 && mode != cur_mode) {
+			continue;
+}
+
+		/* Check whether a mode is illegal. If it is then the node will not be expanded */
+		bool is_illegal = false;
+		if(pin != nullptr) {
+			auto *pb_graph_node = pin->parent_node;
+			for (auto illegal_mode : pb_graph_node->illegal_modes) {
+				if (mode == illegal_mode) {
+					is_illegal = true;
+					break;
+				}
+			}
+		}
+
+		if (is_illegal == true) {
+			continue;
+		}
+
+		expand_edges(router_data, mode, cur_inode, cur_cost, net_fanout, pq);
+	}
 }
 
 
