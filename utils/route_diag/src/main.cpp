@@ -84,8 +84,12 @@ static void do_route_diag(int source_node, int sink_node,
 
         //find delay
         float net_delay = rt_node_of_sink->Tdel;
-        VTR_LOG("Routed successfully, delay = %g!", net_delay);
-        print_route_tree_node(rt_node_of_sink);
+        VTR_LOG("Routed successfully, delay = %g!\n", net_delay);
+        VTR_LOG("\n");
+        print_route_tree_node(rt_root);
+        VTR_LOG("\n");
+        print_route_tree(rt_root);
+        VTR_LOG("\n");
 
         VTR_ASSERT_MSG(route_ctx.rr_node_route_inf[rt_root->inode].occ() <= device_ctx.rr_nodes[rt_root->inode].capacity(), "SOURCE should never be congested");
         free_route_tree(rt_root);

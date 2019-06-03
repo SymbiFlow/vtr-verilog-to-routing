@@ -1,18 +1,4 @@
-/*
- * The router lookahead provides an estimate of the cost from an intermediate node to the target node
- * during directed (A*-like) routing.
- *
- * The VPR 7.0 lookahead (route/route_timing.c ==> get_timing_driven_expected_cost) lower-bounds the remaining delay and
- * congestion by assuming that a minimum number of wires, of the same type as the current node being expanded, can be used
- * to complete the route. While this method is efficient, it can run into trouble with architectures that use
- * multiple interconnected wire types.
- *
- * The lookahead in this file pre-computes delay/congestion costs up and to the right of a starting tile. This generates
- * delay/congestion tables for {CHANX, CHANY} channel types, over all wire types defined in the architecture file.
- * See Section 3.2.4 in Oleg Petelin's MASc thesis (2016) for more discussion.
- *
- */
-
+#include "router_lookahead_map_utils.h"
 #include <cmath>
 #include <vector>
 #include <queue>
@@ -30,8 +16,8 @@
 using namespace std;
 
 /* the cost map is computed by running a Dijkstra search from channel segment rr nodes at the specified reference coordinate */
-#define REF_X 3
-#define REF_Y 3
+#define REF_X 14
+#define REF_Y 14
 
 /* we will profile delay/congestion using this many tracks for each wire type */
 #define MAX_TRACK_OFFSET 16
@@ -41,153 +27,6 @@ using namespace std;
  * we can take the smallest cost, the average, median, etc. This define selects the method we use.
  * See e_representative_entry_method */
 #define REPRESENTATIVE_ENTRY_METHOD SMALLEST
-
-/* when a list of delay/congestion entries at a coordinate in Cost_Entry is boiled down to a single
- * representative entry, this enum is passed-in to specify how that representative entry should be
- * calculated */
-enum e_representative_entry_method {
-    FIRST = 0, //the first cost that was recorded
-    SMALLEST,  //the smallest-delay cost recorded
-    AVERAGE,
-    GEOMEAN,
-    MEDIAN
-};
-
-/* f_cost_map is an array of these cost entries that specifies delay/congestion estimates
- * to travel relative x/y distances */
-class Cost_Entry {
-  public:
-    float delay;
-    float congestion;
-
-    Cost_Entry() {
-        delay = std::numeric_limits<float>::infinity();
-        congestion = std::numeric_limits<float>::infinity();
-    }
-    Cost_Entry(float set_delay, float set_congestion) {
-        delay = set_delay;
-        congestion = set_congestion;
-    }
-
-    bool valid() const {
-        return std::isfinite(delay) && std::isfinite(congestion);
-    }
-};
-
-/* a class that stores delay/congestion information for a given relative coordinate during the Dijkstra expansion.
- * since it stores multiple cost entries, it is later boiled down to a single representative cost entry to be stored
- * in the final lookahead cost map */
-class Expansion_Cost_Entry {
-  private:
-    vector<Cost_Entry> cost_vector;
-
-    Cost_Entry get_smallest_entry();
-    Cost_Entry get_average_entry();
-    Cost_Entry get_geomean_entry();
-    Cost_Entry get_median_entry();
-
-  public:
-    void add_cost_entry(float add_delay, float add_congestion) {
-        Cost_Entry cost_entry(add_delay, add_congestion);
-        if (REPRESENTATIVE_ENTRY_METHOD == SMALLEST) {
-            /* taking the smallest-delay entry anyway, so no need to push back multple entries */
-            if (this->cost_vector.empty()) {
-                this->cost_vector.push_back(cost_entry);
-            } else {
-                if (add_delay < this->cost_vector[0].delay) {
-                    this->cost_vector[0] = cost_entry;
-                }
-            }
-        } else {
-            this->cost_vector.push_back(cost_entry);
-        }
-    }
-    void clear_cost_entries() {
-        this->cost_vector.clear();
-    }
-
-    Cost_Entry get_representative_cost_entry(e_representative_entry_method method) {
-        Cost_Entry entry;
-
-        if (!cost_vector.empty()) {
-            switch (method) {
-                case FIRST:
-                    entry = cost_vector[0];
-                    break;
-                case SMALLEST:
-                    entry = this->get_smallest_entry();
-                    break;
-                case AVERAGE:
-                    entry = this->get_average_entry();
-                    break;
-                case GEOMEAN:
-                    entry = this->get_geomean_entry();
-                    break;
-                case MEDIAN:
-                    entry = this->get_median_entry();
-                    break;
-                default:
-                    break;
-            }
-        }
-        return entry;
-    }
-};
-
-/* a class that represents an entry in the Dijkstra expansion priority queue */
-class PQ_Entry {
-  public:
-    int rr_node_ind; //index in device_ctx.rr_nodes that this entry represents
-    float cost;      //the cost of the path to get to this node
-
-    /* store backward delay, R and congestion info */
-    float delay;
-    float R_upstream;
-    float congestion_upstream;
-
-    PQ_Entry(int set_rr_node_ind, int /*switch_ind*/, float parent_delay, float parent_R_upstream, float parent_congestion_upstream, bool starting_node) {
-        this->rr_node_ind = set_rr_node_ind;
-
-        auto& device_ctx = g_vpr_ctx.device();
-        this->delay = parent_delay;
-        this->congestion_upstream = parent_congestion_upstream;
-        this->R_upstream = parent_R_upstream;
-        if (!starting_node) {
-            int cost_index = device_ctx.rr_nodes[set_rr_node_ind].cost_index();
-            //this->delay += g_rr_nodes[set_rr_node_ind].C() * (g_rr_switch_inf[switch_ind].R + 0.5*g_rr_nodes[set_rr_node_ind].R()) +
-            //              g_rr_switch_inf[switch_ind].Tdel;
-
-            //FIXME going to use the delay data that the VPR7 lookahead uses. For some reason the delay calculation above calculates
-            //    a value that's just a little smaller compared to what VPR7 lookahead gets. While the above calculation should be more accurate,
-            //    I have found that it produces the same CPD results but with worse runtime.
-            //
-            //    TODO: figure out whether anything's wrong with the calculation above and use that instead. If not, add the other
-            //          terms like T_quadratic and R_upstream to the calculation below (they are == 0 or UNDEFINED for buffered archs I think)
-            VTR_ASSERT(device_ctx.rr_indexed_data[cost_index].T_quadratic <= 0.);
-            VTR_ASSERT(device_ctx.rr_indexed_data[cost_index].C_load <= 0.);
-            this->delay += device_ctx.rr_indexed_data[cost_index].T_linear;
-
-            this->congestion_upstream += device_ctx.rr_indexed_data[cost_index].base_cost;
-        }
-
-        /* set the cost of this node */
-        this->cost = this->delay;
-    }
-
-    bool operator<(const PQ_Entry& obj) const {
-        /* inserted into max priority queue so want queue entries with a lower cost to be greater */
-        return (this->cost > obj.cost);
-    }
-};
-
-/* provides delay/congestion estimates to travel specified distances
- * in the x/y direction */
-typedef vtr::NdMatrix<Cost_Entry, 4> t_cost_map; //[0..1][[0..num_seg_types-1]0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
-                                                 //[0..1] entry distinguish between CHANX/CHANY start nodes respectively
-
-/* used during Dijkstra expansion to store delay/congestion info lists for each relative coordinate for a given segment and channel type.
- * the list at each coordinate is later boiled down to a single representative cost entry to be stored in the final cost map */
-typedef vtr::Matrix<Expansion_Cost_Entry> t_routing_cost_map; //[0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
 
 /******** File-Scope Variables ********/
 /* The cost map */
@@ -234,9 +73,6 @@ float get_lookahead_map_cost(int from_node_ind, int to_node_ind, float criticali
 
     /* now get the expected cost from our lookahead map */
     int from_chan_index = 0;
-    if (from_type == CHANY) {
-        from_chan_index = 1;
-    }
 
     Cost_Entry cost_entry = f_cost_map[from_chan_index][from_seg_index][delta_x][delta_y];
     float expected_delay = cost_entry.delay;
@@ -262,9 +98,9 @@ void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf) {
 
     /* run Dijkstra's algorithm for each segment type & channel type combination */
     for (int iseg = 0; iseg < num_segments; iseg++) {
+        /* allocate the cost map for this iseg/chan_type */
+        t_routing_cost_map routing_cost_map({device_ctx.grid.width(), device_ctx.grid.height()});
         for (e_rr_type chan_type : {CHANX, CHANY}) {
-            /* allocate the cost map for this iseg/chan_type */
-            t_routing_cost_map routing_cost_map({device_ctx.grid.width(), device_ctx.grid.height()});
 
             for (int ref_inc = 0; ref_inc < 3; ref_inc++) {
                 for (int track_offset = 0; track_offset < MAX_TRACK_OFFSET; track_offset += 2) {
@@ -282,14 +118,15 @@ void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf) {
                 }
             }
 
-            /* boil down the cost list in routing_cost_map at each coordinate to a representative cost entry and store it in the lookahead
-             * cost map */
-            set_lookahead_map_costs(iseg, chan_type, routing_cost_map);
-
-            /* fill in missing entries in the lookahead cost map by copying the closest cost entries (cost map was computed based on
-             * a reference coordinate > (0,0) so some entries that represent a cross-chip distance have not been computed) */
-            fill_in_missing_lookahead_entries(iseg, chan_type);
         }
+
+        /* boil down the cost list in routing_cost_map at each coordinate to a representative cost entry and store it in the lookahead
+            * cost map */
+        set_lookahead_map_costs(iseg, CHANX, routing_cost_map);
+
+        /* fill in missing entries in the lookahead cost map by copying the closest cost entries (cost map was computed based on
+            * a reference coordinate > (0,0) so some entries that represent a cross-chip distance have not been computed) */
+        fill_in_missing_lookahead_entries(iseg, CHANX);
     }
 
     if (true) print_cost_map(segment_inf);
@@ -387,7 +224,9 @@ static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing
                 int delta_x, delta_y;
                 get_xy_deltas(start_node_ind, node_ind, &delta_x, &delta_y);
 
-                routing_cost_map[delta_x][delta_y].add_cost_entry(current.delay, current.congestion_upstream);
+                routing_cost_map[delta_x][delta_y].add_cost_entry(
+                        REPRESENTATIVE_ENTRY_METHOD,
+                        current.delay, current.congestion_upstream);
             }
         }
 
@@ -432,14 +271,11 @@ static void expand_dijkstra_neighbours(PQ_Entry parent_entry, vector<float>& nod
 /* sets the lookahead cost map entries based on representative cost entries from routing_cost_map */
 static void set_lookahead_map_costs(int segment_index, e_rr_type chan_type, t_routing_cost_map& routing_cost_map) {
     int chan_index = 0;
-    if (chan_type == CHANY) {
-        chan_index = 1;
-    }
 
     /* set the lookahead cost map entries with a representative cost entry from routing_cost_map */
     for (unsigned ix = 0; ix < routing_cost_map.dim_size(0); ix++) {
         for (unsigned iy = 0; iy < routing_cost_map.dim_size(1); iy++) {
-            Expansion_Cost_Entry& expansion_cost_entry = routing_cost_map[ix][iy];
+            const Expansion_Cost_Entry& expansion_cost_entry = routing_cost_map[ix][iy];
 
             f_cost_map[chan_index][segment_index][ix][iy] = expansion_cost_entry.get_representative_cost_entry(REPRESENTATIVE_ENTRY_METHOD);
         }
@@ -449,9 +285,6 @@ static void set_lookahead_map_costs(int segment_index, e_rr_type chan_type, t_ro
 /* fills in missing lookahead map entries by copying the cost of the closest valid entry */
 static void fill_in_missing_lookahead_entries(int segment_index, e_rr_type chan_type) {
     int chan_index = 0;
-    if (chan_type == CHANY) {
-        chan_index = 1;
-    }
 
     auto& device_ctx = g_vpr_ctx.device();
 
@@ -507,102 +340,6 @@ static Cost_Entry get_nearby_cost_entry(int x, int y, int segment_index, int cha
     }
 
     return copy_entry;
-}
-
-/* returns cost entry with the smallest delay */
-Cost_Entry Expansion_Cost_Entry::get_smallest_entry() {
-    Cost_Entry smallest_entry;
-
-    for (auto entry : this->cost_vector) {
-        if (!smallest_entry.valid() || entry.delay < smallest_entry.delay) {
-            smallest_entry = entry;
-        }
-    }
-
-    return smallest_entry;
-}
-
-/* returns a cost entry that represents the average of all the recorded entries */
-Cost_Entry Expansion_Cost_Entry::get_average_entry() {
-    float avg_delay = 0;
-    float avg_congestion = 0;
-
-    for (auto cost_entry : this->cost_vector) {
-        avg_delay += cost_entry.delay;
-        avg_congestion += cost_entry.congestion;
-    }
-
-    avg_delay /= (float)this->cost_vector.size();
-    avg_congestion /= (float)this->cost_vector.size();
-
-    return Cost_Entry(avg_delay, avg_congestion);
-}
-
-/* returns a cost entry that represents the geomean of all the recorded entries */
-Cost_Entry Expansion_Cost_Entry::get_geomean_entry() {
-    float geomean_delay = 0;
-    float geomean_cong = 0;
-    for (auto cost_entry : this->cost_vector) {
-        geomean_delay += log(cost_entry.delay);
-        geomean_cong += log(cost_entry.congestion);
-    }
-
-    geomean_delay = exp(geomean_delay / (float)this->cost_vector.size());
-    geomean_cong = exp(geomean_cong / (float)this->cost_vector.size());
-
-    return Cost_Entry(geomean_delay, geomean_cong);
-}
-
-/* returns a cost entry that represents the medial of all recorded entries */
-Cost_Entry Expansion_Cost_Entry::get_median_entry() {
-    /* find median by binning the delays of all entries and then chosing the bin
-     * with the largest number of entries */
-
-    int num_bins = 10;
-
-    /* find entries with smallest and largest delays */
-    Cost_Entry min_del_entry;
-    Cost_Entry max_del_entry;
-    for (auto entry : this->cost_vector) {
-        if (!min_del_entry.valid() || entry.delay < min_del_entry.delay) {
-            min_del_entry = entry;
-        }
-        if (!max_del_entry.valid() || entry.delay > max_del_entry.delay) {
-            max_del_entry = entry;
-        }
-    }
-
-    /* get the bin size */
-    float delay_diff = max_del_entry.delay - min_del_entry.delay;
-    float bin_size = delay_diff / (float)num_bins;
-
-    /* sort the cost entries into bins */
-    vector<vector<Cost_Entry> > entry_bins(num_bins, vector<Cost_Entry>());
-    for (auto entry : this->cost_vector) {
-        float bin_num = floor((entry.delay - min_del_entry.delay) / bin_size);
-
-        VTR_ASSERT(vtr::nint(bin_num) >= 0 && vtr::nint(bin_num) <= num_bins);
-        if (vtr::nint(bin_num) == num_bins) {
-            /* largest entry will otherwise have an out-of-bounds bin number */
-            bin_num -= 1;
-        }
-        entry_bins[vtr::nint(bin_num)].push_back(entry);
-    }
-
-    /* find the bin with the largest number of elements */
-    int largest_bin = 0;
-    int largest_size = 0;
-    for (int ibin = 0; ibin < num_bins; ibin++) {
-        if (entry_bins[ibin].size() > (unsigned)largest_size) {
-            largest_bin = ibin;
-            largest_size = (unsigned)entry_bins[ibin].size();
-        }
-    }
-
-    /* get the representative delay of the largest bin */
-    Cost_Entry representative_entry = entry_bins[largest_bin][0];
-
-    return representative_entry;
 }
 
 /* returns the absolute delta_x and delta_y offset required to reach to_node from from_node */
@@ -675,7 +412,7 @@ static void get_xy_deltas(int from_node_ind, int to_node_ind, int* delta_x, int*
 static void print_cost_map(const std::vector<t_segment_inf>& segment_inf) {
     auto& device_ctx = g_vpr_ctx.device();
 
-    for (size_t chan_index = 0; chan_index < f_cost_map.dim_size(0); chan_index++) {
+    for (size_t chan_index = 0; chan_index < 1; chan_index++) {
         for (size_t iseg = 0; iseg < f_cost_map.dim_size(1); iseg++) {
             vtr::printf("Seg %s(%d) CHAN %d\n", segment_inf.at(iseg).name.c_str(),
                         iseg, chan_index);

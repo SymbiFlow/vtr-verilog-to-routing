@@ -1270,7 +1270,8 @@ static t_heap* timing_driven_route_connection_from_heap(int sink_node,
         ++router_stats.heap_pops;
 
         int inode = cheapest->index;
-        VTR_LOGV_DEBUG(f_router_debug, "  Popping node %d\n", inode);
+        VTR_LOGV_DEBUG(f_router_debug, "  Popping node %d (cost: %g)\n", 
+                inode, cheapest->cost);
 
         //Have we found the target?
         if (inode == sink_node) {
@@ -1346,7 +1347,8 @@ static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(
         ++router_stats.heap_pops;
 
         int inode = cheapest->index;
-        VTR_LOGV_DEBUG(f_router_debug, "  Popping node %d\n", inode);
+        VTR_LOGV_DEBUG(f_router_debug, "  Popping node %d (cost: %g)\n", 
+                inode, cheapest->cost);
 
         //Since we want to find shortest paths to all nodes in the graph
         //we do not specify a target node.
@@ -1403,6 +1405,8 @@ static void timing_driven_expand_cheapest(t_heap* cheapest,
 
     if (old_total_cost > new_total_cost && old_back_cost > new_back_cost) {
         VTR_LOGV_DEBUG(f_router_debug, "    Better cost to %d\n", inode);
+        VTR_LOGV_DEBUG(f_router_debug, "    New total cost: %g\n", new_total_cost);
+        VTR_LOGV_DEBUG(f_router_debug, "    New back cost: %g\n", new_back_cost);
         for (t_heap_prev prev : cheapest->nodes) {
             VTR_LOGV_DEBUG(f_router_debug, "      Setting path costs for assicated node %d (from %d edge %d)\n", prev.to_node, prev.from_node, prev.from_edge);
 
@@ -1418,6 +1422,12 @@ static void timing_driven_expand_cheapest(t_heap* cheapest,
                                         router_lookahead,
                                         target_node,
                                         router_stats);
+    } else {
+        VTR_LOGV_DEBUG(f_router_debug, "    Worse cost to %d\n", inode);
+        VTR_LOGV_DEBUG(f_router_debug, "    Old total cost: %g\n", old_total_cost);
+        VTR_LOGV_DEBUG(f_router_debug, "    Old back cost: %g\n", old_back_cost);
+        VTR_LOGV_DEBUG(f_router_debug, "    New total cost: %g\n", new_total_cost);
+        VTR_LOGV_DEBUG(f_router_debug, "    New back cost: %g\n", new_back_cost);
     }
 }
 
