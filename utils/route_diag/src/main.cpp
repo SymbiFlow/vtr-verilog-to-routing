@@ -29,6 +29,7 @@ using namespace std;
 #include "route_timing.h"
 #include "route_tree_timing.h"
 #include "route_export.h"
+#include "rr_graph.h"
 
 /*
  * Exit codes to signal success/failure to scripts
@@ -125,6 +126,15 @@ static t_chan_width setup_chan_width(t_router_opts router_opts,
     return init_chan(width_fac, chan_width_dist);
 }
 
+static void dump_rr_indexed_data() {
+    FILE *fp = fopen("rr_indexed.txt", "w");
+
+    auto& device_ctx = g_vpr_ctx.device();
+    for(size_t i = 0; i < device_ctx.rr_indexed_data.size(); ++i) {
+        print_rr_indexed_data(fp, i);
+    }
+}
+
 int main(int argc, const char **argv) {
     t_options Options = t_options();
     t_arch Arch = t_arch();
@@ -136,7 +146,10 @@ int main(int argc, const char **argv) {
         /* Read options, architecture, and circuit netlist */
         vpr_init(argc, argv, &Options, &vpr_setup, &Arch);
 
-        vpr_create_device(vpr_setup, Arch);
+        vpr_create_device_grid(vpr_setup, Arch);
+
+        vpr_setup_clock_networks(vpr_setup, Arch);
+
 
         t_chan_width chan_width = setup_chan_width(
                 vpr_setup.RouterOpts,
@@ -149,6 +162,8 @@ int main(int argc, const char **argv) {
                 Arch.Directs,
                 Arch.num_directs
                 );
+
+        dump_rr_indexed_data();
 
         do_route_diag(
                 Options.source_rr_node, Options.sink_rr_node,

@@ -193,6 +193,7 @@ void load_rr_file(const t_graph_type graph_type,
         }
 
         check_rr_graph(graph_type, grid, device_ctx.block_types);
+        device_ctx.connection_boxes.create_sink_back_ref();
 
     } catch (XmlError& e) {
         vpr_throw(VPR_ERROR_ROUTE, read_rr_graph_name, e.line(), "%s", e.what());
@@ -349,6 +350,15 @@ void process_nodes(pugi::xml_node parent, const pugiutil::loc_data& loc_data) {
                 VTR_ASSERT((strcmp(correct_direction, "NO_DIR") == 0));
                 node.set_direction(NO_DIRECTION);
             }
+        }
+
+        pugi::xml_node connection_boxSubnode = get_single_child(rr_node, "canonical_loc", loc_data, OPTIONAL);
+        if(connection_boxSubnode) {
+            int x = get_attribute(connection_boxSubnode, "x", loc_data).as_int();
+            int y = get_attribute(connection_boxSubnode, "y", loc_data).as_int();
+
+            device_ctx.connection_boxes.add_canonical_loc(inode,
+                    std::make_pair(x, y));
         }
 
         node.set_capacity(get_attribute(rr_node, "capacity", loc_data).as_float());
@@ -882,11 +892,13 @@ void process_connection_boxes(pugi::xml_node parent, const pugiutil::loc_data& l
     pugi::xml_node connection_box = get_first_child(parent, "connection_box", loc_data);
     std::vector<ConnectionBox> boxes(num_boxes);
     while(connection_box) {
-        int id = get_attribute(parent, "id", loc_data).as_int(-1);
-        const char * name = get_attribute(parent, "name", loc_data).as_string(nullptr);
+        int id = get_attribute(connection_box, "id", loc_data).as_int(-1);
+        const char * name = get_attribute(connection_box, "name", loc_data).as_string(nullptr);
         VTR_ASSERT(id >= 0 && id < num_boxes);
         VTR_ASSERT(boxes.at(id).name == "");
         boxes.at(id).name = std::string(name);
+
+        connection_box = connection_box.next_sibling(connection_box.name());
     }
 
     device_ctx.connection_boxes.reset_boxes(std::make_pair(x_dim, y_dim), boxes);

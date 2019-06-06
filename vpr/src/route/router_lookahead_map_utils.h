@@ -18,6 +18,7 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <queue>
 #include "vpr_types.h"
 
 /* when a list of delay/congestion entries at a coordinate in Cost_Entry is boiled down to a single
@@ -134,13 +135,8 @@ class PQ_Entry {
     }
 };
 
-/* provides delay/congestion estimates to travel specified distances
- * in the x/y direction */
-typedef vtr::NdMatrix<Cost_Entry, 4> t_cost_map; //[0..1][[0..num_seg_types-1]0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
-                                                 //[0..1] entry distinguish between CHANX/CHANY start nodes respectively
-
-/* used during Dijkstra expansion to store delay/congestion info lists for each relative coordinate for a given segment and channel type.
- * the list at each coordinate is later boiled down to a single representative cost entry to be stored in the final cost map */
-typedef vtr::Matrix<Expansion_Cost_Entry> t_routing_cost_map; //[0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
+void expand_dijkstra_neighbours(PQ_Entry parent_entry,
+        std::vector<float>& node_visited_costs, std::vector<bool>& node_expanded,
+        std::priority_queue<PQ_Entry>& pq);
 
 #endif

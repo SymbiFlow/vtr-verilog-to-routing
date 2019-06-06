@@ -4,7 +4,13 @@
 #include "vpr_context.h"
 #include "vtr_math.h"
 
-PQ_Entry::PQ_Entry(int set_rr_node_ind, int /*switch_ind*/, float parent_delay, float parent_R_upstream, float parent_congestion_upstream, bool starting_node) {
+/* Number of CLBs I think the average conn. goes. */
+static const int CLB_DIST = 3;
+
+PQ_Entry::PQ_Entry(
+        int set_rr_node_ind, int switch_ind, float parent_delay,
+        float parent_R_upstream, float parent_congestion_upstream,
+        bool starting_node) {
     this->rr_node_ind = set_rr_node_ind;
 
     auto& device_ctx = g_vpr_ctx.device();
@@ -13,20 +19,37 @@ PQ_Entry::PQ_Entry(int set_rr_node_ind, int /*switch_ind*/, float parent_delay, 
     this->R_upstream = parent_R_upstream;
     if (!starting_node) {
         int cost_index = device_ctx.rr_nodes[set_rr_node_ind].cost_index();
-        //this->delay += g_rr_nodes[set_rr_node_ind].C() * (g_rr_switch_inf[switch_ind].R + 0.5*g_rr_nodes[set_rr_node_ind].R()) +
-        //              g_rr_switch_inf[switch_ind].Tdel;
 
-        //FIXME going to use the delay data that the VPR7 lookahead uses. For some reason the delay calculation above calculates
-        //    a value that's just a little smaller compared to what VPR7 lookahead gets. While the above calculation should be more accurate,
-        //    I have found that it produces the same CPD results but with worse runtime.
-        //
-        //    TODO: figure out whether anything's wrong with the calculation above and use that instead. If not, add the other
-        //          terms like T_quadratic and R_upstream to the calculation below (they are == 0 or UNDEFINED for buffered archs I think)
-        VTR_ASSERT(device_ctx.rr_indexed_data[cost_index].T_quadratic <= 0.);
-        VTR_ASSERT(device_ctx.rr_indexed_data[cost_index].C_load <= 0.);
-        this->delay += device_ctx.rr_indexed_data[cost_index].T_linear;
+        float Tsw = device_ctx.rr_switch_inf[switch_ind].Tdel;
+        float Rsw = device_ctx.rr_switch_inf[switch_ind].R;
+        float Cnode = device_ctx.rr_nodes[set_rr_node_ind].C();
+        float Rnode = device_ctx.rr_nodes[set_rr_node_ind].R();
 
-        this->congestion_upstream += device_ctx.rr_indexed_data[cost_index].base_cost;
+        float T_linear = 0.f;
+        float T_quadratic = 0.f;
+        if (device_ctx.rr_switch_inf[switch_ind].buffered()) {
+            T_linear = Tsw + Rsw * Cnode + 0.5 * Rnode * Cnode;
+            T_quadratic = 0.;
+        } else { /* Pass transistor */
+            T_linear = Tsw + 0.5 * Rsw * Cnode;
+            T_quadratic = (Rsw + Rnode) * 0.5 * Cnode;
+        }
+
+        float base_cost;
+        if(device_ctx.rr_indexed_data[cost_index].inv_length < 0) {
+            base_cost = device_ctx.rr_indexed_data[cost_index].base_cost;
+        } else {
+            float frac_num_seg = CLB_DIST * device_ctx.rr_indexed_data[cost_index].inv_length;
+
+            base_cost = frac_num_seg * T_linear
+                + frac_num_seg * frac_num_seg * T_quadratic;
+        }
+
+        VTR_ASSERT(T_linear >= 0.);
+        VTR_ASSERT(base_cost >= 0.);
+        this->delay += T_linear;
+
+        this->congestion_upstream += base_cost;
     }
 
     /* set the cost of this node */
@@ -129,3 +152,36 @@ Cost_Entry Expansion_Cost_Entry::get_median_entry() const {
     return representative_entry;
 }
 
+/* iterates over the children of the specified node and selectively pushes them onto the priority queue */
+void expand_dijkstra_neighbours(PQ_Entry parent_entry,
+        std::vector<float>& node_visited_costs, std::vector<bool>& node_expanded, std::priority_queue<PQ_Entry>& pq) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    int parent_ind = parent_entry.rr_node_ind;
+
+    auto& parent_node = device_ctx.rr_nodes[parent_ind];
+
+    for (int iedge = 0; iedge < parent_node.num_edges(); iedge++) {
+        int child_node_ind = parent_node.edge_sink_node(iedge);
+        int switch_ind = parent_node.edge_switch(iedge);
+
+        /* skip this child if it has already been expanded from */
+        if (node_expanded[child_node_ind]) {
+            continue;
+        }
+
+        PQ_Entry child_entry(child_node_ind, switch_ind, parent_entry.delay,
+                             parent_entry.R_upstream, parent_entry.congestion_upstream, false);
+
+        //VTR_ASSERT(child_entry.cost >= 0);
+
+        /* skip this child if it has been visited with smaller cost */
+        if (node_visited_costs[child_node_ind] >= 0 && node_visited_costs[child_node_ind] < child_entry.cost) {
+            continue;
+        }
+
+        /* finally, record the cost with which the child was visited and put the child entry on the queue */
+        node_visited_costs[child_node_ind] = child_entry.cost;
+        pq.push(child_entry);
+    }
+}

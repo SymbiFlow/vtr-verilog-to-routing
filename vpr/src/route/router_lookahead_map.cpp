@@ -1,3 +1,4 @@
+#include "router_lookahead_map.h"
 #include "router_lookahead_map_utils.h"
 #include <cmath>
 #include <vector>
@@ -11,7 +12,6 @@
 #include "vtr_log.h"
 #include "vtr_assert.h"
 #include "vtr_time.h"
-#include "router_lookahead_map.h"
 
 using namespace std;
 
@@ -28,6 +28,15 @@ using namespace std;
  * See e_representative_entry_method */
 #define REPRESENTATIVE_ENTRY_METHOD SMALLEST
 
+/* provides delay/congestion estimates to travel specified distances
+ * in the x/y direction */
+typedef vtr::NdMatrix<Cost_Entry, 4> t_cost_map; //[0..1][[0..num_seg_types-1]0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
+                                                 //[0..1] entry distinguish between CHANX/CHANY start nodes respectively
+
+/* used during Dijkstra expansion to store delay/congestion info lists for each relative coordinate for a given segment and channel type.
+ * the list at each coordinate is later boiled down to a single representative cost entry to be stored in the final cost map */
+typedef vtr::Matrix<Expansion_Cost_Entry> t_routing_cost_map; //[0..device_ctx.grid.width()-1][0..device_ctx.grid.height()-1]
+
 /******** File-Scope Variables ********/
 /* The cost map */
 t_cost_map f_cost_map;
@@ -40,8 +49,6 @@ static int get_start_node_ind(int start_x, int start_y, int target_x, int target
 /* runs Dijkstra's algorithm from specified node until all nodes have been visited. Each time a pin is visited, the delay/congestion information
  * to that pin is stored is added to an entry in the routing_cost_map */
 static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing_cost_map& routing_cost_map);
-/* iterates over the children of the specified node and selectively pushes them onto the priority queue */
-static void expand_dijkstra_neighbours(PQ_Entry parent_entry, vector<float>& node_visited_costs, vector<bool>& node_expanded, priority_queue<PQ_Entry>& pq);
 /* sets the lookahead cost map entries based on representative cost entries from routing_cost_map */
 static void set_lookahead_map_costs(int segment_index, e_rr_type chan_type, t_routing_cost_map& routing_cost_map);
 /* fills in missing lookahead map entries by copying the cost of the closest valid entry */
@@ -232,39 +239,6 @@ static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing
 
         expand_dijkstra_neighbours(current, node_visited_costs, node_expanded, pq);
         node_expanded[node_ind] = true;
-    }
-}
-
-/* iterates over the children of the specified node and selectively pushes them onto the priority queue */
-static void expand_dijkstra_neighbours(PQ_Entry parent_entry, vector<float>& node_visited_costs, vector<bool>& node_expanded, priority_queue<PQ_Entry>& pq) {
-    auto& device_ctx = g_vpr_ctx.device();
-
-    int parent_ind = parent_entry.rr_node_ind;
-
-    auto& parent_node = device_ctx.rr_nodes[parent_ind];
-
-    for (int iedge = 0; iedge < parent_node.num_edges(); iedge++) {
-        int child_node_ind = parent_node.edge_sink_node(iedge);
-        int switch_ind = parent_node.edge_switch(iedge);
-
-        /* skip this child if it has already been expanded from */
-        if (node_expanded[child_node_ind]) {
-            continue;
-        }
-
-        PQ_Entry child_entry(child_node_ind, switch_ind, parent_entry.delay,
-                             parent_entry.R_upstream, parent_entry.congestion_upstream, false);
-
-        //VTR_ASSERT(child_entry.cost >= 0); //Asertion fails in practise. TODO: debug
-
-        /* skip this child if it has been visited with smaller cost */
-        if (node_visited_costs[child_node_ind] >= 0 && node_visited_costs[child_node_ind] < child_entry.cost) {
-            continue;
-        }
-
-        /* finally, record the cost with which the child was visited and put the child entry on the queue */
-        node_visited_costs[child_node_ind] = child_entry.cost;
-        pq.push(child_entry);
     }
 }
 
