@@ -115,12 +115,6 @@ class OveruseInfo {
     size_t worst_overuse_;
 };
 
-struct t_timing_driven_node_costs {
-    float backward_cost = 0.;
-    float total_cost = 0.;
-    float R_upstream = 0.;
-};
-
 struct RoutingMetrics {
     size_t used_wirelength = 0;
 
@@ -169,8 +163,7 @@ static t_heap* timing_driven_route_connection_from_heap(int sink_node,
                                                         std::vector<int>& modified_rr_node_inf,
                                                         RouterStats& router_stats);
 
-static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(
-    const t_conn_cost_params cost_params,
+static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(const t_conn_cost_params cost_params,
     t_bb bounding_box,
     std::vector<int>& modified_rr_node_inf,
     RouterStats& router_stats);
@@ -242,22 +235,12 @@ static void timing_driven_expand_node(const t_conn_cost_params cost_params,
                                       const int iconn,
                                       const int target_node);
 
-static void timing_driven_expand_node_non_configurable_recurr(
+static void evaluate_timing_driven_node_costs(t_heap* from,
     const t_conn_cost_params cost_params,
     const RouterLookahead& router_lookahead,
-    t_heap* current,
     const int from_node,
     const int to_node,
     const int iconn,
-    const int target_node,
-    std::set<int>& visited);
-
-static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timing_driven_node_costs old_costs,
-                                                                    const t_conn_cost_params cost_params,
-                                                                    const RouterLookahead& router_lookahead,
-                                                                    const int from_node,
-                                                                    const int to_node,
-                                                                    const int iconn,
                                                                     const int target_node);
 
 static bool timing_driven_check_net_delays(vtr::vector<ClusterNetId, float*>& net_delay);
@@ -448,8 +431,7 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
          * Route each net
          */
         for (auto net_id : sorted_nets) {
-            bool is_routable = try_timing_driven_route_net(
-                net_id,
+            bool is_routable = try_timing_driven_route_net(net_id,
                 itry,
                 pres_fac,
                 router_opts,
@@ -849,15 +831,13 @@ void free_timing_driven_route_structs(float* pin_criticality, int* sink_order, t
 }
 
 timing_driven_route_structs::timing_driven_route_structs() {
-    alloc_timing_driven_route_structs(
-        &pin_criticality,
+    alloc_timing_driven_route_structs(&pin_criticality,
         &sink_order,
         &rt_node_of_sink);
 }
 
 timing_driven_route_structs::~timing_driven_route_structs() {
-    free_timing_driven_route_structs(
-        pin_criticality,
+    free_timing_driven_route_structs(pin_criticality,
         sink_order,
         rt_node_of_sink);
 }
@@ -1109,6 +1089,14 @@ static bool timing_driven_route_sink(ClusterNetId net_id,
             update_screen(ScreenUpdatePriority::MAJOR, "Unable to route connection.", ROUTING, nullptr);
         }
         return false;
+    } else {
+        //Record final link to target
+        add_to_mod_list(cheapest->index, modified_rr_node_inf);
+
+        route_ctx.rr_node_route_inf[cheapest->index].prev_node = cheapest->u.prev.node;
+        route_ctx.rr_node_route_inf[cheapest->index].prev_edge = cheapest->u.prev.edge;
+        route_ctx.rr_node_route_inf[cheapest->index].path_cost = cheapest->cost;
+        route_ctx.rr_node_route_inf[cheapest->index].backward_path_cost = cheapest->backward_path_cost;
     }
 
     profiling::sink_criticality_end(cost_params.criticality);
@@ -1184,6 +1172,52 @@ t_heap* timing_driven_route_connection_from_route_tree(t_rt_node* rt_root,
                                                                 router_stats);
 
     if (cheapest == nullptr) {
+        //Found no path found within the current bounding box.
+        //Try again with no bounding box (i.e. a full device grid bounding box).
+        //
+        //Note that the additional run-time overhead of re-trying only occurs
+        //when we were otherwise going to give up -- the typical case (route
+        //found with the bounding box) remains fast and never re-tries .
+        VTR_LOG_WARN("No routing path for connection to sink_rr %d, retrying with full device bounding box\n", sink_node);
+
+        auto& device_ctx = g_vpr_ctx.device();
+
+        t_bb full_device_bounding_box;
+        full_device_bounding_box.xmin = 0;
+        full_device_bounding_box.ymin = 0;
+        full_device_bounding_box.xmax = device_ctx.grid.width() - 1;
+        full_device_bounding_box.ymax = device_ctx.grid.height() - 1;
+
+        //
+        //TODO: potential future optimization
+        //      We have already explored the RR nodes accessible within the regular
+        //      BB (which are stored in modified_rr_node_inf), and so already know
+        //      their cost from the source. Instead of re-starting the path search
+        //      from scratch (i.e. from the previous route tree as we do below), we
+        //      could just re-add all the explored nodes to the heap and continue
+        //      expanding.
+        //
+
+        //Reset any previously recorded node costs so that when we call
+        //add_route_tree_to_heap() the nodes in the route tree actually
+        //make it back into the heap.
+        reset_path_costs(modified_rr_node_inf);
+        modified_rr_node_inf.clear();
+
+        //Re-initialize the heap since it was emptied by the previous call to
+        //timing_driven_route_connection_from_heap()
+        add_route_tree_to_heap(rt_root, sink_node, cost_params, router_lookahead, router_stats);
+
+        //Try finding the path again with the relaxed bounding box
+        cheapest = timing_driven_route_connection_from_heap(sink_node,
+                                                            cost_params,
+                                                            full_device_bounding_box,
+                                                            router_lookahead,
+                                                            modified_rr_node_inf,
+                                                            router_stats);
+    }
+
+    if (cheapest == nullptr) {
         VTR_LOG("%s\n", describe_unrouteable_connection(source_node, sink_node).c_str());
 
         free_route_tree(rt_root);
@@ -1234,8 +1268,21 @@ static t_heap* timing_driven_route_connection_from_route_tree_high_fanout(t_rt_n
         //Found no path, that may be due to an unlucky choice of existing route tree sub-set,
         //try again with the full route tree to be sure this is not an artifact of high-fanout routing
         VTR_LOG_WARN("No routing path found in high-fanout mode for net connection (to sink_rr %d), retrying with full route tree\n", sink_node);
-        cheapest = timing_driven_route_connection_from_route_tree(rt_root, sink_node, cost_params, net_bounding_box, router_lookahead, modified_rr_node_inf, router_stats);
+
+        //Reset any previously recorded node costs so timing_driven_route_connection()
+        //starts over from scratch.
+        reset_path_costs(modified_rr_node_inf);
+        modified_rr_node_inf.clear();
+
+        cheapest = timing_driven_route_connection_from_route_tree(rt_root,
+                                                                  sink_node,
+                                                                  cost_params,
+                                                                  net_bounding_box,
+                                                                  router_lookahead,
+                                                                  modified_rr_node_inf,
+                                                                  router_stats);
     }
+
     if (cheapest == nullptr) {
         VTR_LOG("%s\n", describe_unrouteable_connection(source_node, sink_node).c_str());
 
@@ -1301,8 +1348,7 @@ static t_heap* timing_driven_route_connection_from_heap(int sink_node,
 }
 
 //Find shortest paths from specified route tree to all nodes in the RR graph
-std::vector<t_heap> timing_driven_find_all_shortest_paths_from_route_tree(
-    t_rt_node* rt_root,
+std::vector<t_heap> timing_driven_find_all_shortest_paths_from_route_tree(t_rt_node* rt_root,
     const t_conn_cost_params cost_params,
     t_bb bounding_box,
     std::vector<int>& modified_rr_node_inf,
@@ -1325,8 +1371,7 @@ std::vector<t_heap> timing_driven_find_all_shortest_paths_from_route_tree(
 //
 //Note that to re-use code used for the regular A*-based router we use a
 //no-operation lookahead which always returns zero.
-static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(
-    const t_conn_cost_params cost_params,
+static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(const t_conn_cost_params cost_params,
     t_bb bounding_box,
     std::vector<int>& modified_rr_node_inf,
     RouterStats& router_stats) {
@@ -1407,16 +1452,14 @@ static void timing_driven_expand_cheapest(t_heap* cheapest,
         VTR_LOGV_DEBUG(f_router_debug, "    Better cost to %d\n", inode);
         VTR_LOGV_DEBUG(f_router_debug, "    New total cost: %g\n", new_total_cost);
         VTR_LOGV_DEBUG(f_router_debug, "    New back cost: %g\n", new_back_cost);
-        for (t_heap_prev prev : cheapest->nodes) {
-            VTR_LOGV_DEBUG(f_router_debug, "      Setting path costs for assicated node %d (from %d edge %d)\n", prev.to_node, prev.from_node, prev.from_edge);
+        VTR_LOGV_DEBUG(f_router_debug, "      Setting path costs for assicated node %d (from %d edge %d)\n", cheapest->index, cheapest->u.prev.node, cheapest->u.prev.edge);
 
-            add_to_mod_list(prev.to_node, modified_rr_node_inf);
+        add_to_mod_list(cheapest->index, modified_rr_node_inf);
 
-            route_ctx.rr_node_route_inf[prev.to_node].prev_node = prev.from_node;
-            route_ctx.rr_node_route_inf[prev.to_node].prev_edge = prev.from_edge;
-            route_ctx.rr_node_route_inf[prev.to_node].path_cost = new_total_cost;
-            route_ctx.rr_node_route_inf[prev.to_node].backward_path_cost = new_back_cost;
-        }
+        route_ctx.rr_node_route_inf[cheapest->index].prev_node = cheapest->u.prev.node;
+        route_ctx.rr_node_route_inf[cheapest->index].prev_edge = cheapest->u.prev.edge;
+        route_ctx.rr_node_route_inf[cheapest->index].path_cost = new_total_cost;
+        route_ctx.rr_node_route_inf[cheapest->index].backward_path_cost = new_back_cost;
 
         timing_driven_expand_neighbours(cheapest, cost_params, bounding_box,
                                         router_lookahead,
@@ -1746,12 +1789,11 @@ static void timing_driven_expand_neighbours(t_heap* current,
     }
 
     //For each node associated with the current heap element, expand all of it's neighbours
-    for (const t_heap_prev& prev : current->nodes) {
-        int num_edges = device_ctx.rr_nodes[prev.to_node].num_edges();
+    int num_edges = device_ctx.rr_nodes[current->index].num_edges();
         for (int iconn = 0; iconn < num_edges; iconn++) {
-            int to_node = device_ctx.rr_nodes[prev.to_node].edge_sink_node(iconn);
+        int to_node = device_ctx.rr_nodes[current->index].edge_sink_node(iconn);
             timing_driven_expand_neighbour(current,
-                                           prev.to_node, iconn, to_node,
+                                       current->index, iconn, to_node,
                                            cost_params,
                                            bounding_box,
                                            router_lookahead,
@@ -1760,7 +1802,6 @@ static void timing_driven_expand_neighbours(t_heap* current,
                                            router_stats);
         }
     }
-}
 
 //Conditionally adds to_node to the router heap (via path from from_node via from_edge).
 //RR nodes outside the expanded bounding box specified in bounding_box are not added
@@ -1786,6 +1827,13 @@ static void timing_driven_expand_neighbour(t_heap* current,
         || to_xlow > bounding_box.xmax    //Strictly right of BB right-edge
         || to_yhigh < bounding_box.ymin   //Strictly below BB bottom-edge
         || to_ylow > bounding_box.ymax) { //Strictly above BB top-edge
+        VTR_LOGV_DEBUG(f_router_debug,
+                       "      Pruned expansion of node %d edge %d -> %d"
+                       " (to node location %d,%dx%d,%d outside of expanded"
+                       " net bounding box %d,%dx%d,%d)\n",
+                       from_node, from_edge, to_node,
+                       to_xlow, to_ylow, to_xhigh, to_yhigh,
+                       bounding_box.xmin, bounding_box.ymin, bounding_box.xmax, bounding_box.ymax);
         return;                           /* Node is outside (expanded) bounding box. */
     }
 
@@ -1802,6 +1850,13 @@ static void timing_driven_expand_neighbour(t_heap* current,
                 || to_ylow < target_bb.ymin
                 || to_xhigh > target_bb.xmax
                 || to_yhigh > target_bb.ymax) {
+                VTR_LOGV_DEBUG(f_router_debug,
+                               "      Pruned expansion of node %d edge %d -> %d"
+                               " (to node is IPIN at %d,%dx%d,%d which does not"
+                               " lead to target block %d,%dx%d,%d)\n",
+                               from_node, from_edge, to_node,
+                               to_xlow, to_ylow, to_xhigh, to_yhigh,
+                               target_bb.xmin, target_bb.ymin, target_bb.xmax, target_bb.ymax);
                 return;
             }
         }
@@ -1810,15 +1865,13 @@ static void timing_driven_expand_neighbour(t_heap* current,
     VTR_LOGV_DEBUG(f_router_debug, "      Expanding node %d edge %d -> %d\n",
                    from_node, from_edge, to_node);
 
-    timing_driven_add_to_heap(
-        cost_params,
+    timing_driven_add_to_heap(cost_params,
         router_lookahead,
         current, from_node, to_node, from_edge, target_node, router_stats);
 }
 
 //Add to_node to the heap, and also add any nodes which are connected by non-configurable edges
-static void timing_driven_add_to_heap(
-    const t_conn_cost_params cost_params,
+static void timing_driven_add_to_heap(const t_conn_cost_params cost_params,
     const RouterLookahead& router_lookahead,
     const t_heap* current,
     const int from_node,
@@ -1834,30 +1887,9 @@ static void timing_driven_add_to_heap(
     next->backward_path_cost = current->backward_path_cost;
     next->R_upstream = current->R_upstream;
 
-    auto& device_ctx = g_vpr_ctx.device();
-    if (device_ctx.rr_nodes[to_node].num_non_configurable_edges() == 0) {
-        //The common case where there are no non-configurable edges
         timing_driven_expand_node(cost_params,
                                   router_lookahead,
                                   next, from_node, to_node, iconn, target_node);
-    } else {
-        //The 'to_node' which we just expanded to has non-configurable
-        //out-going edges which must also be expanded.
-        //
-        //Note that we only call the recursive version if there *are* non-configurable
-        //edges since creating/destroying the 'visited' tracker is very expensive (since
-        //it is in the router's inner loop). Since non-configurable edges are relatively
-        //rare this is reasonable.
-        //
-        //TODO: use a more efficient method of tracking visited nodes (e.g. if
-        //      non-configurable edges become more common)
-        std::set<int> visited;
-        timing_driven_expand_node_non_configurable_recurr(
-            cost_params,
-            router_lookahead,
-            next, from_node, to_node, iconn, target_node,
-            visited);
-    }
 
     add_to_heap(next);
     ++router_stats.heap_pushes;
@@ -1871,83 +1903,21 @@ static void timing_driven_expand_node(const t_conn_cost_params cost_params,
                                       const int to_node,
                                       const int iconn,
                                       const int target_node) {
-#ifdef VTR_ENABLE_DEBUG_LOGGING
-    if (f_router_debug) {
-        auto& device_ctx = g_vpr_ctx.device();
-        bool reached_via_non_configurable_edge = !device_ctx.rr_nodes[from_node].edge_is_configurable(iconn);
-        if (reached_via_non_configurable_edge) {
-            VTR_LOG("        Force Expanding to node %d (%s)", to_node, describe_rr_node(to_node).c_str());
-        } else {
-            VTR_LOG("      Expanding to node %d (%s)", to_node, describe_rr_node(to_node).c_str());
-        }
-        VTR_LOG("\n");
-    }
-#endif
+    VTR_LOGV_DEBUG(f_router_debug, "      Expanding to node %d (%s)\n", to_node, describe_rr_node(to_node).c_str());
 
-    t_timing_driven_node_costs old_costs;
-    old_costs.backward_cost = current->backward_path_cost;
-    old_costs.total_cost = current->cost;
-    old_costs.R_upstream = current->R_upstream;
-
-    auto new_costs = evaluate_timing_driven_node_costs(old_costs,
+    evaluate_timing_driven_node_costs(current,
                                                        cost_params,
                                                        router_lookahead,
                                                        from_node, to_node, iconn, target_node);
 
     //Record how we reached this node
-    current->nodes.emplace_back(to_node, from_node, iconn);
-
-    //Since this heap element may represent multiple (non-configurably connected) nodes,
-    //keep the minimum cost to the target
-    if (new_costs.total_cost < current->cost) {
-        current->cost = new_costs.total_cost;
-        current->backward_path_cost = new_costs.backward_cost;
-        current->R_upstream = new_costs.R_upstream;
         current->index = to_node;
+    current->u.prev.edge = iconn;
+    current->u.prev.node = from_node;
     }
-}
-
-//Updates current (path stage and costs) to account for the step taken to reach to_node,
-//and any of it's non-configurably connected nodes
-static void timing_driven_expand_node_non_configurable_recurr(
-    const t_conn_cost_params cost_params,
-    const RouterLookahead& router_lookahead,
-    t_heap* current,
-    const int from_node,
-    const int to_node,
-    const int iconn,
-    const int target_node,
-    std::set<int>& visited) {
-    VTR_ASSERT(current);
-
-    if (visited.count(to_node)) {
-        return;
-    }
-
-    visited.insert(to_node);
-
-    auto& device_ctx = g_vpr_ctx.device();
-
-    timing_driven_expand_node(
-        cost_params,
-        router_lookahead,
-        current, from_node, to_node, iconn, target_node);
-
-    //Consider any non-configurable edges which must be expanded for correctness
-    for (int iconn_next : device_ctx.rr_nodes[to_node].non_configurable_edges()) {
-        VTR_ASSERT_SAFE(!device_ctx.rr_nodes[to_node].edge_is_configurable(iconn_next)); //Forced expansion
-
-        int to_to_node = device_ctx.rr_nodes[to_node].edge_sink_node(iconn_next);
-
-        timing_driven_expand_node_non_configurable_recurr(
-            cost_params,
-            router_lookahead,
-            current, to_node, to_to_node, iconn_next, target_node, visited);
-    }
-}
 
 //Calculates the cost of reaching to_node
-static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timing_driven_node_costs old_costs,
+static void evaluate_timing_driven_node_costs(t_heap* to,
                                                                     const t_conn_cost_params cost_params,
                                                                     const RouterLookahead& router_lookahead,
                                                                     const int from_node,
@@ -1964,8 +1934,6 @@ static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timi
      */
     auto& device_ctx = g_vpr_ctx.device();
 
-    t_timing_driven_node_costs new_costs;
-
     //Switch info
     int iswitch = device_ctx.rr_nodes[from_node].edge_switch(iconn);
     bool switch_buffered = device_ctx.rr_switch_inf[iswitch].buffered();
@@ -1978,29 +1946,30 @@ static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timi
 
     //Update R_upstream
     if (switch_buffered) {
-        new_costs.R_upstream = 0.; //No upstream resistance
+        to->R_upstream = 0.; //No upstream resistance
     } else {
-        new_costs.R_upstream = old_costs.R_upstream; //Upstream resistance
+        //R_Upstream already initialized
     }
-    new_costs.R_upstream += switch_R; //Switch resistance
-    new_costs.R_upstream += node_R;   //Node resistance
+
+    to->R_upstream += switch_R; //Switch resistance
+    to->R_upstream += node_R;   //Node resistance
 
     //Calculate delay
-    float Rdel = new_costs.R_upstream - 0.5 * node_R; //Only consider half node's resistance for delay
+    float Rdel = to->R_upstream - 0.5 * node_R; //Only consider half node's resistance for delay
     float Tdel = switch_Tdel + Rdel * node_C;
 
-    //Update the backward cost
-    new_costs.backward_cost = old_costs.backward_cost;                                     //Back cost to 'from_node'
-    new_costs.backward_cost += (1. - cost_params.criticality) * get_rr_cong_cost(to_node); //Congestion cost
-    new_costs.backward_cost += cost_params.criticality * Tdel;                             //Delay cost
+    //Update the backward cost (upstream already included)
+    to->backward_path_cost += (1. - cost_params.criticality) * get_rr_cong_cost(to_node); //Congestion cost
+    to->backward_path_cost += cost_params.criticality * Tdel;                             //Delay cost
     if (cost_params.bend_cost != 0.) {
         t_rr_type from_type = device_ctx.rr_nodes[from_node].type();
         t_rr_type to_type = device_ctx.rr_nodes[to_node].type();
         if ((from_type == CHANX && to_type == CHANY) || (from_type == CHANY && to_type == CHANX)) {
-            new_costs.backward_cost += cost_params.bend_cost; //Bend cost
+            to->backward_path_cost += cost_params.bend_cost; //Bend cost
         }
     }
 
+    float total_cost = 0.;
     const t_conn_delay_budget* delay_budget = cost_params.delay_budget;
     if (delay_budget) {
         //If budgets specified calculate cost as described by RCV paper:
@@ -2009,16 +1978,16 @@ static t_timing_driven_node_costs evaluate_timing_driven_node_costs(const t_timi
         //     Integrated Circuits and Systems, vol. 27, no. 4, pp. 686-697, April 2008.
 
         //TODO: Since these targets are delays, shouldn't we be using Tdel instead of new_costs.total_cost on RHS?
-        new_costs.total_cost += (delay_budget->short_path_criticality + cost_params.criticality) * max(0.f, delay_budget->target_delay - new_costs.total_cost);
-        new_costs.total_cost += pow(max(0.f, new_costs.total_cost - delay_budget->max_delay), 2) / 100e-12;
-        new_costs.total_cost += pow(max(0.f, delay_budget->min_delay - new_costs.total_cost), 2) / 100e-12;
+        total_cost += (delay_budget->short_path_criticality + cost_params.criticality) * max(0.f, delay_budget->target_delay - total_cost);
+        total_cost += pow(max(0.f, total_cost - delay_budget->max_delay), 2) / 100e-12;
+        total_cost += pow(max(0.f, delay_budget->min_delay - total_cost), 2) / 100e-12;
     }
 
     //Update total cost
-    float expected_cost = router_lookahead.get_expected_cost(to_node, target_node, cost_params, new_costs.R_upstream);
-    new_costs.total_cost = new_costs.backward_cost + cost_params.astar_fac * expected_cost;
+    float expected_cost = router_lookahead.get_expected_cost(to_node, target_node, cost_params, to->R_upstream);
+    total_cost = to->backward_path_cost + cost_params.astar_fac * expected_cost;
 
-    return new_costs;
+    to->cost = total_cost;
 }
 
 void update_rr_base_costs(int fanout) {
@@ -2694,7 +2663,7 @@ void enable_router_debug(const t_router_opts& router_opts, ClusterNetId net, int
     }
 
 #ifndef VTR_ENABLE_DEBUG_LOGGING
-    VTR_LOGV_WARN(f_router_debug, "Limited router debug output provided since compiled without VTR_ENABLE_DEBUG_LOGGING defined");
+    VTR_LOGV_WARN(f_router_debug, "Limited router debug output provided since compiled without VTR_ENABLE_DEBUG_LOGGING defined\n");
 #endif
 }
 

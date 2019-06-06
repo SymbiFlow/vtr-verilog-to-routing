@@ -54,7 +54,6 @@ using namespace std;
 #include "power.h"
 #include "pack_types.h"
 #include "lb_type_rr_graph.h"
-#include "output_blif.h"
 #include "read_activity.h"
 #include "net_delay.h"
 #include "AnalysisDelayCalculator.h"
@@ -94,7 +93,12 @@ static void free_complex_block_types();
 static void free_device(const t_det_routing_arch& routing_arch);
 static void free_circuit();
 
-static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup, const t_arch& arch, const int wire_segment_length, int* opin_switch_fanin, int* wire_switch_fanin, int* ipin_switch_fanin);
+static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup,
+                                                    const t_arch& arch,
+                                                    const int wire_segment_length,
+                                                    int* opin_switch_fanin,
+                                                    int* wire_switch_fanin,
+                                                    int* ipin_switch_fanin);
 /* Local subroutines end */
 
 /* Display general VPR information */
@@ -190,9 +194,8 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
 #else
     //No parallel execution support
     if (num_workers != 1) {
-        VTR_LOG_WARN(
-            "VPR was compiled without parallel execution support, ignoring the specified number of workers (%zu)",
-            options->num_workers.value());
+        VTR_LOG_WARN("VPR was compiled without parallel execution support, ignoring the specified number of workers (%zu)",
+                     options->num_workers.value());
     }
 #endif
 
@@ -236,30 +239,28 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
     CheckArch(*arch);
 
     /* Verify settings don't conflict or otherwise not make sense */
-    CheckSetup(
-        vpr_setup->PackerOpts,
-        vpr_setup->PlacerOpts,
-        vpr_setup->RouterOpts,
-        vpr_setup->RoutingArch, vpr_setup->Segments, vpr_setup->Timing,
-        arch->Chans);
+    CheckSetup(vpr_setup->PackerOpts,
+               vpr_setup->PlacerOpts,
+               vpr_setup->RouterOpts,
+               vpr_setup->RoutingArch, vpr_setup->Segments, vpr_setup->Timing,
+               arch->Chans);
 
     /* flush any messages to user still in stdout that hasn't gotten displayed */
     fflush(stdout);
 
     /* Read blif file and sweep unused components */
     auto& atom_ctx = g_vpr_ctx.mutable_atom();
-    atom_ctx.nlist = read_and_process_circuit(
-        options->circuit_format,
-        vpr_setup->PackerOpts.blif_file_name.c_str(),
-        vpr_setup->user_models,
-        vpr_setup->library_models,
-        vpr_setup->NetlistOpts.const_gen_inference,
-        vpr_setup->NetlistOpts.absorb_buffer_luts,
-        vpr_setup->NetlistOpts.sweep_dangling_primary_ios,
-        vpr_setup->NetlistOpts.sweep_dangling_nets,
-        vpr_setup->NetlistOpts.sweep_dangling_blocks,
-        vpr_setup->NetlistOpts.sweep_constant_primary_outputs,
-        vpr_setup->NetlistOpts.netlist_verbosity);
+    atom_ctx.nlist = read_and_process_circuit(options->circuit_format,
+                                              vpr_setup->PackerOpts.blif_file_name.c_str(),
+                                              vpr_setup->user_models,
+                                              vpr_setup->library_models,
+                                              vpr_setup->NetlistOpts.const_gen_inference,
+                                              vpr_setup->NetlistOpts.absorb_buffer_luts,
+                                              vpr_setup->NetlistOpts.sweep_dangling_primary_ios,
+                                              vpr_setup->NetlistOpts.sweep_dangling_nets,
+                                              vpr_setup->NetlistOpts.sweep_dangling_blocks,
+                                              vpr_setup->NetlistOpts.sweep_constant_primary_outputs,
+                                              vpr_setup->NetlistOpts.netlist_verbosity);
 
     if (vpr_setup->PowerOpts.do_power) {
         //Load the net activity file for power estimation
@@ -442,13 +443,6 @@ bool vpr_pack_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
 
         /* Output the netlist stats to console. */
         printClusteredNetlistStats();
-
-        if (vpr_setup.gen_netlist_as_blif) {
-            char* name = (char*)vtr::malloc((strlen(vpr_setup.FileNameOpts.CircuitName.c_str()) + 16) * sizeof(char));
-            sprintf(name, "%s.preplace.blif", vpr_setup.FileNameOpts.CircuitName.c_str());
-            output_blif(&arch, name);
-            free(name);
-        }
     }
 
     return status;
@@ -484,9 +478,8 @@ bool vpr_pack(t_vpr_setup& vpr_setup, const t_arch& arch) {
                                                      Tdel_wire_switch, R_wire_switch, Cout_wire_switch);
 
         float Tdel_wtoi_switch, R_wtoi_switch, Cout_wtoi_switch;
-        float wtoi_switch_del = get_arch_switch_info(
-            vpr_setup.RoutingArch.wire_to_arch_ipin_switch, ipin_switch_fanin,
-            Tdel_wtoi_switch, R_wtoi_switch, Cout_wtoi_switch);
+        float wtoi_switch_del = get_arch_switch_info(vpr_setup.RoutingArch.wire_to_arch_ipin_switch, ipin_switch_fanin,
+                                                     Tdel_wtoi_switch, R_wtoi_switch, Cout_wtoi_switch);
 
         float Rmetal = arch.Segments[0].Rmetal;
         float Cmetal = arch.Segments[0].Cmetal;
@@ -681,7 +674,12 @@ RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
     return route_status;
 }
 
-RouteStatus vpr_route_fixed_W(t_vpr_setup& vpr_setup, const t_arch& arch, int fixed_channel_width, std::shared_ptr<SetupHoldTimingInfo> timing_info, std::shared_ptr<RoutingDelayCalculator> delay_calc, vtr::vector<ClusterNetId, float*>& net_delay) {
+RouteStatus vpr_route_fixed_W(t_vpr_setup& vpr_setup,
+                              const t_arch& arch,
+                              int fixed_channel_width,
+                              std::shared_ptr<SetupHoldTimingInfo> timing_info,
+                              std::shared_ptr<RoutingDelayCalculator> delay_calc,
+                              vtr::vector<ClusterNetId, float*>& net_delay) {
     vtr::ScopedStartFinishTimer timer("Routing");
 
     if (NO_FIXED_CHANNEL_WIDTH == fixed_channel_width || fixed_channel_width <= 0) {
@@ -703,7 +701,11 @@ RouteStatus vpr_route_fixed_W(t_vpr_setup& vpr_setup, const t_arch& arch, int fi
     return RouteStatus(status, fixed_channel_width);
 }
 
-RouteStatus vpr_route_min_W(t_vpr_setup& vpr_setup, const t_arch& arch, std::shared_ptr<SetupHoldTimingInfo> timing_info, std::shared_ptr<RoutingDelayCalculator> delay_calc, vtr::vector<ClusterNetId, float*>& net_delay) {
+RouteStatus vpr_route_min_W(t_vpr_setup& vpr_setup,
+                            const t_arch& arch,
+                            std::shared_ptr<SetupHoldTimingInfo> timing_info,
+                            std::shared_ptr<RoutingDelayCalculator> delay_calc,
+                            vtr::vector<ClusterNetId, float*>& net_delay) {
     vtr::ScopedStartFinishTimer timer("Routing");
 
     auto& router_opts = vpr_setup.RouterOpts;
@@ -725,7 +727,11 @@ RouteStatus vpr_route_min_W(t_vpr_setup& vpr_setup, const t_arch& arch, std::sha
     return RouteStatus(status, min_W);
 }
 
-RouteStatus vpr_load_routing(t_vpr_setup& vpr_setup, const t_arch& arch, int fixed_channel_width, std::shared_ptr<SetupHoldTimingInfo> timing_info, vtr::vector<ClusterNetId, float*>& net_delay) {
+RouteStatus vpr_load_routing(t_vpr_setup& vpr_setup,
+                             const t_arch& arch,
+                             int fixed_channel_width,
+                             std::shared_ptr<SetupHoldTimingInfo> timing_info,
+                             vtr::vector<ClusterNetId, float*>& net_delay) {
     vtr::ScopedStartFinishTimer timer("Load Routing");
     if (NO_FIXED_CHANNEL_WIDTH == fixed_channel_width) {
         VPR_THROW(VPR_ERROR_ROUTE, "Fixed channel width must be specified when loading routing (was %d)", fixed_channel_width);
@@ -814,7 +820,12 @@ void vpr_close_graphics(const t_vpr_setup& vpr_setup) {
  * 3) wire to ipin switch
  * We can estimate the fan-in of these switches based on the Fc_in/Fc_out of
  * a logic block, and the switch block Fs value */
-static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup, const t_arch& arch, const int wire_segment_length, int* opin_switch_fanin, int* wire_switch_fanin, int* ipin_switch_fanin) {
+static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup,
+                                                    const t_arch& arch,
+                                                    const int wire_segment_length,
+                                                    int* opin_switch_fanin,
+                                                    int* wire_switch_fanin,
+                                                    int* ipin_switch_fanin) {
     e_directionality directionality;
     int Fs;
     float Fc_in, Fc_out;
@@ -987,11 +998,46 @@ void vpr_read_options(const int argc, const char** argv, t_options* options) {
 }
 
 /* Read in arch and circuit */
-void vpr_setup_vpr(t_options* Options, const bool TimingEnabled, const bool readArchFile, t_file_name_opts* FileNameOpts, t_arch* Arch, t_model** user_models, t_model** library_models, t_netlist_opts* NetlistOpts, t_packer_opts* PackerOpts, t_placer_opts* PlacerOpts, t_annealing_sched* AnnealSched, t_router_opts* RouterOpts, t_analysis_opts* AnalysisOpts, t_det_routing_arch* RoutingArch, vector<t_lb_type_rr_node>** PackerRRGraph, std::vector<t_segment_inf>& Segments, t_timing_inf* Timing, bool* ShowGraphics, int* GraphPause, t_power_opts* PowerOpts) {
-    SetupVPR(Options, TimingEnabled, readArchFile, FileNameOpts, Arch,
-             user_models, library_models, NetlistOpts, PackerOpts, PlacerOpts,
-             AnnealSched, RouterOpts, AnalysisOpts, RoutingArch, PackerRRGraph, Segments, Timing,
-             ShowGraphics, GraphPause, PowerOpts);
+void vpr_setup_vpr(t_options* Options,
+                   const bool TimingEnabled,
+                   const bool readArchFile,
+                   t_file_name_opts* FileNameOpts,
+                   t_arch* Arch,
+                   t_model** user_models,
+                   t_model** library_models,
+                   t_netlist_opts* NetlistOpts,
+                   t_packer_opts* PackerOpts,
+                   t_placer_opts* PlacerOpts,
+                   t_annealing_sched* AnnealSched,
+                   t_router_opts* RouterOpts,
+                   t_analysis_opts* AnalysisOpts,
+                   t_det_routing_arch* RoutingArch,
+                   vector<t_lb_type_rr_node>** PackerRRGraph,
+                   std::vector<t_segment_inf>& Segments,
+                   t_timing_inf* Timing,
+                   bool* ShowGraphics,
+                   int* GraphPause,
+                   t_power_opts* PowerOpts) {
+    SetupVPR(Options,
+             TimingEnabled,
+             readArchFile,
+             FileNameOpts,
+             Arch,
+             user_models,
+             library_models,
+             NetlistOpts,
+             PackerOpts,
+             PlacerOpts,
+             AnnealSched,
+             RouterOpts,
+             AnalysisOpts,
+             RoutingArch,
+             PackerRRGraph,
+             Segments,
+             Timing,
+             ShowGraphics,
+             GraphPause,
+             PowerOpts);
 }
 
 void vpr_check_arch(const t_arch& Arch) {
@@ -999,14 +1045,13 @@ void vpr_check_arch(const t_arch& Arch) {
 }
 
 /* Verify settings don't conflict or otherwise not make sense */
-void vpr_check_setup(
-    const t_packer_opts PackerOpts,
-    const t_placer_opts PlacerOpts,
-    const t_router_opts RouterOpts,
-    const t_det_routing_arch RoutingArch,
-    const std::vector<t_segment_inf>& Segments,
-    const t_timing_inf Timing,
-    const t_chan_width_dist Chans) {
+void vpr_check_setup(const t_packer_opts PackerOpts,
+                     const t_placer_opts PlacerOpts,
+                     const t_router_opts RouterOpts,
+                     const t_det_routing_arch RoutingArch,
+                     const std::vector<t_segment_inf>& Segments,
+                     const t_timing_inf Timing,
+                     const t_chan_width_dist Chans) {
     CheckSetup(PackerOpts, PlacerOpts, RouterOpts, RoutingArch,
                Segments, Timing, Chans);
 }
@@ -1100,7 +1145,10 @@ void vpr_analysis(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus&
 /* This function performs power estimation, and must be called
  * after packing, placement AND routing. Currently, this
  * will not work when running a partial flow (ex. only routing). */
-void vpr_power_estimation(const t_vpr_setup& vpr_setup, const t_arch& Arch, const SetupTimingInfo& timing_info, const RouteStatus& route_status) {
+void vpr_power_estimation(const t_vpr_setup& vpr_setup,
+                          const t_arch& Arch,
+                          const SetupTimingInfo& timing_info,
+                          const RouteStatus& route_status) {
     /* Ensure we are only using 1 clock */
     if (timing_info.critical_paths().size() != 1) {
         VPR_THROW(VPR_ERROR_POWER, "Power analysis only supported on single-clock circuits");
@@ -1226,8 +1274,7 @@ void vpr_print_error(const VprError& vpr_error) {
     std::string msg = vpr_error.what();
     std::string filename = vpr_error.filename();
 
-    VTR_LOG_ERROR(
-        "\nType: %s\nFile: %s\nLine: %d\nMessage: %s\n",
-        error_type, filename.c_str(), vpr_error.line(),
-        msg.c_str());
+    VTR_LOG_ERROR("\nType: %s\nFile: %s\nLine: %d\nMessage: %s\n",
+                  error_type, filename.c_str(), vpr_error.line(),
+                  msg.c_str());
 }

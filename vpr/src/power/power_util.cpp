@@ -166,14 +166,12 @@ static void log_msg(t_log* log_ptr, const char* msg) {
 
     if (log_ptr->num_messages == (MAX_LOGS + 1)) {
         const char* full_msg = "\n***LOG IS FULL***\n";
-        log_ptr->messages[log_ptr->num_messages - 1] = (char*)vtr::calloc(
-            strlen(full_msg) + 1, sizeof(char));
-        strncpy(log_ptr->messages[log_ptr->num_messages - 1], full_msg,
-                strlen(full_msg));
+        log_ptr->messages[log_ptr->num_messages - 1] = (char*)vtr::calloc(strlen(full_msg) + 1, sizeof(char));
+        strncpy(log_ptr->messages[log_ptr->num_messages - 1], full_msg, strlen(full_msg) + 1);
     } else {
-        log_ptr->messages[log_ptr->num_messages - 1] = (char*)vtr::calloc(
-            strlen(msg) + 1, sizeof(char));
-        strncpy(log_ptr->messages[log_ptr->num_messages - 1], msg, strlen(msg));
+        size_t len = strlen(msg) + 1;
+        log_ptr->messages[log_ptr->num_messages - 1] = (char*)vtr::calloc(len, sizeof(char));
+        strncpy(log_ptr->messages[log_ptr->num_messages - 1], msg, len);
     }
 }
 
@@ -371,6 +369,7 @@ t_mux_arch* power_get_mux_arch(int num_mux_inputs, float transistor_size) {
         mux_info = new t_power_mux_info;
         mux_info->mux_arch = nullptr;
         mux_info->mux_arch_max_size = 0;
+        VTR_ASSERT(power_ctx.commonly_used->mux_info[transistor_size] == nullptr);
         power_ctx.commonly_used->mux_info[transistor_size] = mux_info;
     } else {
         mux_info = it->second;
@@ -443,8 +442,7 @@ static void alloc_and_load_mux_graph_recursive(t_mux_node* node,
     }
 }
 
-bool power_method_is_transistor_level(
-    e_power_estimation_method estimation_method) {
+bool power_method_is_transistor_level(e_power_estimation_method estimation_method) {
     switch (estimation_method) {
         case POWER_METHOD_AUTO_SIZES:
         case POWER_METHOD_SPECIFY_SIZES:
