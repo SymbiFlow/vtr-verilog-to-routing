@@ -19,51 +19,51 @@ struct ConnectionBox {
 
 struct ConnBoxLoc {
     ConnBoxLoc(
-            const std::pair<size_t, size_t> &a_box_location, 
-            ConnectionBoxId a_box_id) : box_location(a_box_location),
-    box_id(a_box_id) {}
+        const std::pair<size_t, size_t>& a_box_location,
+        ConnectionBoxId a_box_id)
+        : box_location(a_box_location)
+        , box_id(a_box_id) {}
 
     std::pair<size_t, size_t> box_location;
     ConnectionBoxId box_id;
 };
 
 class ConnectionBoxes {
-    public:
-        ConnectionBoxes();
+  public:
+    ConnectionBoxes();
 
-        size_t num_connection_box_types() const;
-        std::pair<size_t, size_t> connection_box_grid_size() const;
-        const ConnectionBox *get_connection_box(ConnectionBoxId box) const;
+    size_t num_connection_box_types() const;
+    std::pair<size_t, size_t> connection_box_grid_size() const;
+    const ConnectionBox* get_connection_box(ConnectionBoxId box) const;
 
-        bool find_connection_box(int inode,
-                ConnectionBoxId *box_id,
-                std::pair<size_t, size_t> *box_location) const;
-        const std::pair<size_t, size_t> *find_canonical_loc(int inode) const;
+    bool find_connection_box(int inode,
+                             ConnectionBoxId* box_id,
+                             std::pair<size_t, size_t>* box_location) const;
+    const std::pair<size_t, size_t>* find_canonical_loc(int inode) const;
 
-        // Clear IPIN map and set connection box grid size and box ids.
-        void clear();
-        void reset_boxes(std::pair<size_t, size_t> size,
-                const std::vector<ConnectionBox> boxes);
+    // Clear IPIN map and set connection box grid size and box ids.
+    void clear();
+    void reset_boxes(std::pair<size_t, size_t> size,
+                     const std::vector<ConnectionBox> boxes);
 
-        void add_connection_box(int inode, ConnectionBoxId box_id,
-                std::pair<size_t, size_t> box_location);
-        void add_canonical_loc(int inode, std::pair<size_t, size_t> loc);
+    void add_connection_box(int inode, ConnectionBoxId box_id, std::pair<size_t, size_t> box_location);
+    void add_canonical_loc(int inode, std::pair<size_t, size_t> loc);
 
-        // Create map from SINK's back to IPIN's
-        //
-        // This must be called after all connection boxes have been added.
-        void create_sink_back_ref();
-        vtr::Range<std::multimap<int, int>::const_iterator> find_sink_connection_boxes(
-                int inode) const;
+    // Create map from SINK's back to IPIN's
+    //
+    // This must be called after all connection boxes have been added.
+    void create_sink_back_ref();
+    vtr::Range<std::multimap<int, int>::const_iterator> find_sink_connection_boxes(
+        int inode) const;
 
-    private:
-        std::pair<size_t, size_t> size_;
-        std::vector<ConnectionBox> boxes_;
-        vtr::flat_map<int, ConnBoxLoc>
-            ipin_map_;
-        std::multimap<int, int> sink_to_ipin_;
-        vtr::flat_map<int, std::pair<size_t, size_t>>
-            canonical_loc_map_;
+  private:
+    std::pair<size_t, size_t> size_;
+    std::vector<ConnectionBox> boxes_;
+    vtr::flat_map<int, ConnBoxLoc>
+        ipin_map_;
+    std::multimap<int, int> sink_to_ipin_;
+    vtr::flat_map<int, std::pair<size_t, size_t>>
+        canonical_loc_map_;
 };
 
 #endif

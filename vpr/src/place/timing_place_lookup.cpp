@@ -269,8 +269,8 @@ static float route_connection_delay(int source_x, int source_y, int sink_x, int 
                     "Routing Src: %d Sink: %d", source_rr_node,
                     sink_rr_node));
                 successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
-                                                    router_opts,
-                                                    &net_delay_value);
+                                                      router_opts,
+                                                      &net_delay_value);
             }
 
             if (successfully_routed) break;

@@ -85,21 +85,22 @@ float MapLookahead::get_expected_cost(int current_node, int target_node, const t
 }
 
 float ConnectionBoxMapLookahead::get_expected_cost(
-        int current_node, int target_node, const t_conn_cost_params& params,
-        float /*R_upstream*/) const {
+    int current_node,
+    int target_node,
+    const t_conn_cost_params& params,
+    float /*R_upstream*/) const {
     auto& device_ctx = g_vpr_ctx.device();
 
     t_rr_type rr_type = device_ctx.rr_nodes[current_node].type();
 
     if (rr_type == CHANX || rr_type == CHANY) {
         return get_connection_box_lookahead_map_cost(
-                current_node, target_node, params.criticality);
+            current_node, target_node, params.criticality);
     } else if (rr_type == IPIN) { /* Change if you're allowing route-throughs */
         return (device_ctx.rr_indexed_data[SINK_COST_INDEX].base_cost);
     } else { /* Change this if you want to investigate route-throughs */
         return (0.);
     }
-
 }
 
 float NoOpLookahead::get_expected_cost(int /*current_node*/, int /*target_node*/, const t_conn_cost_params& /*params*/, float /*R_upstream*/) const {

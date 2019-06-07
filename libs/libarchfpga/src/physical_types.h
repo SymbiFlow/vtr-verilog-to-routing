@@ -1306,8 +1306,8 @@ struct t_rr_switch_inf {
     float R = 0.;
     float Cin = 0.;
     float Cout = 0.;
-    float Tdel = 0.;
     float Cinternal = 0.; //defined the property Cinternal
+    float Tdel = 0.;
     float mux_trans_size = 0.;
     float buf_size = 0.;
     const char* name = nullptr;

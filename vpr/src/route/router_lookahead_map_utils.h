@@ -67,7 +67,8 @@ class Expansion_Cost_Entry {
 
   public:
     void add_cost_entry(e_representative_entry_method method,
-            float add_delay, float add_congestion) {
+                        float add_delay,
+                        float add_congestion) {
         Cost_Entry cost_entry(add_delay, add_congestion);
         if (method == SMALLEST) {
             /* taking the smallest-delay entry anyway, so no need to push back multple entries */
@@ -125,9 +126,7 @@ class PQ_Entry {
     float R_upstream;
     float congestion_upstream;
 
-    PQ_Entry(int set_rr_node_ind, int /*switch_ind*/, float parent_delay,
-            float parent_R_upstream, float parent_congestion_upstream,
-            bool starting_node);
+    PQ_Entry(int set_rr_node_ind, int /*switch_ind*/, float parent_delay, float parent_R_upstream, float parent_congestion_upstream, bool starting_node);
 
     bool operator<(const PQ_Entry& obj) const {
         /* inserted into max priority queue so want queue entries with a lower cost to be greater */
@@ -136,7 +135,8 @@ class PQ_Entry {
 };
 
 void expand_dijkstra_neighbours(PQ_Entry parent_entry,
-        std::vector<float>& node_visited_costs, std::vector<bool>& node_expanded,
-        std::priority_queue<PQ_Entry>& pq);
+                                std::vector<float>& node_visited_costs,
+                                std::vector<bool>& node_expanded,
+                                std::priority_queue<PQ_Entry>& pq);
 
 #endif

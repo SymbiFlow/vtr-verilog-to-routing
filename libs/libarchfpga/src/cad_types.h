@@ -81,8 +81,6 @@ struct t_pack_pattern_connections {
  *      chain_root_pins   : this is only non-empty for pack_patterns with is_chain set. It points to a specific
  *                          pin of the root_block primitive (Ex. cin of an adder primitive) that is directly
  *                          connected to a cluster-level block pin that can be drive from the preceding cluster.
- *                          If the cluster has more than one chain of this pack pattern type this vector will
- *                          have a pointer to each primitive pin that can represent a starting point for this chain.
  *                          The first dimension size is greater than one if the cluster has more than one chain
  *                          of this type. For example, an architecture with two independent adder carry chains
  *                          with different cluster level Cin and Cout pins. The second dimension size is greater
@@ -91,7 +89,6 @@ struct t_pack_pattern_connections {
  *                          chooses between the cout of the preceding adder and the cin pin of the cluster. Which will
  *                          give more freedom to the packer when placing small adders that are driven by a constant
  *                          net (gnd/vdd)  [0...num_of_chains][0...num_of_tie_offs]
- *      usage             : How many atoms have been packed into molecules using this pack pattern.
  */
 struct t_pack_patterns {
     char* name;
@@ -105,8 +102,6 @@ struct t_pack_patterns {
 
     bool is_chain;
     std::vector<std::vector<t_pb_graph_pin*>> chain_root_pins;
-
-    int usage;
 
     // default constructor initializing to an invalid pack pattern
     t_pack_patterns() {

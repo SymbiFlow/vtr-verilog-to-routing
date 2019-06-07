@@ -105,8 +105,8 @@ enum class e_router_lookahead {
     MAP,     //Lookahead considering different wire types (see Oleg Petelin's MASc Thesis)
     NO_OP,   //A no-operation lookahead which always returns zero
     CONNECTION_BOX_MAP,
-             // Lookahead considering different wire types and IPIN
-             // connection box.
+    // Lookahead considering different wire types and IPIN
+    // connection box.
 };
 
 enum class e_route_bb_update {
@@ -950,8 +950,8 @@ struct t_router_opts {
     int max_convergence_count;
     float reconvergence_cpd_threshold;
     std::string first_iteration_timing_report_file;
-    bool disable_check_route;
     bool strict_checks;
+    bool disable_check_route;
 };
 
 struct t_analysis_opts {

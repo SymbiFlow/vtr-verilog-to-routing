@@ -108,7 +108,6 @@ void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf) {
         /* allocate the cost map for this iseg/chan_type */
         t_routing_cost_map routing_cost_map({device_ctx.grid.width(), device_ctx.grid.height()});
         for (e_rr_type chan_type : {CHANX, CHANY}) {
-
             for (int ref_inc = 0; ref_inc < 3; ref_inc++) {
                 for (int track_offset = 0; track_offset < MAX_TRACK_OFFSET; track_offset += 2) {
                     /* get the rr node index from which to start routing */
@@ -124,15 +123,14 @@ void compute_router_lookahead(const std::vector<t_segment_inf>& segment_inf) {
                     run_dijkstra(start_node_ind, REF_X + ref_inc, REF_Y + ref_inc, routing_cost_map);
                 }
             }
-
         }
 
         /* boil down the cost list in routing_cost_map at each coordinate to a representative cost entry and store it in the lookahead
-            * cost map */
+         * cost map */
         set_lookahead_map_costs(iseg, CHANX, routing_cost_map);
 
         /* fill in missing entries in the lookahead cost map by copying the closest cost entries (cost map was computed based on
-            * a reference coordinate > (0,0) so some entries that represent a cross-chip distance have not been computed) */
+         * a reference coordinate > (0,0) so some entries that represent a cross-chip distance have not been computed) */
         fill_in_missing_lookahead_entries(iseg, CHANX);
     }
 
@@ -232,8 +230,8 @@ static void run_dijkstra(int start_node_ind, int start_x, int start_y, t_routing
                 get_xy_deltas(start_node_ind, node_ind, &delta_x, &delta_y);
 
                 routing_cost_map[delta_x][delta_y].add_cost_entry(
-                        REPRESENTATIVE_ENTRY_METHOD,
-                        current.delay, current.congestion_upstream);
+                    REPRESENTATIVE_ENTRY_METHOD,
+                    current.delay, current.congestion_upstream);
             }
         }
 

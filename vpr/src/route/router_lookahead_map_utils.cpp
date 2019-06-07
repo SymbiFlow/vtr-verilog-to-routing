@@ -8,9 +8,12 @@
 static const int CLB_DIST = 3;
 
 PQ_Entry::PQ_Entry(
-        int set_rr_node_ind, int switch_ind, float parent_delay,
-        float parent_R_upstream, float parent_congestion_upstream,
-        bool starting_node) {
+    int set_rr_node_ind,
+    int switch_ind,
+    float parent_delay,
+    float parent_R_upstream,
+    float parent_congestion_upstream,
+    bool starting_node) {
     this->rr_node_ind = set_rr_node_ind;
 
     auto& device_ctx = g_vpr_ctx.device();
@@ -36,13 +39,13 @@ PQ_Entry::PQ_Entry(
         }
 
         float base_cost;
-        if(device_ctx.rr_indexed_data[cost_index].inv_length < 0) {
+        if (device_ctx.rr_indexed_data[cost_index].inv_length < 0) {
             base_cost = device_ctx.rr_indexed_data[cost_index].base_cost;
         } else {
             float frac_num_seg = CLB_DIST * device_ctx.rr_indexed_data[cost_index].inv_length;
 
             base_cost = frac_num_seg * T_linear
-                + frac_num_seg * frac_num_seg * T_quadratic;
+                        + frac_num_seg * frac_num_seg * T_quadratic;
         }
 
         VTR_ASSERT(T_linear >= 0.);
@@ -154,7 +157,9 @@ Cost_Entry Expansion_Cost_Entry::get_median_entry() const {
 
 /* iterates over the children of the specified node and selectively pushes them onto the priority queue */
 void expand_dijkstra_neighbours(PQ_Entry parent_entry,
-        std::vector<float>& node_visited_costs, std::vector<bool>& node_expanded, std::priority_queue<PQ_Entry>& pq) {
+                                std::vector<float>& node_visited_costs,
+                                std::vector<bool>& node_expanded,
+                                std::priority_queue<PQ_Entry>& pq) {
     auto& device_ctx = g_vpr_ctx.device();
 
     int parent_ind = parent_entry.rr_node_ind;

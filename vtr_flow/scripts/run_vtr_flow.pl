@@ -128,8 +128,8 @@ my $crit_path_router_iterations = undef;
 
 ##########
 # ABC flow modifiers
-my $flow_type = 0;
-my $use_new_latches_restoration_script = 0;
+my $flow_type = 2; #Use iterative black-boxing flow for multi-clock circuits
+my $use_new_latches_restoration_script = 1;
 my $odin_run_simulation = 0;
 
 while ( scalar(@ARGV) != 0 ) { #While non-empty
@@ -186,15 +186,15 @@ while ( scalar(@ARGV) != 0 ) { #While non-empty
     elsif ( $token eq "-verbose"){
             $expect_fail = shift(@ARGV);
     }
-		elsif ( $token eq "-adder_type"){
-			$odin_adder_config_path = shift(@ARGV);
-			if ( ($odin_adder_config_path ne "default") && ($odin_adder_config_path ne "optimized") ) {
-					$odin_adder_config_path = $vtr_flow_path . $odin_adder_config_path;
-			}
+	elsif ( $token eq "-adder_type"){
+		$odin_adder_config_path = shift(@ARGV);
+		if ( ($odin_adder_config_path ne "default") && ($odin_adder_config_path ne "optimized") ) {
+				$odin_adder_config_path = $vtr_flow_path . $odin_adder_config_path;
 		}
-		elsif ( $token eq "-disable_odin_xml" ){
-						$use_odin_xml_config = 0;
-		}
+	}
+	elsif ( $token eq "-disable_odin_xml" ){
+		$use_odin_xml_config = 0;
+	}
 	elsif ( $token eq "-use_odin_simulation" ){
 		$odin_run_simulation = 1;
 	}
@@ -367,7 +367,7 @@ my $xml_tree = $tpp->parsefile($architecture_file_path);
 
 # Get lut size if undefined
 if (!defined $lut_size) {
-	$lut_size = xml_find_LUT_Kvalue($xml_tree);
+    $lut_size = xml_find_LUT_Kvalue($xml_tree);
 }
 if ( $lut_size < 1 ) {
     $error_status = "failed: cannot determine arch LUT k-value";
@@ -466,8 +466,8 @@ if ( $starting_stage <= $stage_idx_odin and !$error_code ) {
 			$error_status = "failed: odin";
 			$error_code = 1;
 		}
-			}
-		}
+	}
+}
 
 #################################################################################
 ######################## PRE-ABC SIMULATION VERIFICATION #######################
@@ -593,66 +593,66 @@ if (    $starting_stage <= $stage_idx_abc
 		###########
 		# ABC Optimizer
 
-	#For ABC’s documentation see: https://people.eecs.berkeley.edu/~alanmi/abc/abc.htm
-    #
-    #Some key points on the script used:
-    #
-	#  strash : The strash command (which build's ABC's internal AIG) is needed before clean-up
-    #           related commands (e.g. ifraig) otherwise they will fail with “Only works for
-    #           structurally hashed networks”.
-    #
-	#  if –K #: This command techmaps the logic to LUTS. It should appear as the (near) final step
-    #           before writing the optimized netlist. In recent versions, ABC does not remember
-    #           that LUT size you want to techmap to. As a result, specifying if -K # early in
-    #           the script causes ABC techmap to 2-LUTs, greatly increasing the amount of logic required (CLB’s, blocks, nets, etc.).
-    #
-    # The current script is based off the one used by YOSYS and on discussions with Alan Mishchenko (ABC author).
-    # On 2018/04/28 Alan suggested the following:
-    #   (1) run synthesis commands such as "dc2" after "ifraig" and "scorr" (this way more equivalences are typically found - improves quality)
-    #   (2) run "ifraig" before "scorr" (this way comb equivalences are removed before seq equivalences are computed - improves runtime)
-    #   (3) run "dch -f" immediately before mapping "if" (this alone greatly improves both area and delay of mapping)
-    #   (4) no need to run "scleanup" if "scorr" is used ("scorr" internally performs "scleanup" - improves runtime)
-    #   (5) no need to run"dc2" if "dch -f" is used, alternatively run "dc2; dch -f" (this will take more runtime but may not improve quality)
-    #   (6) the only place to run "strash" is after technology mapping (if the script is run more than once - can improve quality)
-    my $abc_commands="
-echo '';
-echo 'Load Netlist';
-echo '============';
+		#For ABC’s documentation see: https://people.eecs.berkeley.edu/~alanmi/abc/abc.htm
+		#
+		#Some key points on the script used:
+		#
+		#  strash : The strash command (which build's ABC's internal AIG) is needed before clean-up
+		#           related commands (e.g. ifraig) otherwise they will fail with “Only works for
+		#           structurally hashed networks”.
+		#
+		#  if –K #: This command techmaps the logic to LUTS. It should appear as the (near) final step
+		#           before writing the optimized netlist. In recent versions, ABC does not remember
+		#           that LUT size you want to techmap to. As a result, specifying if -K # early in
+		#           the script causes ABC techmap to 2-LUTs, greatly increasing the amount of logic required (CLB’s, blocks, nets, etc.).
+		#
+		# The current script is based off the one used by YOSYS and on discussions with Alan Mishchenko (ABC author).
+		# On 2018/04/28 Alan suggested the following:
+		#   (1) run synthesis commands such as "dc2" after "ifraig" and "scorr" (this way more equivalences are typically found - improves quality)
+		#   (2) run "ifraig" before "scorr" (this way comb equivalences are removed before seq equivalences are computed - improves runtime)
+		#   (3) run "dch -f" immediately before mapping "if" (this alone greatly improves both area and delay of mapping)
+		#   (4) no need to run "scleanup" if "scorr" is used ("scorr" internally performs "scleanup" - improves runtime)
+		#   (5) no need to run"dc2" if "dch -f" is used, alternatively run "dc2; dch -f" (this will take more runtime but may not improve quality)
+		#   (6) the only place to run "strash" is after technology mapping (if the script is run more than once - can improve quality)
+		my $abc_commands="
+		echo '';
+		echo 'Load Netlist';
+		echo '============';
 		read ${pre_abc_blif};
-time;
+		time;
 
-echo '';
-echo 'Circuit Info';
-echo '==========';
-print_stats;
-print_latch;
-time;
+		echo '';
+		echo 'Circuit Info';
+		echo '==========';
+		print_stats;
+		print_latch;
+		time;
 
-echo '';
-echo 'LUT Costs';
-echo '=========';
-print_lut;
-time;
+		echo '';
+		echo 'LUT Costs';
+		echo '=========';
+		print_lut;
+		time;
 
-echo '';
-echo 'Logic Opt + Techmap';
-echo '===================';
-strash;
-ifraig -v;
-scorr -v;
-dc2 -v;
-dch -f;
+		echo '';
+		echo 'Logic Opt + Techmap';
+		echo '===================';
+		strash;
+		ifraig -v;
+		scorr -v;
+		dc2 -v;
+		dch -f;
 		if -K ${lut_size} -v;
-mfs2 -v;
-print_stats;
-time;
+		mfs2 -v;
+		print_stats;
+		time;
 
-echo '';
-echo 'Output Netlist';
-echo '==============';
+		echo '';
+		echo 'Output Netlist';
+		echo '==============';
 		write_hie ${pre_abc_blif} ${post_abc_raw_blif};
-time;
-";
+		time;
+		";
 
 		if ($use_old_abc_script) {
 			#Legacy ABC script adapted for new ABC by moving scleanup before if
@@ -668,27 +668,27 @@ time;
 			";
         }
 
-    $abc_commands =~ s/\R/ /g; #Convert new-lines to spaces
+		$abc_commands =~ s/\R/ /g; #Convert new-lines to spaces
 
-    if ($abc_quote_addition) {$abc_commands = "'" . $abc_commands . "'";}
+		if ($abc_quote_addition) {$abc_commands = "'" . $abc_commands . "'";}
 
-    #added so that valgrind will not run on abc because of existing memory errors
+		#added so that valgrind will not run on abc because of existing memory errors
 		my $skip_valgrind = $valgrind;
-            $valgrind = 0;
+		$valgrind = 0;
 
 		$q = &system_with_timeout( $abc_path, "abc".$domain_itter.".out", $timeout, $temp_dir, "-c",
-		$abc_commands);
+			$abc_commands);
 
 		if ( $q ne "success") {
 			$error_status = "failed: abc";
 			$error_code = 1;
 			last ABC_OPTIMIZATION;
-    }
+		}
 		elsif ( not -e "${temp_dir}/$post_abc_raw_blif" ) {
 			$error_status = "failed: abc did not produce the expected output: ${temp_dir}/${post_abc_raw_blif}";
 			$error_code = 1;
 			last ABC_OPTIMIZATION;
-    }
+		}
 
 		#restore the current valgrind flag
 		$valgrind = $skip_valgrind;
@@ -707,13 +707,13 @@ time;
 		}
 		else
 		{
-		# Restore Multi-Clock Latch Information from ODIN II that was striped out by ABC
+			# Restore Multi-Clock Latch Information from ODIN II that was striped out by ABC
 			$q = &system_with_timeout($restore_multiclock_info_script, "restore_latch".$domain_itter.".out", $timeout, $temp_dir,
 					$pre_abc_blif, $post_abc_raw_blif, $post_abc_blif);
 
-        if ($q ne "success") {
-            $error_status = "failed: to restore multi-clock latch info";
-            $error_code = 1;
+			if ($q ne "success") {
+				$error_status = "failed: to restore multi-clock latch info";
+				$error_code = 1;
 				last ABC_OPTIMIZATION;
 			}
 		}
@@ -723,7 +723,7 @@ time;
 		if ( $flow_type != 2 )
 		{
 			last ABC_OPTIMIZATION;
-        }
+		}
 	}
 
 	################
@@ -743,14 +743,14 @@ time;
 	#	Cleanup
 	if ( !$error_code
 	and !$keep_intermediate_files ) {
-			if (! $do_power) {
-				system "rm -f $odin_output_file_path";
-			}
+		if (! $do_power) {
+			system "rm -f $odin_output_file_path";
+		}
 		system "rm -f ${temp_dir}*.dot";
 		system "rm -f ${temp_dir}*.v";
-			system "rm -f ${temp_dir}*.rc";
-		}
+		system "rm -f ${temp_dir}*.rc";
 	}
+}
 
 #################################################################################
 ######################## POST-ABC SIMULATION VERIFICATION #######################
@@ -888,11 +888,11 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
     #True if a fixed channel width routing is desired
     my $route_fixed_W = (grep(/^--route_chan_width$/, @forwarded_vpr_args));
 
-        #set a min chan width if it is not set to ensure equal results
+    #set a min chan width if it is not set to ensure equal results
     if (($check_route or $check_place) and !$route_fixed_W){
         push(@forwarded_vpr_args, ("--route_chan_width", "300"));
         $route_fixed_W = 1;
-        }
+    }
 
     #Where any VPR stages explicitly requested?
     my $explicit_pack_vpr_stage = (grep(/^--pack$/, @forwarded_vpr_args));
@@ -942,7 +942,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
 
                     if (defined $crit_path_router_iterations) {
                         push(@relaxed_W_extra_vpr_args, ("--max_router_iterations", "$crit_path_router_iterations"));
-				}
+                    }
 
                     my $relaxed_W_log_file = "vpr.crit_path.out";
                     $q = run_vpr({
@@ -957,9 +957,9 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
                 } else {
                     my $abs_log_file = File::Spec->rel2abs($temp_dir/$min_W_log_file);
                     $q = "Failed find minimum channel width (see $abs_log_file)";
-	 			}
-			}
-		}
+                }
+            }
+        }
 	} else { # specified channel width
         my $fixed_W_log_file = "vpr.out";
 
@@ -969,7 +969,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
 
         if ($verify_rr_graph){
             push(@fixed_W_extra_vpr_args, ("--write_rr_graph", $rr_graph_out_file));
-	 	}
+        }
 
         $q = run_vpr({
                 arch_name => $architecture_file_name,
@@ -985,7 +985,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
         if ($verify_rr_graph && (! -e $rr_graph_out_file || -z $rr_graph_out_file)) {
             $error_status = "failed: vpr (no RR graph file produced)";
             $error_code = 1;
-			}
+        }
 
         #Run vpr again with additional parameters.
         #This is used to ensure that files generated by VPR can be re-loaded by it
@@ -998,7 +998,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
             if ($verify_rr_graph){
                 push( @second_run_extra_vpr_args, ("--read_rr_graph", $rr_graph_out_file));
                 push( @second_run_extra_vpr_args, ("--write_rr_graph", $rr_graph_out_file2));
-                }
+            }
 
             if ($check_route){
                 push( @second_run_extra_vpr_args, "--analysis");
@@ -1006,7 +1006,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
 
             if ($check_place) {
                 push( @second_run_extra_vpr_args, "--route");
-	    }
+            }
 
             my $second_run_log_file = "vpr_second_run.out";
 

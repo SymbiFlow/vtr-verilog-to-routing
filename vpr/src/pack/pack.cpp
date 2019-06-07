@@ -89,8 +89,7 @@ bool try_pack(t_packer_opts* packer_opts,
     list_of_pack_molecules = alloc_and_load_pack_molecules(list_of_packing_patterns,
                                                            atom_molecules,
                                                            expected_lowest_cost_pb_gnode,
-                                                           num_packing_patterns,
-                                                           packer_opts->enable_round_robin_prepacking);
+                                                           num_packing_patterns);
     VTR_LOG("Finish prepacking.\n");
 
     if (packer_opts->auto_compute_inter_cluster_net_delay) {
