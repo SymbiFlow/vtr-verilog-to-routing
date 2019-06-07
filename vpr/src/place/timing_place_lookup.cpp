@@ -158,7 +158,7 @@ std::unique_ptr<PlaceDelayModel> compute_place_delay_model(t_placer_opts placer_
 /******* File Accessible Functions **********/
 
 static std::vector<int> get_best_classes(enum e_pin_type pintype, t_type_ptr type) {
-    /* 
+    /*
      * This function tries to identify the best pin classes to hook up
      * for delay calculation.  The assumption is that we should pick
      * the pin class with the largest number of pins. This makes
@@ -264,9 +264,14 @@ static float route_connection_delay(int source_x, int source_y, int sink_x, int 
 
             VTR_ASSERT(sink_rr_node != OPEN);
 
-            successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
-                                                  router_opts,
-                                                  &net_delay_value);
+            {
+                vtr::ScopedStartFinishTimer timer(vtr::string_fmt(
+                    "Routing Src: %d Sink: %d", source_rr_node,
+                    sink_rr_node));
+                successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
+                                                    router_opts,
+                                                    &net_delay_value);
+            }
 
             if (successfully_routed) break;
         }

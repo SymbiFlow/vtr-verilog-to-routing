@@ -126,15 +126,6 @@ static t_chan_width setup_chan_width(t_router_opts router_opts,
     return init_chan(width_fac, chan_width_dist);
 }
 
-static void dump_rr_indexed_data() {
-    FILE *fp = fopen("rr_indexed.txt", "w");
-
-    auto& device_ctx = g_vpr_ctx.device();
-    for(size_t i = 0; i < device_ctx.rr_indexed_data.size(); ++i) {
-        print_rr_indexed_data(fp, i);
-    }
-}
-
 int main(int argc, const char **argv) {
     t_options Options = t_options();
     t_arch Arch = t_arch();
@@ -162,8 +153,6 @@ int main(int argc, const char **argv) {
                 Arch.Directs,
                 Arch.num_directs
                 );
-
-        dump_rr_indexed_data();
 
         do_route_diag(
                 Options.source_rr_node, Options.sink_rr_node,
