@@ -2096,9 +2096,11 @@ static bool find_to(t_type_ptr type, float rlim, const t_pl_loc from, t_pl_loc& 
         //The candidates are stored in a flat_map so we can efficiently find the set of valid
         //candidates with upper/lower bound.
         auto y_lower_iter = compressed_block_grid.grid[cx_to].lower_bound(min_cy);
-        auto y_upper_iter = compressed_block_grid.grid[cx_to].upper_bound(max_cy);
+        if (y_lower_iter == compressed_block_grid.grid[cx_to].end()) {
+            continue;
+        }
 
-        VTR_ASSERT_MSG(y_lower_iter != compressed_block_grid.grid[cx_to].end(), "Must have at least one block at this x location");
+        auto y_upper_iter = compressed_block_grid.grid[cx_to].upper_bound(max_cy);
 
         if (y_lower_iter->first > min_cy) {
             //No valid blocks at this x location which are within rlim_y
@@ -3544,15 +3546,13 @@ static int check_placement_costs(const t_placer_costs& costs,
         comp_td_costs(delay_model, &timing_cost_check, &delay_cost_check);
         //VTR_LOG("timing_cost recomputed from scratch: %g\n", timing_cost_check);
         if (fabs(timing_cost_check - costs.timing_cost) > costs.timing_cost * ERROR_TOL) {
-            VTR_LOG_ERROR("timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
-                          timing_cost_check, costs.timing_cost);
-            error++;
+            VTR_LOG_WARN("timing_cost_check: %g and timing_cost: %g differ in check_place.\n",
+                         timing_cost_check, costs.timing_cost);
         }
         //VTR_LOG("delay_cost recomputed from scratch: %g\n", delay_cost_check);
         if (fabs(delay_cost_check - costs.delay_cost) > costs.delay_cost * ERROR_TOL) {
-            VTR_LOG_ERROR("delay_cost_check: %g and delay_cost: %g differ in check_place.\n",
-                          delay_cost_check, costs.delay_cost);
-            error++;
+            VTR_LOG_WARN("delay_cost_check: %g and delay_cost: %g differ in check_place.\n",
+                         delay_cost_check, costs.delay_cost);
         }
     }
     return error;
