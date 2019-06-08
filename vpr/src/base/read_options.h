@@ -149,6 +149,7 @@ struct t_options {
     /* Router diag tool Options */
     argparse::ArgValue<int> source_rr_node;
     argparse::ArgValue<int> sink_rr_node;
+    argparse::ArgValue<bool> profile_source;
 };
 
 t_options read_options(int argc, const char** argv);

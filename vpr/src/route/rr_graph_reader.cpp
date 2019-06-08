@@ -154,6 +154,7 @@ void load_rr_file(const t_graph_type graph_type,
         int num_rr_nodes = count_children(next_component, "node", loc_data);
 
         device_ctx.rr_nodes.resize(num_rr_nodes);
+        device_ctx.connection_boxes.resize_nodes(num_rr_nodes);
         process_nodes(next_component, loc_data);
 
         /* Loads edges, switches, and node look up tables*/

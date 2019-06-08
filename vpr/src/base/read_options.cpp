@@ -1624,6 +1624,10 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
     route_diag_grp.add_argument(args.source_rr_node, "--source_rr_node")
         .help("Source RR node to route for route_diag.")
         .show_in(argparse::ShowIn::HELP_ONLY);
+    route_diag_grp.add_argument(args.profile_source, "--profile_source")
+        .help("Profile routes from source to IPINs at all locations."
+              "This is similiar to the placer delay matrix construction.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
 
     return parser;
 }

@@ -140,7 +140,7 @@ else()
         "-Wnon-virtual-dtor"            #Warn about missing virtual destructors
         "-Wduplicated-cond"             #Warn about identical conditions in if-else chains
         "-Wduplicated-branches"         #Warn when different branches of an if-else chain are equivalent
-        "-Wnull-dereference"            #Warn about null pointer dereference execution paths
+        "-Wnonull-dereference"            #Warn about null pointer dereference execution paths
         "-Wuninitialized"               #Warn about unitialized values
         "-Winit-self"                   #Warn about self-initialization
         "-Wcatch-value=3"               #Warn when catch statements don't catch by reference

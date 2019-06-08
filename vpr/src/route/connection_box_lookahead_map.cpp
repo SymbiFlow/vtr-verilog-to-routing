@@ -42,9 +42,25 @@ class CostMap {
         offset_.clear();
         cost_map_.resize(seg_count);
         offset_.resize(seg_count);
+
+        const auto& device_ctx = g_vpr_ctx.device();
+        segment_map_.resize(device_ctx.rr_nodes.size());
+        for(size_t i = 0; i < segment_map_.size(); ++i) {
+            auto& from_node = device_ctx.rr_nodes[i];
+
+            int from_cost_index = from_node.cost_index();
+            int from_seg_index = device_ctx.rr_indexed_data[from_cost_index].seg_index;
+
+            segment_map_[i] = from_seg_index;
+        }
+    }
+
+    int node_to_segment(int from_node_ind) {
+        return segment_map_[from_node_ind];
     }
 
     Cost_Entry find_cost(int from_seg_index, int delta_x, int delta_y) const {
+
         VTR_ASSERT(from_seg_index >= 0 && from_seg_index < (ssize_t)offset_.size());
         int dx = delta_x - offset_[from_seg_index].first;
         int dy = delta_y - offset_[from_seg_index].second;
@@ -185,6 +201,7 @@ class CostMap {
   private:
     std::vector<vtr::NdMatrix<Cost_Entry, 2>> cost_map_;
     std::vector<std::pair<int, int>> offset_;
+    std::vector<int> segment_map_;
 };
 
 static CostMap g_cost_map;
@@ -306,34 +323,45 @@ float get_connection_box_lookahead_map_cost(int from_node_ind,
     }
 
     auto& device_ctx = g_vpr_ctx.device();
-    auto& from_node = device_ctx.rr_nodes[from_node_ind];
-
-    int from_cost_index = from_node.cost_index();
-    int from_seg_index = device_ctx.rr_indexed_data[from_cost_index].seg_index;
-
-    VTR_ASSERT(from_seg_index >= 0);
 
     std::pair<size_t, size_t> from_location;
     std::pair<size_t, size_t> to_location;
     auto to_node_type = device_ctx.rr_nodes[to_node_ind].type();
+
+    if (to_node_type == SINK) {
+        const auto &sink_to_ipin = \
+            device_ctx.connection_boxes.find_sink_connection_boxes(to_node_ind);
+        if(sink_to_ipin.ipin_count > 1) {
+            float cost = std::numeric_limits<float>::infinity();
+            // Find cheapest cost from from_node_ind to IPINs for this SINK.
+            for (int i = 0; i < sink_to_ipin.ipin_count; ++i) {
+                cost = std::min(cost,
+                        get_connection_box_lookahead_map_cost(
+                            from_node_ind,
+                            sink_to_ipin.ipin_nodes[i], criticality_fac));
+            }
+
+            return cost;
+        } else if (sink_to_ipin.ipin_count == 1) {
+            to_node_ind = sink_to_ipin.ipin_nodes[0];
+            if (from_node_ind == to_node_ind) {
+                return 0.f;
+            }
+        } else {
+            return std::numeric_limits<float>::infinity();
+        }
+    }
+
     if (device_ctx.rr_nodes[to_node_ind].type() == IPIN) {
         ConnectionBoxId box_id;
         std::pair<size_t, size_t> box_location;
-        bool found = device_ctx.connection_boxes.find_connection_box(to_node_ind, &box_id,
-                                                                     &box_location);
-        to_location = box_location;
+        bool found = device_ctx.connection_boxes.find_connection_box(
+                to_node_ind, &box_id, &box_location);
         if (!found) {
             VPR_THROW(VPR_ERROR_ROUTE, "No connection box for IPIN %d", to_node_ind);
         }
-    } else if (to_node_type == SINK) {
-        // Find cheapest cost from from_node_ind to IPINs for this SINK.
-        float cost = std::numeric_limits<float>::infinity();
-        for (auto sink_ipin : device_ctx.connection_boxes.find_sink_connection_boxes(to_node_ind)) {
-            cost = std::min(cost, get_connection_box_lookahead_map_cost(from_node_ind,
-                                                                        sink_ipin.second, criticality_fac));
-        }
 
-        return cost;
+        to_location = box_location;
     } else {
         const std::pair<size_t, size_t>* to_canonical_loc = device_ctx.connection_boxes.find_canonical_loc(to_node_ind);
         if (!to_canonical_loc) {
@@ -352,6 +380,7 @@ float get_connection_box_lookahead_map_cost(int from_node_ind,
     ssize_t dx = ssize_t(from_canonical_loc->first) - ssize_t(to_location.first);
     ssize_t dy = ssize_t(from_canonical_loc->second) - ssize_t(to_location.second);
 
+    int from_seg_index = g_cost_map.node_to_segment(from_node_ind);
     Cost_Entry cost_entry = g_cost_map.find_cost(from_seg_index, dx, dy);
     float expected_delay = cost_entry.delay;
     float expected_congestion = cost_entry.congestion;

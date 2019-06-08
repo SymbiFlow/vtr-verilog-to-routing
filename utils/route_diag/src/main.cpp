@@ -6,11 +6,11 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
-using namespace std;
 
 #include "vtr_error.h"
 #include "vtr_memory.h"
 #include "vtr_log.h"
+#include "vtr_time.h"
 
 #include "tatum/error.hpp"
 
@@ -30,6 +30,8 @@ using namespace std;
 #include "route_tree_timing.h"
 #include "route_export.h"
 #include "rr_graph.h"
+#include "rr_graph2.h"
+#include "timing_place_lookup.h"
 
 /*
  * Exit codes to signal success/failure to scripts
@@ -40,7 +42,7 @@ constexpr int ERROR_EXIT_CODE = 1; //Something went wrong internally
 constexpr int UNIMPLEMENTABLE_EXIT_CODE = 2; //Could not implement (e.g. unroutable)
 constexpr int INTERRUPTED_EXIT_CODE = 3; //VPR was interrupted by the user (e.g. SIGINT/ctr-C)
 
-static void do_route_diag(int source_node, int sink_node,
+static void do_one_route(int source_node, int sink_node,
         const t_router_opts& router_opts) {
     /* Returns true as long as found some way to hook up this net, even if that *
      * way resulted in overuse of resources (congestion).  If there is no way   *
@@ -103,6 +105,79 @@ static void do_route_diag(int source_node, int sink_node,
     reset_path_costs(modified_rr_node_inf);
 }
 
+static void profile_source(int source_rr_node,
+        const t_router_opts& router_opts) {
+    vtr::ScopedStartFinishTimer timer("Profiling source");
+    const auto& device_ctx = g_vpr_ctx.device();
+    const auto& grid = device_ctx.grid;
+
+    int start_x = 0;
+    int end_x = grid.width() - 1;
+    int start_y = 0;
+    int end_y = grid.height() - 1;
+
+    vtr::Matrix<float> delays({grid.width(), grid.height()},
+            std::numeric_limits<float>::infinity());
+    vtr::Matrix<int> sink_nodes({grid.width(), grid.height()}, OPEN);
+
+    for (int sink_x = start_x; sink_x <= end_x; sink_x++) {
+        for (int sink_y = start_y; sink_y <= end_y; sink_y++) {
+            if(device_ctx.grid[sink_x][sink_y].type == device_ctx.EMPTY_TYPE) {
+                continue;
+            }
+
+            auto best_sink_ptcs = get_best_classes(RECEIVER,
+                    device_ctx.grid[sink_x][sink_y].type);
+            bool successfully_routed;
+            for (int sink_ptc : best_sink_ptcs) {
+                VTR_ASSERT(sink_ptc != OPEN);
+
+                int sink_rr_node = get_rr_node_index(device_ctx.rr_node_indices, sink_x, sink_y, SINK, sink_ptc);
+
+                if (directconnect_exists(source_rr_node, sink_rr_node)) {
+                    //Skip if we shouldn't measure direct connects and a direct connect exists
+                    continue;
+                }
+
+                VTR_ASSERT(sink_rr_node != OPEN);
+
+                {
+                    vtr::ScopedStartFinishTimer timer(vtr::string_fmt(
+                        "Routing Src: %d Sink: %d", source_rr_node,
+                        sink_rr_node));
+                    successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
+                                                        router_opts,
+                                                        &delays[sink_x][sink_y]);
+                }
+
+                if (successfully_routed) {
+                    sink_nodes[sink_x][sink_y] = sink_rr_node;
+                    break;
+                }
+            }
+        }
+    }
+
+    VTR_LOG("Delay matrix from source_rr_node: %d\n", source_rr_node);
+    for(int iy = 0; iy < delays.dim_size(1); ++iy) {
+        for(int ix = 0; ix < delays.dim_size(0); ++ix) {
+            VTR_LOG("%g,", delays[ix][iy]);
+        }
+        VTR_LOG("\n");
+    }
+    VTR_LOG("\n");
+
+    VTR_LOG("Sink matrix used for delay matrix:\n");
+    for(int iy = 0; iy < sink_nodes.dim_size(1); ++iy) {
+        for(int ix = 0; ix < sink_nodes.dim_size(0); ++ix) {
+            VTR_LOG("%d,", sink_nodes[ix][iy]);
+        }
+        VTR_LOG("\n");
+    }
+    VTR_LOG("\n");
+}
+
+
 static t_chan_width setup_chan_width(t_router_opts router_opts,
         t_chan_width_dist chan_width_dist) {
     /*we give plenty of tracks, this increases routability for the */
@@ -154,9 +229,16 @@ int main(int argc, const char **argv) {
                 Arch.num_directs
                 );
 
-        do_route_diag(
-                Options.source_rr_node, Options.sink_rr_node,
-                vpr_setup.RouterOpts);
+        if(Options.profile_source) {
+            profile_source(
+                Options.source_rr_node,
+                vpr_setup.RouterOpts
+                );
+        } else {
+            do_one_route(
+                    Options.source_rr_node, Options.sink_rr_node,
+                    vpr_setup.RouterOpts);
+        }
         free_routing_structs();
 
         /* free data structures */
