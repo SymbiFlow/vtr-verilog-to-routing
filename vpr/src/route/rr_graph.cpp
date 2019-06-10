@@ -34,6 +34,7 @@ using namespace std;
 #include "rr_graph_writer.h"
 #include "rr_graph_reader.h"
 #include "router_lookahead_map.h"
+#include "connection_box_lookahead_map.h"
 #include "rr_graph_clock.h"
 
 #include "rr_types.h"
@@ -381,7 +382,11 @@ void create_rr_graph(const t_graph_type graph_type,
     print_rr_graph_stats();
 
     if (router_lookahead_type == e_router_lookahead::MAP) {
-        compute_router_lookahead(segment_inf.size());
+        compute_router_lookahead(segment_inf);
+    }
+
+    if (router_lookahead_type == e_router_lookahead::CONNECTION_BOX_MAP) {
+        compute_connection_box_lookahead(segment_inf);
     }
 
     //Write out rr graph file if needed

@@ -264,9 +264,14 @@ static float route_connection_delay(int source_x, int source_y, int sink_x, int 
 
             VTR_ASSERT(sink_rr_node != OPEN);
 
-            successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
-                                                  router_opts,
-                                                  &net_delay_value);
+            {
+                vtr::ScopedStartFinishTimer timer(vtr::string_fmt(
+                    "Routing Src: %d Sink: %d", source_rr_node,
+                    sink_rr_node));
+                successfully_routed = calculate_delay(source_rr_node, sink_rr_node,
+                                                      router_opts,
+                                                      &net_delay_value);
+            }
 
             if (successfully_routed) break;
         }
