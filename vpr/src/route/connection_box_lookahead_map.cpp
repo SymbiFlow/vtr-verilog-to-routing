@@ -45,7 +45,7 @@ class CostMap {
 
         const auto& device_ctx = g_vpr_ctx.device();
         segment_map_.resize(device_ctx.rr_nodes.size());
-        for(size_t i = 0; i < segment_map_.size(); ++i) {
+        for (size_t i = 0; i < segment_map_.size(); ++i) {
             auto& from_node = device_ctx.rr_nodes[i];
 
             int from_cost_index = from_node.cost_index();
@@ -60,7 +60,6 @@ class CostMap {
     }
 
     Cost_Entry find_cost(int from_seg_index, int delta_x, int delta_y) const {
-
         VTR_ASSERT(from_seg_index >= 0 && from_seg_index < (ssize_t)offset_.size());
         int dx = delta_x - offset_[from_seg_index].first;
         int dy = delta_y - offset_[from_seg_index].second;
@@ -329,16 +328,15 @@ float get_connection_box_lookahead_map_cost(int from_node_ind,
     auto to_node_type = device_ctx.rr_nodes[to_node_ind].type();
 
     if (to_node_type == SINK) {
-        const auto &sink_to_ipin = \
-            device_ctx.connection_boxes.find_sink_connection_boxes(to_node_ind);
-        if(sink_to_ipin.ipin_count > 1) {
+        const auto& sink_to_ipin = device_ctx.connection_boxes.find_sink_connection_boxes(to_node_ind);
+        if (sink_to_ipin.ipin_count > 1) {
             float cost = std::numeric_limits<float>::infinity();
             // Find cheapest cost from from_node_ind to IPINs for this SINK.
             for (int i = 0; i < sink_to_ipin.ipin_count; ++i) {
                 cost = std::min(cost,
-                        get_connection_box_lookahead_map_cost(
-                            from_node_ind,
-                            sink_to_ipin.ipin_nodes[i], criticality_fac));
+                                get_connection_box_lookahead_map_cost(
+                                    from_node_ind,
+                                    sink_to_ipin.ipin_nodes[i], criticality_fac));
             }
 
             return cost;
@@ -356,7 +354,7 @@ float get_connection_box_lookahead_map_cost(int from_node_ind,
         ConnectionBoxId box_id;
         std::pair<size_t, size_t> box_location;
         bool found = device_ctx.connection_boxes.find_connection_box(
-                to_node_ind, &box_id, &box_location);
+            to_node_ind, &box_id, &box_location);
         if (!found) {
             VPR_THROW(VPR_ERROR_ROUTE, "No connection box for IPIN %d", to_node_ind);
         }

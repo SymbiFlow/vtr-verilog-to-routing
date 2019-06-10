@@ -33,8 +33,8 @@ bool ConnectionBoxes::find_connection_box(int inode,
     VTR_ASSERT(box_id != nullptr);
     VTR_ASSERT(box_location != nullptr);
 
-    const auto & conn_box_loc = ipin_map_[inode];
-    if(conn_box_loc.box_id == ConnectionBoxId::INVALID()) {
+    const auto& conn_box_loc = ipin_map_[inode];
+    if (conn_box_loc.box_id == ConnectionBoxId::INVALID()) {
         return false;
     }
 
@@ -50,14 +50,12 @@ void ConnectionBoxes::reset_boxes(std::pair<size_t, size_t> size,
 
     size_ = size;
     boxes_ = boxes;
-
 }
 
 void ConnectionBoxes::resize_nodes(size_t rr_node_size) {
     ipin_map_.resize(rr_node_size);
     canonical_loc_map_.resize(rr_node_size,
-            std::make_pair(-1, -1));
-
+                              std::make_pair(-1, -1));
 }
 
 void ConnectionBoxes::clear() {
@@ -68,8 +66,7 @@ void ConnectionBoxes::clear() {
     sink_to_ipin_.clear();
 }
 
-void ConnectionBoxes::add_connection_box(int inode, ConnectionBoxId box_id,
-        std::pair<size_t, size_t> box_location) {
+void ConnectionBoxes::add_connection_box(int inode, ConnectionBoxId box_id, std::pair<size_t, size_t> box_location) {
     // Ensure that box location is in bounds
     VTR_ASSERT(box_location.first < size_.first);
     VTR_ASSERT(box_location.second < size_.second);
@@ -91,8 +88,8 @@ void ConnectionBoxes::add_canonical_loc(int inode, std::pair<size_t, size_t> loc
 }
 
 const std::pair<size_t, size_t>* ConnectionBoxes::find_canonical_loc(int inode) const {
-    const auto & canon_loc = canonical_loc_map_[inode];
-    if(canon_loc.first == size_t(-1)) {
+    const auto& canon_loc = canonical_loc_map_[inode];
+    if (canon_loc.first == size_t(-1)) {
         return nullptr;
     }
 
@@ -104,13 +101,13 @@ void ConnectionBoxes::create_sink_back_ref() {
 
     sink_to_ipin_.resize(device_ctx.rr_nodes.size(), {{0, 0, 0, 0}, 0});
 
-    for(size_t i = 0; i < device_ctx.rr_nodes.size(); ++i) {
+    for (size_t i = 0; i < device_ctx.rr_nodes.size(); ++i) {
         const auto& ipin_node = device_ctx.rr_nodes[i];
-        if(ipin_node.type() != IPIN) {
+        if (ipin_node.type() != IPIN) {
             continue;
         }
 
-        if(ipin_map_[i].box_id == ConnectionBoxId::INVALID()) {
+        if (ipin_map_[i].box_id == ConnectionBoxId::INVALID()) {
             continue;
         }
 
@@ -118,13 +115,13 @@ void ConnectionBoxes::create_sink_back_ref() {
             int sink_inode = ipin_node.edge_sink_node(edge);
             VTR_ASSERT(device_ctx.rr_nodes[sink_inode].type() == SINK);
             VTR_ASSERT(sink_to_ipin_[sink_inode].ipin_count < 4);
-            auto & sink_to_ipin = sink_to_ipin_[sink_inode];
+            auto& sink_to_ipin = sink_to_ipin_[sink_inode];
             sink_to_ipin.ipin_nodes[sink_to_ipin.ipin_count++] = i;
         }
     }
 }
 
-const SinkToIpin & ConnectionBoxes::find_sink_connection_boxes(
+const SinkToIpin& ConnectionBoxes::find_sink_connection_boxes(
     int inode) const {
     return sink_to_ipin_[inode];
 }

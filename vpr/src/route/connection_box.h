@@ -18,7 +18,8 @@ struct ConnectionBox {
 };
 
 struct ConnBoxLoc {
-    ConnBoxLoc() : box_location(std::make_pair(-1, -1)) {}
+    ConnBoxLoc()
+        : box_location(std::make_pair(-1, -1)) {}
     ConnBoxLoc(
         const std::pair<size_t, size_t>& a_box_location,
         ConnectionBoxId a_box_id)
