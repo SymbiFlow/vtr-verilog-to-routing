@@ -682,15 +682,9 @@ void process_rr_node_indices(const DeviceGrid& grid) {
      * Local multi-dimensional vector to hold max_ptc for every coordinate.
      * It has same height and width as CHANY and CHANX are inverted
      */
-    std::vector<std::vector<short>> coordinates_max_ptc; /* [x][y] */
+    vtr::Matrix<short> coordinates_max_ptc; /* [x][y] */
     size_t max_coord_size = std::max(grid.width(), grid.height());
-    coordinates_max_ptc.resize(max_coord_size);
-    for (size_t x = 0; x < max_coord_size; x++) {
-        coordinates_max_ptc[x].resize(max_coord_size);
-        for (size_t y = 0; y < max_coord_size; y++) {
-            coordinates_max_ptc[x][y] = 0;
-        }
-    }
+    coordinates_max_ptc.resize({max_coord_size, max_coord_size}, 0);
 
     /* Alloc the lookup table */
     for (t_rr_type rr_type : RR_TYPES) {
@@ -747,14 +741,12 @@ void process_rr_node_indices(const DeviceGrid& grid) {
         } else if (node.type() == CHANX) {
             for (int ix = node.xlow(); ix <= node.xhigh(); ix++) {
                 for (int iy = node.ylow(); iy <= node.yhigh(); iy++) {
-                    indices[CHANX][iy][ix][0].push_back(inode);
                     coordinates_max_ptc[iy][ix] = std::max(coordinates_max_ptc[iy][ix], node.ptc_num());
                 }
             }
         } else if (node.type() == CHANY) {
             for (int ix = node.xlow(); ix <= node.xhigh(); ix++) {
                 for (int iy = node.ylow(); iy <= node.yhigh(); iy++) {
-                    indices[CHANY][ix][iy][0].push_back(inode);
                     coordinates_max_ptc[ix][iy] = std::max(coordinates_max_ptc[ix][iy], node.ptc_num());
                 }
             }
