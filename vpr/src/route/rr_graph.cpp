@@ -382,7 +382,7 @@ void create_rr_graph(const t_graph_type graph_type,
     print_rr_graph_stats();
 
     if (router_lookahead_type == e_router_lookahead::MAP) {
-        compute_router_lookahead(segment_inf);
+        compute_router_lookahead(segment_inf.size());
     }
 
     if (router_lookahead_type == e_router_lookahead::CONNECTION_BOX_MAP) {
