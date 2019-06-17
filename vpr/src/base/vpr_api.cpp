@@ -749,6 +749,8 @@ RouteStatus vpr_load_routing(t_vpr_setup& vpr_setup,
         timing_info->update();
     }
 
+    init_draw_coords(fixed_channel_width);
+
     return RouteStatus(is_legal, fixed_channel_width);
 }
 
