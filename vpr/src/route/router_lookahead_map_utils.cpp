@@ -178,7 +178,7 @@ void expand_dijkstra_neighbours(PQ_Entry parent_entry,
         PQ_Entry child_entry(child_node_ind, switch_ind, parent_entry.delay,
                              parent_entry.R_upstream, parent_entry.congestion_upstream, false);
 
-        //VTR_ASSERT(child_entry.cost >= 0);
+        VTR_ASSERT(child_entry.cost >= 0);
 
         /* skip this child if it has been visited with smaller cost */
         if (node_visited_costs[child_node_ind] >= 0 && node_visited_costs[child_node_ind] < child_entry.cost) {

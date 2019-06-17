@@ -220,7 +220,7 @@ class StartNode {
         for (; index_ < channel_node_list.size(); index_++) {
             int node_ind = channel_node_list[index_];
 
-            if (device_ctx.rr_nodes[node_ind].capacity() == 0) {
+            if (node_ind == OPEN || device_ctx.rr_nodes[node_ind].capacity() == 0) {
                 continue;
             }
 
@@ -248,6 +248,19 @@ class StartNode {
     size_t index_;
 };
 
+// Minimum size of search for channels to profile.  kMinProfile results
+// in searching x = [0, kMinProfile], and y = [0, kMinProfile[.
+//
+// Making this value larger will increase the sample size, but also the runtime
+// to produce the lookahead.
+static constexpr int kMinProfile = 1;
+
+// Maximum size of search for channels to profile.  Once search is outside of
+// kMinProfile distance, lookahead will stop searching once:
+//  - At least one channel has been profiled
+//  - kMaxProfile is exceeded.
+static constexpr int kMaxProfile = 7;
+
 void compute_connection_box_lookahead(
     const std::vector<t_segment_inf>& segment_inf) {
     size_t num_segments = segment_inf.size();
@@ -271,20 +284,14 @@ void compute_connection_box_lookahead(
         //int start_y = vtr::nint(device_ctx.grid.height()/2);
         int start_x = REF_X;
         int start_y = REF_Y;
-        while ((count == 0 && dx < 7) || dy < 1) {
+        while ((count == 0 && dx < kMaxProfile) || dy <= kMinProfile) {
             for (e_rr_type chan_type : {CHANX, CHANY}) {
-                //VTR_LOG("Start segment %s(%d) node search at (%d, %d)\n",
-                //        segment_inf[iseg].name.c_str(), iseg,
-                //        start_x+dx, start_y+dy);
-
                 StartNode start_node(start_x + dx, start_y + dy, chan_type, iseg);
 
                 for (int start_node_ind = start_node.get_next_node();
                      start_node_ind != UNDEFINED;
                      start_node_ind = start_node.get_next_node()) {
                     count += 1;
-                    //VTR_LOG("Segment %s(%d) start_node_ind = %d\n",
-                    //        segment_inf[iseg].name.c_str(), iseg, start_node_ind);
 
                     /* run Dijkstra's algorithm */
                     run_dijkstra(start_node_ind, &cost_map);
@@ -389,7 +396,7 @@ float get_connection_box_lookahead_map_cost(int from_node_ind,
 
 /* runs Dijkstra's algorithm from specified node until all nodes have been
  * visited. Each time a pin is visited, the delay/congestion information
- * to that pin is stored is added to an entry in the routing_cost_map */
+ * to that pin is stored to an entry in the routing_cost_map */
 static void run_dijkstra(int start_node_ind,
                          t_routing_cost_map* routing_cost_map) {
     auto& device_ctx = g_vpr_ctx.device();
