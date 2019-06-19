@@ -313,6 +313,10 @@ void t_rr_node::set_edge_sink_node(short iedge, int sink_node) {
 }
 
 void t_rr_node::set_edge_switch(short iedge, short switch_index) {
+	if(iedge>=num_edges())
+	{
+		printf("%d %d %d\n", num_edges(), iedge, switch_index);
+	}
     VTR_ASSERT(iedge < num_edges());
     VTR_ASSERT(switch_index >= 0);
     edges_[iedge].switch_id = switch_index;

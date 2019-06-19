@@ -47,6 +47,9 @@ void free_rr_graph();
 //Returns a brief one-line summary of an RR node
 std::string describe_rr_node(int inode);
 
+void print_rr_node(FILE *fp, const std::vector<t_rr_node> &L_rr_node, int inode);
+void write_rr_node(FILE *fp, const std::vector<t_rr_node> &L_rr_node, int inode);
+
 void init_fan_in(std::vector<t_rr_node>& L_rr_node, const int num_rr_nodes);
 
 // Sets the spec for the rr_switch based on the arch switch

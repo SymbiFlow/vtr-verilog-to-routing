@@ -55,19 +55,22 @@
 
 //Unconditional logging macros
 #define VTR_LOG(...) VTR_LOGV(true, __VA_ARGS__)
-#define VTR_LOG_WARN(...) VTR_LOGV_WARN(true, __VA_ARGS__)
+#define VTR_LOG_WARN(...)
+//#define VTR_LOG_WARN(...) VTR_LOGV_WARN(true, __VA_ARGS__)
 #define VTR_LOG_ERROR(...) VTR_LOGV_ERROR(true, __VA_ARGS__)
 #define VTR_LOG_NOP(...) VTR_LOGV_NOP(true, __VA_ARGS__)
 
 //Conditional logging macros
 #define VTR_LOGV(expr, ...) VTR_LOGVF(expr, __FILE__, __LINE__, __VA_ARGS__)
-#define VTR_LOGV_WARN(expr, ...) VTR_LOGVF_WARN(expr, __FILE__, __LINE__, __VA_ARGS__)
+#define VTR_LOGV_WARN(expr, ...)
+//#define VTR_LOGV_WARN(expr, ...) VTR_LOGVF_WARN(expr, __FILE__, __LINE__, __VA_ARGS__)
 #define VTR_LOGV_ERROR(expr, ...) VTR_LOGVF_ERROR(expr, __FILE__, __LINE__, __VA_ARGS__)
 #define VTR_LOGV_NOP(expr, ...) VTR_LOGVF_NOP(expr, __FILE__, __LINE__, __VA_ARGS__)
 
 //Custom file-line location logging macros
 #define VTR_LOGF(file, line, ...) VTR_LOGVF(true, file, line, __VA_ARGS__)
-#define VTR_LOGF_WARN(file, line, ...) VTR_LOGVF_WARN(true, file, line, __VA_ARGS__)
+#define VTR_LOGF_WARN(file, line, ...)
+//#define VTR_LOGF_WARN(file, line, ...) VTR_LOGVF_WARN(true, file, line, __VA_ARGS__)
 #define VTR_LOGF_ERROR(file, line, ...) VTR_LOGVF_ERROR(true, file, line, __VA_ARGS__)
 #define VTR_LOGF_NOP(file, line, ...) VTR_LOGVF_NOP(true, file, line, __VA_ARGS__)
 
@@ -81,6 +84,8 @@
     do {                                                        \
         if (expr) vtr::printf_warning(file, line, __VA_ARGS__); \
     } while (false)
+#undef VTR_LOGVF_WARN
+#define VTR_LOGVF_WARN(expr, file, line, ...)
 
 #define VTR_LOGVF_ERROR(expr, file, line, ...)                \
     do {                                                      \

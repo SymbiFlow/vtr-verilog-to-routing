@@ -61,6 +61,7 @@ void process_channels(t_chan_width& chan_width, pugi::xml_node parent, const pug
 void process_rr_node_indices(const DeviceGrid& grid);
 void process_seg_id(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
 void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data, const bool is_global_graph, const int num_seg_types);
+void set_cost_index_bin(int inode, t_rr_type node_type, const bool is_global_graph, const int num_seg_types, short seg_id);
 
 /************************ Subroutine definitions ****************************/
 
@@ -140,14 +141,6 @@ void load_rr_file(const t_graph_type graph_type,
         int max_chan_width = (is_global_graph ? 1 : nodes_per_chan.max);
         VTR_ASSERT(max_chan_width > 0);
 
-        /* Alloc rr nodes and count count nodes */
-        next_component = get_single_child(rr_graph, "rr_nodes", loc_data);
-
-        int num_rr_nodes = count_children(next_component, "node", loc_data);
-
-        device_ctx.rr_nodes.resize(num_rr_nodes);
-        process_nodes(next_component, loc_data);
-
         /* Loads edges, switches, and node look up tables*/
         next_component = get_single_child(rr_graph, "switches", loc_data);
 
@@ -156,29 +149,142 @@ void load_rr_file(const t_graph_type graph_type,
 
         process_switches(next_component, loc_data);
 
-        next_component = get_single_child(rr_graph, "rr_edges", loc_data);
-        process_edges(next_component, loc_data, wire_to_rr_ipin_switch, numSwitches);
+	next_component = get_single_child(rr_graph, "binary_nodes_and_edges", loc_data, OPTIONAL);
+	if(next_component) 
+	{
+		auto filename = get_attribute(next_component, "file", loc_data).as_string("");
+		VTR_LOG("Using Binary File: %s\n", filename);
+		FILE * fp = fopen(filename, "rb");
+		if (fp==NULL) {
+			VTR_LOG("Binary Files %s Does Not Exist\n", filename);
+			exit(1);
+		}
 
-        //Partition the rr graph edges for efficient access to configurable/non-configurable
-        //edge subsets. Must be done after RR switches have been allocated
-        partition_rr_graph_edges(device_ctx);
 
-        process_rr_node_indices(grid);
+		uint64_t num_rr_nodes;
+		fread(&num_rr_nodes, sizeof(num_rr_nodes), 1, fp);
+		device_ctx.rr_nodes.resize(num_rr_nodes);
+		
+		int inode;
+		t_rr_type node_type;
+		uint16_t num_edges;
+		e_direction direction;
+		e_side side;
+		int edge_sink_node;
+		uint16_t edge_switch;
+		uint16_t capacity;
+		float R;
+		float C;
+		uint16_t pos[5];
 
-        init_fan_in(device_ctx.rr_nodes, device_ctx.rr_nodes.size());
+		for (uint64_t i = 0; i < num_rr_nodes; i++) {
+			fread(&inode, sizeof(inode), 1, fp);
+			fread(&node_type, sizeof(node_type), 1, fp);
+			auto& node = device_ctx.rr_nodes[inode];
+			node.set_type(node_type);
+			//printf("inode: %d\nnode_type: %d\n", inode, node_type);
+			if (node.type() == CHANX || node.type() == CHANY) {
+				fread(&direction, sizeof(direction), 1, fp);
+				node.set_direction(direction);
+				//printf("direction: %d\n", direction);
+			}
 
-        //sets the cost index and seg id information
-        next_component = get_single_child(rr_graph, "rr_nodes", loc_data);
-        set_cost_indices(next_component, loc_data, is_global_graph, segment_inf.size());
+			fread(&capacity, sizeof(capacity), 1, fp);
+			if(capacity > 0)
+				node.set_capacity(capacity);
+			fread(pos, sizeof(*pos), 5, fp);
+			node.set_coordinates(pos[0], pos[1], pos[2], pos[3]);
+			node.set_ptc_num(pos[4]);
+			//printf("capacity: %d\npos: %d %d %d %d\nptc: %d\n", capacity, pos[0], pos[1], pos[2], pos[3], pos[4]);
+			if(node.type() == IPIN || node.type() == OPIN) {
+				fread(&side, sizeof(side), 1, fp);
+				node.set_side(side);
+				//printf("side: %d\n", side);
+			}
 
-        alloc_and_load_rr_indexed_data(segment_inf, device_ctx.rr_node_indices,
-                                       max_chan_width, *wire_to_rr_ipin_switch, base_cost_type);
+			fread(&R, sizeof(R), 1, fp);
+			fread(&C, sizeof(C), 1, fp);
+			// printf("R: %f C: %f\n", R, C);
+			node.set_rc_index(find_create_rr_rc_data(R, C));
 
-        process_seg_id(next_component, loc_data);
+			fread(&num_edges, sizeof(num_edges), 1, fp); 
+			
+			node.set_num_edges(num_edges);
+			for (int j = 0; j < num_edges; j++) {
+				fread(&edge_sink_node, sizeof(edge_sink_node), 1, fp);
+				fread(&edge_switch, sizeof(edge_switch), 1, fp);
+				node.set_edge_sink_node(j, edge_sink_node);
+				node.set_edge_switch(j, edge_switch);
+			}
+			//printf("Hello\n");
+			set_cost_index_bin(inode, node_type, is_global_graph, segment_inf.size(), 0);
+		}
+		std::vector<int> count_for_wire_to_ipin_switches;
+		count_for_wire_to_ipin_switches.resize(numSwitches, 0);
+		for (uint64_t i = 0; i < num_rr_nodes; i++) {
+			auto& node = device_ctx.rr_nodes[i];
+			if (node.type() == CHANX || node.type() == CHANY)
+			{
+				num_edges = node.num_edges();
+				for (int j = 0; j < num_edges; j++) {
+					if(device_ctx.rr_nodes[node.edge_sink_node(j)].type() == IPIN)
+					{
+						count_for_wire_to_ipin_switches[j]++;
+					}
+				}
+			}
+		}
+		int max = -1;
+		for(int j=0; j < numSwitches; j++)
+			if(count_for_wire_to_ipin_switches[j] > max)
+			{
+				*wire_to_rr_ipin_switch = j;
+				max = count_for_wire_to_ipin_switches[j];
+			}
+		partition_rr_graph_edges(device_ctx);
+		process_rr_node_indices(grid);
+		init_fan_in(device_ctx.rr_nodes, device_ctx.rr_nodes.size());
+		alloc_and_load_rr_indexed_data(segment_inf, device_ctx.rr_node_indices,
+			max_chan_width, *wire_to_rr_ipin_switch, base_cost_type);
+
+	}
+	else
+	{
+		/* Alloc rr nodes and count count nodes */
+		next_component = get_single_child(rr_graph, "rr_nodes", loc_data);
+
+		int num_rr_nodes = count_children(next_component, "node", loc_data);
+
+		device_ctx.rr_nodes.resize(num_rr_nodes);
+		process_nodes(next_component, loc_data);
+
+
+		next_component = get_single_child(rr_graph, "rr_edges", loc_data);
+		process_edges(next_component, loc_data, wire_to_rr_ipin_switch, numSwitches);
+
+		//Partition the rr graph edges for efficient access to configurable/non-configurable
+		//edge subsets. Must be done after RR switches have been allocated
+		partition_rr_graph_edges(device_ctx);
+
+
+
+		process_rr_node_indices(grid);
+
+		init_fan_in(device_ctx.rr_nodes, device_ctx.rr_nodes.size());
+
+		//sets the cost index and seg id information
+		next_component = get_single_child(rr_graph, "rr_nodes", loc_data);
+		set_cost_indices(next_component, loc_data, is_global_graph, segment_inf.size());
+
+		alloc_and_load_rr_indexed_data(segment_inf, device_ctx.rr_node_indices,
+			max_chan_width, *wire_to_rr_ipin_switch, base_cost_type);
+
+		process_seg_id(next_component, loc_data);
+	}
 
         device_ctx.chan_width = nodes_per_chan;
 
-        check_rr_graph(graph_type, grid, device_ctx.block_types);
+	check_rr_graph(graph_type, grid, device_ctx.block_types);
 
     } catch (XmlError& e) {
         vpr_throw(VPR_ERROR_ROUTE, read_rr_graph_name, e.line(), "%s", e.what());
@@ -670,6 +776,7 @@ void verify_segments(pugi::xml_node parent, const pugiutil::loc_data& loc_data, 
 /*Allocates and load the rr_node look up table. SINK and SOURCE, IPIN and OPIN
  *share the same look up table. CHANX and CHANY have individual look ups */
 void process_rr_node_indices(const DeviceGrid& grid) {
+    vtr::ScopedStartFinishTimer timer("process_rr_node_indicies");
     auto& device_ctx = g_vpr_ctx.mutable_device();
 
     /* Alloc the lookup table */
@@ -720,6 +827,7 @@ void process_rr_node_indices(const DeviceGrid& grid) {
      *
      * Note that CHANX and CHANY 's x and y are swapped due to the chan and seg convention.
      */
+
     for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
         auto& node = device_ctx.rr_nodes[inode];
         if (node.type() == SOURCE || node.type() == SINK) {
@@ -877,4 +985,32 @@ void set_cost_indices(pugi::xml_node parent, const pugiutil::loc_data& loc_data,
         }
         rr_node = rr_node.next_sibling(rr_node.name());
     }
+}
+
+/* This function sets the Source pins, sink pins, ipin, and opin
+ * to their unique cost index identifier. CHANX and CHANY cost indicies are set after the
+ * seg_id is read in from the rr graph*/
+void set_cost_index_bin(int inode, t_rr_type node_type,
+        const bool is_global_graph, const int num_seg_types, short seg_id) {
+	auto& device_ctx = g_vpr_ctx.mutable_device();
+	auto& node = device_ctx.rr_nodes[inode];
+    //set the cost index in order to load the segment information, rr nodes should be set already
+	if (node_type == SOURCE) {
+	    node.set_cost_index(SOURCE_COST_INDEX);
+	} else if (node_type == SINK) {
+	    node.set_cost_index(SINK_COST_INDEX);
+	} else if (node_type == IPIN) {
+	    node.set_cost_index(IPIN_COST_INDEX);
+	} else if (node_type == OPIN) {
+	    node.set_cost_index(OPIN_COST_INDEX);
+	} else if (node_type == CHANX || node_type == CHANY) {
+		/*CHANX and CHANY cost index is dependent on the segment id*/
+		if (is_global_graph) {
+		    node.set_cost_index(0);
+		} else if (device_ctx.rr_nodes[inode].type() == CHANX) {
+		    node.set_cost_index(CHANX_COST_INDEX_START + seg_id);
+		} else if (device_ctx.rr_nodes[inode].type() == CHANY) {
+		    node.set_cost_index(CHANX_COST_INDEX_START + num_seg_types + seg_id);
+		}
+	}
 }

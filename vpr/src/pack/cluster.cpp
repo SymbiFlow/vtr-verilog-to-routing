@@ -510,7 +510,7 @@ std::map<t_type_ptr, size_t> do_clustering(const t_packer_opts& packer_opts,
         for (detailed_routing_stage = (int)E_DETAILED_ROUTE_AT_END_ONLY; !is_cluster_legal && detailed_routing_stage != (int)E_DETAILED_ROUTE_INVALID; detailed_routing_stage++) {
             ClusterBlockId clb_index(num_clb);
 
-            VTR_LOGV(verbosity > 2, "Complex block %d:\n", num_clb);
+            //VTR_LOGV(verbosity > 2, "Complex block %d:\n", num_clb);
 
             start_new_cluster(cluster_placement_stats, primitives_list,
                               atom_molecules, clb_index, istart,
@@ -530,7 +530,7 @@ std::map<t_type_ptr, size_t> do_clustering(const t_packer_opts& packer_opts,
                      cluster_ctx.clb_nlist.block_name(clb_index).c_str(),
                      cluster_ctx.clb_nlist.block_type(clb_index)->name);
             VTR_LOGV(verbosity == 2, "."); //Progress dot for seed-block
-            fflush(stdout);
+		fflush(stdout);
 
             t_ext_pin_util target_ext_pin_util = ext_pin_util_targets.get_pin_util(cluster_ctx.clb_nlist.block_type(clb_index)->name);
             int high_fanout_threshold = high_fanout_thresholds.get_threshold(cluster_ctx.clb_nlist.block_type(clb_index)->name);

@@ -5,6 +5,7 @@
  * children tags such as timing, location, or some general
  * details. Each tag has attributes to describe them */
 
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "read_xml_arch_file.h"
 #include "vtr_version.h"
 #include "rr_graph_writer.h"
+#include "rr_graph.h"
 
 using namespace std;
 
@@ -37,6 +39,23 @@ void write_rr_segments(fstream& fp, const std::vector<t_segment_inf>& segment_in
 /* This function is used to write the rr_graph into xml format into a a file with name: file_name */
 void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& segment_inf) {
     fstream fp;
+    FILE *fb;
+    //FILE *ft;
+    bool binary_mode = !strcmp(file_name + strlen(file_name) - strlen(".bin.xml"), ".bin.xml");
+    char *bin_file_name;
+    char *bin_txt_file_name;
+    if(binary_mode)
+    {
+	    bin_file_name = strndup(file_name, strlen(file_name) - 4);
+	    printf("bin file |%s|\n",bin_file_name);
+	    bin_txt_file_name = strdup(file_name);
+	    bin_txt_file_name[strlen(file_name)-3] = 't';
+	    bin_txt_file_name[strlen(file_name)-2] = 'x';
+	    bin_txt_file_name[strlen(file_name)-1] = 't';
+	    printf("bin txt file |%s|\n",bin_txt_file_name);
+	    fb = vtr::fopen(bin_file_name, "w");
+	    //dump_rr_graph(bin_txt_file_name);
+    }
     fp.open(file_name, fstream::out | fstream::trunc);
 
     /* Prints out general info for easy error checking*/
@@ -54,9 +73,22 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
     write_rr_segments(fp, segment_inf);
     write_rr_block_types(fp);
     write_rr_grid(fp);
-    write_rr_node(fp);
-    write_rr_edges(fp);
-    fp << "</rr_graph>";
+    if(binary_mode) {
+	    fp << "	<binary_nodes_and_edges file=\"" << bin_file_name << "\"/>\n";
+	    auto& device_ctx = g_vpr_ctx.device();
+	    uint64_t num_rr_nodes = (uint64_t)device_ctx.rr_nodes.size();
+	    printf("bin mode\n");
+	    fwrite(&num_rr_nodes, sizeof(num_rr_nodes), 1, fb);
+	    for (size_t inode = 0; inode < num_rr_nodes; inode++) {
+		    write_rr_node(fb, device_ctx.rr_nodes, inode);
+	    }
+	    fclose(fb);
+//	    fclose(ft);
+    } else {
+	    write_rr_node(fp);
+	    write_rr_edges(fp);
+    }
+    fp << "</rr_graph>\n";
 
     fp.close();
 
