@@ -502,11 +502,11 @@ static void check_unbuffered_edges(int from_node) {
         }
 
         if (trans_matched == false) {
-            vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
-                      "in check_unbuffered_edges:\n"
-                      "connection from node %d to node %d uses an unbuffered switch (switch type %d '%s')\n"
-                      "but there is no corresponding unbuffered switch edge in the other direction.\n",
-                      from_node, to_node, from_switch_type, device_ctx.rr_switch_inf[from_switch_type].name);
+            VTR_LOG_WARN(
+                "in check_unbuffered_edges:\n"
+                "connection from node %d to node %d uses an unbuffered switch (switch type %d '%s')\n"
+                "but there is no corresponding unbuffered switch edge in the other direction.\n",
+                from_node, to_node, from_switch_type, device_ctx.rr_switch_inf[from_switch_type].name);
         }
 
     } /* End for all from_node edges */
