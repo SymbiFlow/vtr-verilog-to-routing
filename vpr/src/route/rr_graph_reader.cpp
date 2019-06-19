@@ -818,7 +818,6 @@ void process_rr_node_indices(const DeviceGrid& grid) {
      *
      * Note that CHANX and CHANY 's x and y are swapped due to the chan and seg convention.
      */
-
     for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); inode++) {
         auto& node = device_ctx.rr_nodes[inode];
         if (node.type() == SOURCE || node.type() == SINK) {
