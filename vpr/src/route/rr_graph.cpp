@@ -2501,22 +2501,6 @@ static vtr::NdMatrix<std::vector<int>, 4> alloc_and_load_track_to_pin_lookup(vtr
     return track_to_pin_lookup;
 }
 
-/* A utility routine to dump the contents of the routing resource graph   *
- * (everything -- connectivity, occupancy, cost, etc.) into a file.  Used *
- * only for debugging.                                                    */
-void dump_rr_graph(const char *file_name) {
-    auto& device_ctx = g_vpr_ctx.device();
-
-    FILE *fp = vtr::fopen(file_name, "w");
-
-    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
-        print_rr_node(fp, device_ctx.rr_nodes, inode);
-        fprintf(fp, "\n");
-    }
-
-    fclose(fp);
-}
-
 /* Prints all the data about node inode to file fp.                    */
 void print_rr_node(FILE * fp, const std::vector<t_rr_node> &L_rr_node, int inode) {
 
