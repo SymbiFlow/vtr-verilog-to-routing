@@ -60,10 +60,6 @@
 #include "read_xml_util.h"
 #include "parse_switchblocks.h"
 
-#undef VTR_LOG_WARN
-#define VTR_LOG_WARN(...)
-#undef VTR_LOGF_WARN
-#define VTR_LOGF_WARN(...)
 using namespace std;
 using namespace pugiutil;
 

@@ -52,6 +52,7 @@ void alloc_and_load_rr_indexed_data(const std::vector<t_segment_inf>& segment_in
                                     int wire_to_ipin_switch,
                                     enum e_base_cost_type base_cost_type) {
     int iseg, length, i, index;
+
     auto& device_ctx = g_vpr_ctx.mutable_device();
     int num_segment = segment_inf.size();
     int num_rr_indexed_data = CHANX_COST_INDEX_START + (2 * num_segment);

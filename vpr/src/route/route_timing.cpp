@@ -1008,16 +1008,7 @@ bool timing_driven_route_net(ClusterNetId net_id,
     if (!cluster_ctx.clb_nlist.net_is_ignored(net_id)) {
         for (unsigned ipin = 1; ipin < cluster_ctx.clb_nlist.net_pins(net_id).size(); ++ipin) {
             if (net_delay[ipin] == 0) { // should be SOURCE->OPIN->IPIN->SINK
-                if(device_ctx.rr_nodes[rt_node_of_sink[ipin]->parent_node->parent_node->inode].type() != OPIN) {
-			printf("\n%d: ", rt_node_of_sink[ipin]->parent_node->parent_node->inode);
-			printf("%s", rr_node_typename[device_ctx.rr_nodes[rt_node_of_sink[ipin]->parent_node->parent_node->inode].type()]);
-			printf("\t%d: ", rt_node_of_sink[ipin]->parent_node->inode);
-			printf("%s", rr_node_typename[device_ctx.rr_nodes[rt_node_of_sink[ipin]->parent_node->inode].type()]);
-			printf("\t%d: ", rt_node_of_sink[ipin]->inode);
-			printf("%s", rr_node_typename[device_ctx.rr_nodes[rt_node_of_sink[ipin]->inode].type()]);
-			printf("\n");
-		}
-                //VTR_ASSERT(device_ctx.rr_nodes[rt_node_of_sink[ipin]->parent_node->parent_node->inode].type() == OPIN);
+                VTR_ASSERT(device_ctx.rr_nodes[rt_node_of_sink[ipin]->parent_node->parent_node->inode].type() == OPIN);
             }
         }
     }

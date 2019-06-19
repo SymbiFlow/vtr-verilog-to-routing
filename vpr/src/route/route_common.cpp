@@ -276,7 +276,7 @@ bool try_route(int width_fac,
 
     /* Set up the routing resource graph defined by this FPGA architecture. */
     int warning_count;
-/*
+
     create_rr_graph(graph_type,
                     device_ctx.num_block_types,
                     device_ctx.block_types,
@@ -292,7 +292,7 @@ bool try_route(int width_fac,
                     router_opts.lookahead_type,
                     directs, num_directs,
                     &warning_count);
-*/
+
     //Initialize drawing, now that we have an RR graph
     init_draw_coords(width_fac);
 
