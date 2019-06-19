@@ -148,7 +148,7 @@ void load_rr_file(const t_graph_type graph_type,
         device_ctx.rr_switch_inf.resize(numSwitches);
 
         process_switches(next_component, loc_data);
-
+	/* Branches to binary format */
 	next_component = get_single_child(rr_graph, "binary_nodes_and_edges", loc_data, OPTIONAL);
 	if(next_component) 
 	{
@@ -182,11 +182,9 @@ void load_rr_file(const t_graph_type graph_type,
 			fread(&node_type, sizeof(node_type), 1, fp);
 			auto& node = device_ctx.rr_nodes[inode];
 			node.set_type(node_type);
-			//printf("inode: %d\nnode_type: %d\n", inode, node_type);
 			if (node.type() == CHANX || node.type() == CHANY) {
 				fread(&direction, sizeof(direction), 1, fp);
 				node.set_direction(direction);
-				//printf("direction: %d\n", direction);
 			}
 
 			fread(&capacity, sizeof(capacity), 1, fp);
@@ -195,16 +193,13 @@ void load_rr_file(const t_graph_type graph_type,
 			fread(pos, sizeof(*pos), 5, fp);
 			node.set_coordinates(pos[0], pos[1], pos[2], pos[3]);
 			node.set_ptc_num(pos[4]);
-			//printf("capacity: %d\npos: %d %d %d %d\nptc: %d\n", capacity, pos[0], pos[1], pos[2], pos[3], pos[4]);
 			if(node.type() == IPIN || node.type() == OPIN) {
 				fread(&side, sizeof(side), 1, fp);
 				node.set_side(side);
-				//printf("side: %d\n", side);
 			}
 
 			fread(&R, sizeof(R), 1, fp);
 			fread(&C, sizeof(C), 1, fp);
-			// printf("R: %f C: %f\n", R, C);
 			node.set_rc_index(find_create_rr_rc_data(R, C));
 
 			fread(&num_edges, sizeof(num_edges), 1, fp); 
@@ -216,7 +211,6 @@ void load_rr_file(const t_graph_type graph_type,
 				node.set_edge_sink_node(j, edge_sink_node);
 				node.set_edge_switch(j, edge_switch);
 			}
-			//printf("Hello\n");
 			set_cost_index_bin(inode, node_type, is_global_graph, segment_inf.size(), 0);
 		}
 		std::vector<int> count_for_wire_to_ipin_switches;
@@ -265,8 +259,6 @@ void load_rr_file(const t_graph_type graph_type,
 		//Partition the rr graph edges for efficient access to configurable/non-configurable
 		//edge subsets. Must be done after RR switches have been allocated
 		partition_rr_graph_edges(device_ctx);
-
-
 
 		process_rr_node_indices(grid);
 
@@ -776,7 +768,6 @@ void verify_segments(pugi::xml_node parent, const pugiutil::loc_data& loc_data, 
 /*Allocates and load the rr_node look up table. SINK and SOURCE, IPIN and OPIN
  *share the same look up table. CHANX and CHANY have individual look ups */
 void process_rr_node_indices(const DeviceGrid& grid) {
-    vtr::ScopedStartFinishTimer timer("process_rr_node_indicies");
     auto& device_ctx = g_vpr_ctx.mutable_device();
 
     /* Alloc the lookup table */

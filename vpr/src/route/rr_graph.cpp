@@ -2538,25 +2538,9 @@ void print_rr_node(FILE * fp, const std::vector<t_rr_node> &L_rr_node, int inode
     fprintf(fp, "Cost_index: %d\n", L_rr_node[inode].cost_index());
 }
 
-//#define __tmp_fwrite(v, n, f) fwrite(&v, sizeof(v), n, f)
-//#undef __tmp_fwrite
+/* Writes out al data about node inode to binary in file fp */
 void write_rr_node(FILE * fp, const std::vector<t_rr_node> &L_rr_node, int inode) {
 	const auto& rr_node = L_rr_node[inode];
-	/* check list:
-	 * id
-	 * type
-	 * 4 values {x,y}{high,low}
-	 * ptc
-	 * length
-	 * // timing:
-	 * R
-	 * C
-	 * capacity
-	 * if chan[xy]:
-	 *	direction
-	 * else if [io]pin:
-	 *	side
-	 */
 	t_rr_type type = rr_node.type();
 	uint16_t num_edges = rr_node.num_edges();
 	int edge_sink_node;
@@ -2573,17 +2557,13 @@ void write_rr_node(FILE * fp, const std::vector<t_rr_node> &L_rr_node, int inode
 	pos[4] = rr_node.ptc_num();
 
 	fwrite(&inode, sizeof(inode), 1, fp);
-	//printf("inode %d\n", inode);
 	fwrite(&type, sizeof(type), 1, fp);
-	//printf("type %d\n", type);
 	if (rr_node.type() == CHANX || rr_node.type() == CHANY) {
 		e_direction direction = rr_node.direction();
 		fwrite(&direction, sizeof(direction), 1, fp);
 	}
-	//printf("capacity %d\n", capacity);
 	fwrite(&capacity, sizeof(capacity), 1, fp);
 	fwrite(pos, sizeof(*pos), 5, fp);
-	//printf("pos %d %d %d %d\n", pos[0], pos[1], pos[2], pos[3]);
 	
 	if(rr_node.type() == IPIN || rr_node.type() == OPIN) {
 		e_side side = rr_node.side();
@@ -2601,27 +2581,8 @@ void write_rr_node(FILE * fp, const std::vector<t_rr_node> &L_rr_node, int inode
 		fwrite(&edge_switch, sizeof(edge_switch), 1, fp);
 	}
 
-	//short cost_index = rr_node.cost_index();
-	//fwrite(&cost_index, sizeof(cost_index), 1, fp);
 }
 
-/* Prints all the device_ctx.rr_indexed_data of index to file fp.   */
-void print_rr_indexed_data(FILE * fp, int index) {
-    auto& device_ctx = g_vpr_ctx.device();
-
-    fprintf(fp, "Index: %d\n", index);
-
-    fprintf(fp, "ortho_cost_index: %d  ", device_ctx.rr_indexed_data[index].ortho_cost_index);
-    fprintf(fp, "base_cost: %g  ", device_ctx.rr_indexed_data[index].saved_base_cost);
-    fprintf(fp, "saved_base_cost: %g\n", device_ctx.rr_indexed_data[index].saved_base_cost);
-
-    fprintf(fp, "Seg_index: %d  ", device_ctx.rr_indexed_data[index].seg_index);
-    fprintf(fp, "inv_length: %g\n", device_ctx.rr_indexed_data[index].inv_length);
-
-    fprintf(fp, "T_linear: %g  ", device_ctx.rr_indexed_data[index].T_linear);
-    fprintf(fp, "T_quadratic: %g  ", device_ctx.rr_indexed_data[index].T_quadratic);
-    fprintf(fp, "C_load: %g\n", device_ctx.rr_indexed_data[index].C_load);
-}
 
 std::string describe_rr_node(int inode) {
     auto& device_ctx = g_vpr_ctx.device();

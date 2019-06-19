@@ -54,7 +54,6 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
 	    bin_txt_file_name[strlen(file_name)-1] = 't';
 	    printf("bin txt file |%s|\n",bin_txt_file_name);
 	    fb = vtr::fopen(bin_file_name, "w");
-	    //dump_rr_graph(bin_txt_file_name);
     }
     fp.open(file_name, fstream::out | fstream::trunc);
 
@@ -83,7 +82,6 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
 		    write_rr_node(fb, device_ctx.rr_nodes, inode);
 	    }
 	    fclose(fb);
-//	    fclose(ft);
     } else {
 	    write_rr_node(fp);
 	    write_rr_edges(fp);
