@@ -13,10 +13,6 @@
 using argparse::ConvertedValue;
 using argparse::Provenance;
 
-static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& args);
-static void set_conditional_defaults(t_options& args);
-static bool verify_args(const t_options& args);
-
 //Read and process VPR's command-line aruments
 t_options read_options(int argc, const char** argv) {
     t_options args = t_options(); //Explicitly initialize for zero initialization
@@ -648,6 +644,8 @@ struct ParseRouterLookahead {
             conv_value.set_value(e_router_lookahead::CLASSIC);
         else if (str == "map")
             conv_value.set_value(e_router_lookahead::MAP);
+        else if (str == "connection_box_map")
+            conv_value.set_value(e_router_lookahead::CONNECTION_BOX_MAP);
         else {
             std::stringstream msg;
             msg << "Invalid conversion from '"
@@ -661,17 +659,22 @@ struct ParseRouterLookahead {
 
     ConvertedValue<std::string> to_str(e_router_lookahead val) {
         ConvertedValue<std::string> conv_value;
-        if (val == e_router_lookahead::CLASSIC)
+        if (val == e_router_lookahead::CLASSIC) {
             conv_value.set_value("classic");
-        else {
-            VTR_ASSERT(val == e_router_lookahead::MAP);
+        } else if (val == e_router_lookahead::MAP) {
             conv_value.set_value("map");
+        } else if (val == e_router_lookahead::CONNECTION_BOX_MAP) {
+            conv_value.set_value("connection_box_map");
+        } else {
+            std::stringstream msg;
+            msg << "Unrecognized e_router_lookahead";
+            conv_value.set_error(msg.str());
         }
         return conv_value;
     }
 
     std::vector<std::string> default_choices() {
-        return {"classic", "map"};
+        return {"classic", "map", "connection_box_map"};
     }
 };
 
@@ -752,7 +755,7 @@ struct ParseReducer {
     }
 };
 
-static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& args) {
+argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& args) {
     std::string description =
         "Implements the specified circuit onto the target FPGA architecture"
         " by performing packing/placement/routing, and analyzes the result.\n"
@@ -929,6 +932,16 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
             " However exercise extreme caution when turning this option off -- be sure you completely understand why the issue"
             " is being flagged, and why it is OK to treat as a warning instead of an error.")
         .default_value("on")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    gen_grp.add_argument<bool, ParseOnOff>(args.allow_dangling_combinational_nodes, "--allow_dangling_combinational_nodes")
+        .help(
+            "Option to allow dangling combinational nodes in the timing graph.\n"
+            "This option should normally be off, as dangling combinational nodes are unusual\n"
+            "in the timing graph and may indicate a problem in the circuit or architecture.\n"
+            "Unless you understand why your architecture/circuit can have valid dangling combinational nodes, this option should be off.\n"
+            "In general this is a dev-only option and should not be turned on by the end-user.")
+        .default_value("off")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     auto& file_grp = parser.add_argument_group("file options");
@@ -1533,6 +1546,11 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
         .default_value("")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    route_timing_grp.add_argument<bool, ParseOnOff>(args.disable_check_route, "--disable_check_route")
+        .help("Disables check_route once routing step has finished or when routing file is loaded")
+        .default_value("off")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
     route_timing_grp.add_argument(args.router_debug_net, "--router_debug_net")
         .help(
             "Controls when router debugging is enabled.\n"
@@ -1608,7 +1626,7 @@ static argparse::ArgumentParser create_arg_parser(std::string prog_name, t_optio
     return parser;
 }
 
-static void set_conditional_defaults(t_options& args) {
+void set_conditional_defaults(t_options& args) {
     //Some arguments are set conditionally based on other options.
     //These are resolved here.
 
@@ -1771,7 +1789,7 @@ static void set_conditional_defaults(t_options& args) {
     }
 }
 
-static bool verify_args(const t_options& args) {
+bool verify_args(const t_options& args) {
     /*
      * Check for conflicting paramaters
      */

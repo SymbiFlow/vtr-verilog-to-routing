@@ -127,13 +127,7 @@ void vpr_print_args(int argc, const char** argv) {
     VTR_LOG("\n\n");
 }
 
-/* Initialize VPR
- * 1. Read Options
- * 2. Read Arch
- * 3. Read Circuit
- * 4. Sanity check all three
- */
-void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup* vpr_setup, t_arch* arch) {
+void vpr_initialize_logging() {
     {
         //Allow the default vpr log file to be overwritten
         const char* env_value = std::getenv("VPR_LOG_FILE");
@@ -149,6 +143,16 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
             vtr::set_log_file("vpr_stdout.log");
         }
     }
+}
+
+/* Initialize VPR
+ * 1. Read Options
+ * 2. Read Arch
+ * 3. Read Circuit
+ * 4. Sanity check all three
+ */
+void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup* vpr_setup, t_arch* arch) {
+    vpr_initialize_logging();
 
     /* Print title message */
     vpr_print_title();
@@ -161,6 +165,15 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
     //how VPR was run, aiding in re-producibility
     vpr_print_args(argc, argv);
 
+    vpr_init_with_options(options, vpr_setup, arch);
+}
+
+/* Initialize VPR with options
+ * 1. Read Arch
+ * 2. Read Circuit
+ * 3. Sanity check all three
+ */
+void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_arch* arch) {
     //Set the number of parallel workers
     // We determine the number of workers in the following order:
     //  1. An explicitly specified command-line argument
@@ -274,7 +287,7 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
         auto& timing_ctx = g_vpr_ctx.mutable_timing();
         {
             vtr::ScopedStartFinishTimer t("Build Timing Graph");
-            timing_ctx.graph = TimingGraphBuilder(atom_ctx.nlist, atom_ctx.lookup).timing_graph();
+            timing_ctx.graph = TimingGraphBuilder(atom_ctx.nlist, atom_ctx.lookup).timing_graph(options->allow_dangling_combinational_nodes);
             VTR_LOG("  Timing Graph Nodes: %zu\n", timing_ctx.graph->nodes().size());
             VTR_LOG("  Timing Graph Edges: %zu\n", timing_ctx.graph->edges().size());
             VTR_LOG("  Timing Graph Levels: %zu\n", timing_ctx.graph->levels().size());
@@ -636,7 +649,9 @@ RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
         std::string graphics_msg;
         if (route_status.success()) {
             //Sanity check the routing
-            check_route(router_opts.route_type);
+            if (!router_opts.disable_check_route) {
+                check_route(router_opts.route_type);
+            }
             get_serial_num();
 
             //Update status

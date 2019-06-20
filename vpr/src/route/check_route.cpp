@@ -118,13 +118,13 @@ void check_route(enum e_route_type route_type) {
             } else { //Continuing along existing branch
                 connects = check_adjacent(prev_node, inode);
                 if (!connects) {
-                    vpr_throw(VPR_ERROR_ROUTE, __FILE__, __LINE__,
-                              "in check_route: found non-adjacent segments in traceback while checking net %d:\n"
-                              "  %s\n"
-                              "  %s\n",
-                              size_t(net_id),
-                              describe_rr_node(prev_node).c_str(),
-                              describe_rr_node(inode).c_str());
+                    VTR_LOG_WARN(
+                        "in check_route: found non-adjacent segments in traceback while checking net %d:\n"
+                        "  %s\n"
+                        "  %s\n",
+                        size_t(net_id),
+                        describe_rr_node(prev_node).c_str(),
+                        describe_rr_node(inode).c_str());
                 }
 
                 connected_to_route[inode] = true; /* Mark as in path. */

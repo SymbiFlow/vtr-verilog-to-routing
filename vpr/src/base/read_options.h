@@ -5,6 +5,7 @@
 #include "vpr_types.h"
 #include "constant_nets.h"
 #include "argparse_value.hpp"
+#include "argparse.hpp"
 
 struct t_options {
     /* File names */
@@ -50,6 +51,7 @@ struct t_options {
     argparse::ArgValue<e_clock_modeling> clock_modeling;
     argparse::ArgValue<bool> exit_before_pack;
     argparse::ArgValue<bool> strict_checks;
+    argparse::ArgValue<bool> allow_dangling_combinational_nodes;
 
     /* Atom netlist options */
     argparse::ArgValue<bool> absorb_buffer_luts;
@@ -118,6 +120,7 @@ struct t_options {
     argparse::ArgValue<bool> verify_binary_search;
     argparse::ArgValue<e_router_algorithm> RouterAlgorithm;
     argparse::ArgValue<int> min_incremental_reroute_fanout;
+    argparse::ArgValue<bool> disable_check_route;
 
     /* Timing-driven router options only */
     argparse::ArgValue<float> astar_fac;
@@ -146,6 +149,9 @@ struct t_options {
     argparse::ArgValue<bool> timing_report_skew;
 };
 
+argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& args);
 t_options read_options(int argc, const char** argv);
+void set_conditional_defaults(t_options& args);
+bool verify_args(const t_options& args);
 
 #endif
