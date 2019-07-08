@@ -85,7 +85,7 @@ class flat_map {
     }
 
     //direct vector constructor
-    explicit flat_map(std::vector<value_type>&& values) {
+    flat_map(std::vector<value_type>&& values) {
         //By moving the values this should be more efficient
         //than the range constructor which must copy each element
         vec_ = std::move(values);
