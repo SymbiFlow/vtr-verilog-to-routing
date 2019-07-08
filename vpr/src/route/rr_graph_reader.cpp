@@ -89,3 +89,26 @@ void load_rr_file(const t_graph_type graph_type,
             read_rr_graph_name);
     }
 }
+
+void process_connection_boxes(pugi::xml_node parent, const pugiutil::loc_data& loc_data) {
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    int x_dim = get_attribute(parent, "x_dim", loc_data).as_int(0);
+    int y_dim = get_attribute(parent, "y_dim", loc_data).as_int(0);
+    int num_boxes = get_attribute(parent, "num_boxes", loc_data).as_int(0);
+    VTR_ASSERT(num_boxes >= 0);
+
+    pugi::xml_node connection_box = get_first_child(parent, "connection_box", loc_data);
+    std::vector<ConnectionBox> boxes(num_boxes);
+    while (connection_box) {
+        int id = get_attribute(connection_box, "id", loc_data).as_int(-1);
+        const char* name = get_attribute(connection_box, "name", loc_data).as_string(nullptr);
+        VTR_ASSERT(id >= 0 && id < num_boxes);
+        VTR_ASSERT(boxes.at(id).name == "");
+        boxes.at(id).name = std::string(name);
+
+        connection_box = connection_box.next_sibling(connection_box.name());
+    }
+
+    device_ctx.connection_boxes.reset_boxes(std::make_pair(x_dim, y_dim), boxes);
+}
