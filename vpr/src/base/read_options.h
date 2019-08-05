@@ -27,6 +27,12 @@ struct t_options {
     argparse::ArgValue<std::string> write_rr_graph_file;
     argparse::ArgValue<std::string> read_rr_graph_file;
 
+    argparse::ArgValue<std::string> write_placement_delay_lookup;
+    argparse::ArgValue<std::string> read_placement_delay_lookup;
+
+    argparse::ArgValue<std::string> write_router_lookahead;
+    argparse::ArgValue<std::string> read_router_lookahead;
+
     /* Stage Options */
     argparse::ArgValue<bool> do_packing;
     argparse::ArgValue<bool> do_placement;
@@ -123,6 +129,7 @@ struct t_options {
     argparse::ArgValue<bool> verify_binary_search;
     argparse::ArgValue<e_router_algorithm> RouterAlgorithm;
     argparse::ArgValue<int> min_incremental_reroute_fanout;
+    argparse::ArgValue<bool> disable_check_route;
 
     /* Timing-driven router options only */
     argparse::ArgValue<float> astar_fac;
