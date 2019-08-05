@@ -5,6 +5,7 @@
  * children tags such as timing, location, or some general
  * details. Each tag has attributes to describe them */
 
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "read_xml_arch_file.h"
 #include "vtr_version.h"
 #include "rr_graph_writer.h"
+#include "rr_graph.h"
 
 using namespace std;
 
@@ -37,6 +39,16 @@ void write_rr_segments(fstream& fp, const std::vector<t_segment_inf>& segment_in
 /* This function is used to write the rr_graph into xml format into a a file with name: file_name */
 void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& segment_inf) {
     fstream fp;
+    FILE* fb = nullptr;
+    std::stringstream header;
+    std::string filename_str(file_name);
+    bool binary_mode = (filename_str.substr(filename_str.length() - 7) == "bin.xml");
+    std::string bin_file_name;
+    if (binary_mode) {
+        bin_file_name = filename_str.substr(0, filename_str.length() - 4);
+        VTR_LOG("RR_Graph binary file %s\n", bin_file_name.c_str());
+        fb = vtr::fopen(bin_file_name.c_str(), "w");
+    }
     fp.open(file_name, fstream::out | fstream::trunc);
 
     /* Prints out general info for easy error checking*/
@@ -45,8 +57,9 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
                         "couldn't open file \"%s\" for generating RR graph file\n", file_name);
     }
     cout << "Writing RR graph" << endl;
-    fp << "<rr_graph tool_name=\"vpr\" tool_version=\"" << vtr::VERSION << "\" tool_comment=\"Generated from arch file "
-       << get_arch_file_name() << "\">" << endl;
+    header << "<rr_graph tool_name=\"vpr\" tool_version=\"" << vtr::VERSION << "\" tool_comment=\"Generated from arch file "
+           << get_arch_file_name() << "\">" << endl;
+    fp << header.rdbuf();
 
     /* Write out each individual component*/
     write_rr_channel(fp);
@@ -54,9 +67,31 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
     write_rr_segments(fp, segment_inf);
     write_rr_block_types(fp);
     write_rr_grid(fp);
-    write_rr_node(fp);
-    write_rr_edges(fp);
-    fp << "</rr_graph>";
+    if (binary_mode) {
+        fp << "	<binary_nodes_and_edges file=\"" << bin_file_name << "\"/>\n";
+        auto& device_ctx = g_vpr_ctx.device();
+        const std::string header_s = header.str();
+        const char* header_c = header_s.c_str();
+        uint32_t magic_num = BINARY_MAGIC_NUM;
+        uint16_t format_version = BINARY_FILE_VERSION;
+        uint16_t header_length = header_s.length();
+        uint64_t num_rr_nodes = (uint64_t)device_ctx.rr_nodes.size();
+        VTR_LOG("RR_Graph binary mode\n");
+        printf("Header length: %d\n", header_length);
+        fwrite(&magic_num, sizeof(magic_num), 1, fb);
+        fwrite(&format_version, sizeof(format_version), 1, fb);
+        fwrite(&header_length, sizeof(header_length), 1, fb);
+        fwrite(&header_c, sizeof(char), header_length, fb);
+        fwrite(&num_rr_nodes, sizeof(num_rr_nodes), 1, fb);
+        for (size_t inode = 0; inode < num_rr_nodes; inode++) {
+            write_rr_node(fb, device_ctx.rr_nodes, inode);
+        }
+        fclose(fb);
+    } else {
+        write_rr_node(fp);
+        write_rr_edges(fp);
+    }
+    fp << "</rr_graph>\n";
 
     fp.close();
 
