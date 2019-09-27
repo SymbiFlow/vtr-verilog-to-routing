@@ -111,6 +111,7 @@ struct t_options {
     argparse::ArgValue<e_reducer> place_delay_model_reducer;
 
     /* Router Options */
+    argparse::ArgValue<bool> disable_check_route;
     argparse::ArgValue<int> max_router_iterations;
     argparse::ArgValue<float> first_iter_pres_fac;
     argparse::ArgValue<float> initial_pres_fac;
@@ -125,7 +126,6 @@ struct t_options {
     argparse::ArgValue<bool> verify_binary_search;
     argparse::ArgValue<e_router_algorithm> RouterAlgorithm;
     argparse::ArgValue<int> min_incremental_reroute_fanout;
-    argparse::ArgValue<bool> disable_check_route;
 
     /* Timing-driven router options only */
     argparse::ArgValue<float> astar_fac;

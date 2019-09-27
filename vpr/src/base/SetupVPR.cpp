@@ -328,6 +328,7 @@ static void SetupRouterOpts(const t_options& Options, t_router_opts* RouterOpts)
     //TODO document these?
     RouterOpts->trim_empty_channels = false; /* DEFAULT */
     RouterOpts->trim_obs_channels = false;   /* DEFAULT */
+    RouterOpts->disable_check_route = Options.disable_check_route;
 
     RouterOpts->initial_pres_fac = Options.initial_pres_fac;
     RouterOpts->base_cost_type = Options.base_cost_type;
@@ -351,7 +352,6 @@ static void SetupRouterOpts(const t_options& Options, t_router_opts* RouterOpts)
     RouterOpts->reconvergence_cpd_threshold = Options.router_reconvergence_cpd_threshold;
     RouterOpts->first_iteration_timing_report_file = Options.router_first_iteration_timing_report_file;
     RouterOpts->strict_checks = Options.strict_checks;
-    RouterOpts->disable_check_route = Options.disable_check_route;
 }
 
 static void SetupAnnealSched(const t_options& Options,

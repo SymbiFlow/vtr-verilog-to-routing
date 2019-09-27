@@ -947,6 +947,7 @@ struct t_router_opts {
     bool congestion_analysis;
     bool fanout_analysis;
     bool switch_usage_analysis;
+    bool disable_check_route;
     e_stage_action doRouting;
     enum e_routing_failure_predictor routing_failure_predictor;
     enum e_routing_budgets_algorithm routing_budgets_algorithm;
@@ -962,7 +963,6 @@ struct t_router_opts {
     float reconvergence_cpd_threshold;
     std::string first_iteration_timing_report_file;
     bool strict_checks;
-    bool disable_check_route;
 };
 
 struct t_analysis_opts {
