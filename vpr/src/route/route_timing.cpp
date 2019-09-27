@@ -723,7 +723,6 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
     if (routing_is_successful) {
         VTR_LOG("Restoring best routing\n");
 
-        auto& cluster_ctx = g_vpr_ctx.clustering();
         auto& router_ctx = g_vpr_ctx.mutable_routing();
 
         /* Restore congestion from best route */
