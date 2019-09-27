@@ -648,6 +648,8 @@ struct ParseRouterLookahead {
             conv_value.set_value(e_router_lookahead::CLASSIC);
         else if (str == "map")
             conv_value.set_value(e_router_lookahead::MAP);
+        else if (str == "connection_box_map")
+            conv_value.set_value(e_router_lookahead::CONNECTION_BOX_MAP);
         else {
             std::stringstream msg;
             msg << "Invalid conversion from '"
@@ -661,17 +663,22 @@ struct ParseRouterLookahead {
 
     ConvertedValue<std::string> to_str(e_router_lookahead val) {
         ConvertedValue<std::string> conv_value;
-        if (val == e_router_lookahead::CLASSIC)
+        if (val == e_router_lookahead::CLASSIC) {
             conv_value.set_value("classic");
-        else {
-            VTR_ASSERT(val == e_router_lookahead::MAP);
+        } else if (val == e_router_lookahead::MAP) {
             conv_value.set_value("map");
+        } else if (val == e_router_lookahead::CONNECTION_BOX_MAP) {
+            conv_value.set_value("connection_box_map");
+        } else {
+            std::stringstream msg;
+            msg << "Unrecognized e_router_lookahead";
+            conv_value.set_error(msg.str());
         }
         return conv_value;
     }
 
     std::vector<std::string> default_choices() {
-        return {"classic", "map"};
+        return {"classic", "map", "connection_box_map"};
     }
 };
 
@@ -1008,6 +1015,24 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
     file_grp.add_argument(args.write_rr_graph_file, "--write_rr_graph")
         .help("Writes the routing resource graph to the specified file")
         .metavar("RR_GRAPH_FILE")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    file_grp.add_argument(args.read_router_lookahead, "--read_router_lookahead")
+        .help(
+            "Reads the lookahead data from the specified file instead of computing it.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    file_grp.add_argument(args.write_router_lookahead, "--write_router_lookahead")
+        .help("Writes the lookahead data to the specified file.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    file_grp.add_argument(args.read_placement_delay_lookup, "--read_placement_delay_lookup")
+        .help(
+            "Reads the placement delay lookup from the specified file instead of computing it.")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    file_grp.add_argument(args.write_placement_delay_lookup, "--write_placement_delay_lookup")
+        .help("Writes the placement delay lookup to the specified file.")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     file_grp.add_argument(args.out_file_prefix, "--outfile_prefix")
@@ -1577,6 +1602,11 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
     route_timing_grp.add_argument(args.router_first_iteration_timing_report_file, "--router_first_iter_timing_report")
         .help("Name of the post first routing iteration timing report file (not generated if unspecfied)")
         .default_value("")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    route_timing_grp.add_argument<bool, ParseOnOff>(args.disable_check_route, "--disable_check_route")
+        .help("Disables check_route once routing step has finished or when routing file is loaded")
+        .default_value("off")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     route_timing_grp.add_argument(args.router_debug_net, "--router_debug_net")

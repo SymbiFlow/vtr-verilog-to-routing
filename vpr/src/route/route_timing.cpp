@@ -297,9 +297,12 @@ static void generate_route_timing_reports(const t_router_opts& router_opts,
                                           const SetupTimingInfo& timing_info,
                                           const RoutingDelayCalculator& delay_calc);
 
+static void prune_unused_non_configurable_nets(CBRR& connections_inf);
+
 /************************ Subroutine definitions *****************************/
 bool try_timing_driven_route(const t_router_opts& router_opts,
                              const t_analysis_opts& analysis_opts,
+                             const std::vector<t_segment_inf>& segment_inf,
                              vtr::vector<ClusterNetId, float*>& net_delay,
                              const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
                              std::shared_ptr<SetupHoldTimingInfo> timing_info,
@@ -354,7 +357,11 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
 
     route_budgets budgeting_inf;
 
-    auto router_lookahead = make_router_lookahead(router_opts.lookahead_type);
+    const auto* router_lookahead = get_cached_router_lookahead(
+        router_opts.lookahead_type,
+        router_opts.write_router_lookahead,
+        router_opts.read_router_lookahead,
+        segment_inf);
 
     /*
      * Routing parameters
@@ -722,8 +729,16 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
         VTR_LOG("Restoring best routing\n");
 
         auto& router_ctx = g_vpr_ctx.mutable_routing();
+
+        /* Restore congestion from best route */
+        for (auto net_id : cluster_ctx.clb_nlist.nets()) {
+            pathfinder_update_path_cost(route_ctx.trace[net_id].head, -1, pres_fac);
+            pathfinder_update_path_cost(best_routing[net_id].head, 1, pres_fac);
+        }
         router_ctx.trace = best_routing;
         router_ctx.clb_opins_used_locally = best_clb_opins_used_locally;
+
+        prune_unused_non_configurable_nets(connections_inf);
 
         if (timing_info) {
             VTR_LOG("Critical path: %g ns\n", 1e9 * best_routing_metrics.critical_path.delay());
@@ -1365,7 +1380,9 @@ std::vector<t_heap> timing_driven_find_all_shortest_paths_from_route_tree(t_rt_n
                                                                           RouterStats& router_stats) {
     //Add the route tree to the heap with no specific target node
     int target_node = OPEN;
-    auto router_lookahead = make_router_lookahead(e_router_lookahead::NO_OP);
+    auto router_lookahead = make_router_lookahead(e_router_lookahead::NO_OP,
+                                                  /*write_lookahead=*/"", /*read_lookahead=*/"",
+                                                  /*segment_inf=*/{});
     add_route_tree_to_heap(rt_root, target_node, cost_params, *router_lookahead, router_stats);
     heap_::build_heap(); // via sifting down everything
 
@@ -1385,7 +1402,9 @@ static std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(const
                                                                            t_bb bounding_box,
                                                                            std::vector<int>& modified_rr_node_inf,
                                                                            RouterStats& router_stats) {
-    auto router_lookahead = make_router_lookahead(e_router_lookahead::NO_OP);
+    auto router_lookahead = make_router_lookahead(e_router_lookahead::NO_OP,
+                                                  /*write_lookahead=*/"", /*read_lookahead=*/"",
+                                                  /*segment_inf=*/{});
 
     auto& device_ctx = g_vpr_ctx.device();
     std::vector<t_heap> cheapest_paths(device_ctx.rr_nodes.size());
@@ -2790,4 +2809,47 @@ static void generate_route_timing_reports(const t_router_opts& router_opts,
     tatum::TimingReporter timing_reporter(resolver, *timing_ctx.graph, *timing_ctx.constraints);
 
     timing_reporter.report_timing_setup(router_opts.first_iteration_timing_report_file, *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);
+}
+
+// If a route is ripped up during routing, non-configurable sets are left
+// behind.  As a result, the final routing may have stubs at
+// non-configurable sets.  This function tracks non-configurable set usage,
+// and if the sets are unused, prunes them.
+static void prune_unused_non_configurable_nets(CBRR& connections_inf) {
+    auto& device_ctx = g_vpr_ctx.device();
+    auto& cluster_ctx = g_vpr_ctx.clustering();
+    auto& route_ctx = g_vpr_ctx.routing();
+
+    std::vector<int> non_config_node_set_usage(device_ctx.rr_non_config_node_sets.size(), 0);
+    for (auto net_id : cluster_ctx.clb_nlist.nets()) {
+        connections_inf.prepare_routing_for_net(net_id);
+        connections_inf.clear_force_reroute_for_net();
+
+        std::fill(non_config_node_set_usage.begin(), non_config_node_set_usage.end(), 0);
+        t_rt_node* rt_root = traceback_to_route_tree(net_id, &non_config_node_set_usage);
+        if (rt_root == nullptr) {
+            continue;
+        }
+
+        //Santiy check that route tree and traceback are equivalent before pruning
+        VTR_ASSERT(verify_traceback_route_tree_equivalent(
+            route_ctx.trace[net_id].head, rt_root));
+
+        // check for edge correctness
+        VTR_ASSERT_SAFE(is_valid_skeleton_tree(rt_root));
+
+        //Prune the branches of the tree that don't legally lead to sinks
+        rt_root = prune_route_tree(rt_root, connections_inf,
+                                   &non_config_node_set_usage);
+
+        // Free old traceback.
+        free_traceback(net_id);
+
+        // Update traceback with pruned tree.
+        auto& reached_rt_sinks = connections_inf.get_reached_rt_sinks();
+        traceback_from_route_tree(net_id, rt_root, reached_rt_sinks.size());
+        VTR_ASSERT(verify_traceback_route_tree_equivalent(route_ctx.trace[net_id].head, rt_root));
+
+        free_route_tree(rt_root);
+    }
 }

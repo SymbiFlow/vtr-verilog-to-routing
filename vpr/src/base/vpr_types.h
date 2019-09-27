@@ -103,7 +103,10 @@ constexpr const char* EMPTY_BLOCK_NAME = "EMPTY";
 enum class e_router_lookahead {
     CLASSIC, //VPR's classic lookahead (assumes uniform wire types)
     MAP,     //Lookahead considering different wire types (see Oleg Petelin's MASc Thesis)
-    NO_OP    //A no-operation lookahead which always returns zero
+    NO_OP,   //A no-operation lookahead which always returns zero
+    CONNECTION_BOX_MAP,
+    // Lookahead considering different wire types and IPIN
+    // connection box.
 };
 
 enum class e_route_bb_update {
@@ -831,6 +834,9 @@ struct t_placer_opts {
     std::string post_place_timing_report_file;
 
     bool strict_checks;
+
+    std::string write_placement_delay_lookup;
+    std::string read_placement_delay_lookup;
 };
 
 /* All the parameters controlling the router's operation are in this        *
@@ -947,6 +953,7 @@ struct t_router_opts {
     bool congestion_analysis;
     bool fanout_analysis;
     bool switch_usage_analysis;
+    bool disable_check_route;
     e_stage_action doRouting;
     enum e_routing_failure_predictor routing_failure_predictor;
     enum e_routing_budgets_algorithm routing_budgets_algorithm;
@@ -962,6 +969,9 @@ struct t_router_opts {
     float reconvergence_cpd_threshold;
     std::string first_iteration_timing_report_file;
     bool strict_checks;
+
+    std::string write_router_lookahead;
+    std::string read_router_lookahead;
 };
 
 struct t_analysis_opts {
