@@ -36,7 +36,7 @@
 #define REPRESENTATIVE_ENTRY_METHOD SMALLEST
 
 static void run_dijkstra(int start_node_ind,
-                         routing_cost_list &routing_costs);
+                         routing_cost_list& routing_costs);
 
 void CostMap::set_counts(size_t seg_count, size_t box_count) {
     cost_map_.clear();
@@ -63,8 +63,7 @@ int CostMap::node_to_segment(int from_node_ind) const {
 Cost_Entry CostMap::find_cost(int from_seg_index, ConnectionBoxId box_id, int delta_x, int delta_y) const {
     VTR_ASSERT(from_seg_index >= 0 && from_seg_index < (ssize_t)offset_.size());
     const auto& cost_map = cost_map_[from_seg_index][size_t(box_id)];
-    if (cost_map.dim_size(0) == 0 ||
-        cost_map.dim_size(1) == 0) {
+    if (cost_map.dim_size(0) == 0 || cost_map.dim_size(1) == 0) {
         return Cost_Entry();
     }
 
@@ -137,14 +136,13 @@ void CostMap::set_cost_map(int from_seg_index, ConnectionBoxId box_id, const rou
 
     cost_map_[from_seg_index][size_t(box_id)] = vtr::NdMatrix<Cost_Entry, 2>(
         {size_t(bounds.width()), size_t(bounds.height())});
-    auto &matrix = cost_map_[from_seg_index][size_t(box_id)];
+    auto& matrix = cost_map_[from_seg_index][size_t(box_id)];
 
     /* set the lookahead cost map entries with a representative cost
      * entry from routing_cost_map */
     for (unsigned ix = 0; ix < expansion_cost_map.dim_size(0); ix++) {
         for (unsigned iy = 0; iy < expansion_cost_map.dim_size(1); iy++) {
-            matrix[ix][iy] =
-                expansion_cost_map[ix][iy].get_representative_cost_entry(method);
+            matrix[ix][iy] = expansion_cost_map[ix][iy].get_representative_cost_entry(method);
         }
     }
 
@@ -154,7 +152,7 @@ void CostMap::set_cost_map(int from_seg_index, ConnectionBoxId box_id, const rou
     /* find missing cost entries and fill them in by copying a nearby cost entry */
     for (unsigned ix = 0; ix < matrix.dim_size(0) && !couldnt_fill; ix++) {
         for (unsigned iy = 0; iy < matrix.dim_size(1); iy++) {
-            Cost_Entry &cost_entry = matrix[ix][iy];
+            Cost_Entry& cost_entry = matrix[ix][iy];
             if (!cost_entry.valid()) {
                 // maximum search radius
                 Cost_Entry filler = get_nearby_cost_entry(matrix, ix, iy, shifted_bounds);
@@ -168,7 +166,7 @@ void CostMap::set_cost_map(int from_seg_index, ConnectionBoxId box_id, const rou
     }
 
     // write back the missing entries
-    for (auto &xy_entry : missing) {
+    for (auto& xy_entry : missing) {
         matrix[std::get<0>(xy_entry)][std::get<1>(xy_entry)] = std::get<2>(xy_entry);
     }
 
@@ -197,11 +195,11 @@ void CostMap::set_cost_map(int from_seg_index, ConnectionBoxId box_id, const rou
 
 void CostMap::print(int iseg) const {
     const auto& device_ctx = g_vpr_ctx.device();
-    for(size_t box_id = 0;
-        box_id < device_ctx.connection_boxes.num_connection_box_types();
-        box_id++) {
-        auto &matrix = cost_map_[iseg][box_id];
-        if(matrix.dim_size(0) == 0 || matrix.dim_size(1) == 0) {
+    for (size_t box_id = 0;
+         box_id < device_ctx.connection_boxes.num_connection_box_types();
+         box_id++) {
+        auto& matrix = cost_map_[iseg][box_id];
+        if (matrix.dim_size(0) == 0 || matrix.dim_size(1) == 0) {
             printf("cost EMPTY for box_id = %lu\n", box_id);
             continue;
         }
@@ -209,8 +207,8 @@ void CostMap::print(int iseg) const {
         double sum = 0.0;
         for (unsigned iy = 0; iy < matrix.dim_size(1); iy++) {
             for (unsigned ix = 0; ix < matrix.dim_size(0); ix++) {
-                const auto &entry = matrix[ix][iy];
-                if(entry.valid()) {
+                const auto& entry = matrix[ix][iy];
+                if (entry.valid()) {
                     sum += entry.delay;
                 }
             }
@@ -218,8 +216,8 @@ void CostMap::print(int iseg) const {
         double avg = sum / ((double)matrix.dim_size(0) * (double)matrix.dim_size(1));
         for (unsigned iy = 0; iy < matrix.dim_size(1); iy++) {
             for (unsigned ix = 0; ix < matrix.dim_size(0); ix++) {
-                const auto &entry = matrix[ix][iy];
-                if(entry.valid() && entry.delay > avg) {
+                const auto& entry = matrix[ix][iy];
+                if (entry.valid() && entry.delay > avg) {
                     printf("o");
                 } else {
                     printf(".");
@@ -234,22 +232,22 @@ std::list<std::pair<int, int> > CostMap::list_empty() const {
     std::list<std::pair<int, int> > results;
     for (int iseg = 0; iseg < (int)cost_map_.dim_size(0); iseg++) {
         for (int box_id = 0; box_id < (int)cost_map_.dim_size(1); box_id++) {
-            auto &matrix = cost_map_[iseg][box_id];
-            if(matrix.dim_size(0) == 0 ||
-               matrix.dim_size(1) == 0) results.push_back(std::make_pair(iseg, box_id));
+            auto& matrix = cost_map_[iseg][box_id];
+            if (matrix.dim_size(0) == 0 || matrix.dim_size(1) == 0) results.push_back(std::make_pair(iseg, box_id));
         }
     }
     return results;
 }
 
-static void assign_min_entry(Cost_Entry &dst, const Cost_Entry &src) {
+static void assign_min_entry(Cost_Entry& dst, const Cost_Entry& src) {
     if (src.delay < dst.delay) dst.delay = src.delay;
     if (src.congestion < dst.congestion) dst.congestion = src.congestion;
 }
 
-Cost_Entry CostMap::get_nearby_cost_entry(const vtr::NdMatrix<Cost_Entry, 2> &matrix,
-                                          ssize_t cx, ssize_t cy,
-                                          const BoundingBox<ssize_t> &bounds) {
+Cost_Entry CostMap::get_nearby_cost_entry(const vtr::NdMatrix<Cost_Entry, 2>& matrix,
+                                          ssize_t cx,
+                                          ssize_t cy,
+                                          const BoundingBox<ssize_t>& bounds) {
     // spiral around (cx, cy) looking for a nearby entry
     ssize_t n = 1, x, y;
     bool in_bounds;
@@ -289,22 +287,22 @@ Cost_Entry CostMap::get_nearby_cost_entry(const vtr::NdMatrix<Cost_Entry, 2> &ma
                 in_bounds = true;
             }
         }
-        if(entry.valid()) return entry;
+        if (entry.valid()) return entry;
         n++;
-    } while(in_bounds);
+    } while (in_bounds);
     return Cost_Entry();
 }
 
-template <typename T>
-BoundingBox<T> BoundingBox<T>::operator|(const BoundingBox<T> &other) const {
+template<typename T>
+BoundingBox<T> BoundingBox<T>::operator|(const BoundingBox<T>& other) const {
     return BoundingBox<T>(std::min(xmin_, other.xmin_),
                           std::min(ymin_, other.ymin_),
                           std::max(xmax_, other.xmax_),
                           std::max(ymax_, other.ymax_));
 }
 
-template <typename T>
-BoundingBox<T> &BoundingBox<T>::operator|=(const BoundingBox<T> &other) {
+template<typename T>
+BoundingBox<T>& BoundingBox<T>::operator|=(const BoundingBox<T>& other) {
     if (other.xmin_ < xmin_) xmin_ = other.xmin_;
     if (other.ymin_ < ymin_) ymin_ = other.ymin_;
     if (other.xmax_ > xmax_) xmax_ = other.xmax_;
@@ -312,36 +310,33 @@ BoundingBox<T> &BoundingBox<T>::operator|=(const BoundingBox<T> &other) {
     return *this;
 }
 
-template <typename T>
+template<typename T>
 std::pair<T, T> BoundingBox<T>::center() const {
     return sample(1, 1, 2);
 }
 
-template <typename T>
+template<typename T>
 std::pair<T, T> BoundingBox<T>::sample(T x, T y, T d) const {
-    return std::pair<T, T>((xmin_ * (d-x) + xmax_ * x + d/2) / d,
-                           (ymin_ * (d-y) + ymax_ * y + d/2) / d);
+    return std::pair<T, T>((xmin_ * (d - x) + xmax_ * x + d / 2) / d,
+                           (ymin_ * (d - y) + ymax_ * y + d / 2) / d);
 }
 
-template <typename T>
+template<typename T>
 bool BoundingBox<T>::contains(T x, T y) const {
-    return x >= xmin_ &&
-           x <= xmax_ &&
-           y >= ymin_ &&
-           y <= ymax_;
+    return x >= xmin_ && x <= xmax_ && y >= ymin_ && y <= ymax_;
 }
 
-template <typename T>
+template<typename T>
 T BoundingBox<T>::width() const {
     return empty() ? 0 : xmax_ - xmin_ + 1;
 }
 
-template <typename T>
+template<typename T>
 T BoundingBox<T>::height() const {
     return empty() ? 0 : ymax_ - ymin_ + 1;
 }
 
-template <typename T>
+template<typename T>
 bool BoundingBox<T>::empty() const {
     return xmin_ > xmax_ || ymin_ > ymax_;
 }
@@ -422,7 +417,7 @@ float ConnectionBoxMapLookahead::get_map_cost(int from_node_ind,
  * visited. Each time a pin is visited, the delay/congestion information
  * to that pin is stored to an entry in the routing_cost_map */
 static void run_dijkstra(int start_node_ind,
-                         routing_cost_list &routing_costs) {
+                         routing_cost_list& routing_costs) {
     auto& device_ctx = g_vpr_ctx.device();
 
     /* a list of boolean flags (one for each rr node) to figure out if a
@@ -485,7 +480,8 @@ static void run_dijkstra(int start_node_ind,
     }
 }
 
-void ConnectionBoxMapLookahead::compute(const std::vector<t_segment_inf>& segment_inf) {
+void ConnectionBoxMapLookahead::compute(const std::vector<t_segment_inf>& segment_inf,
+                                        const std::string& search_locations) {
     vtr::ScopedStartFinishTimer timer("Computing connection box lookahead map");
 
     size_t num_segments = segment_inf.size();
@@ -508,7 +504,7 @@ void ConnectionBoxMapLookahead::compute(const std::vector<t_segment_inf>& segmen
         /* allocate the cost map for this iseg/chan_type */
         routing_cost_list costs;
         bool found = false;
-        for (const auto &row : start_inode_for_segment_[iseg]) {
+        for (const auto& row : start_inode_for_segment_[iseg]) {
             for (auto cell : row) {
                 for (auto node_ind : cell) {
                     found = true;
@@ -547,7 +543,6 @@ void ConnectionBoxMapLookahead::compute(const std::vector<t_segment_inf>& segmen
                     std::get<2>(e).delay, std::get<2>(e).congestion);
         }
 #endif
-
         //VTR_LOG("cost map for %s(%d)\n",
         //        segment_inf[iseg].name.c_str(), iseg);
         //cost_map_.print(iseg);
@@ -588,7 +583,7 @@ static int manhattan_distance(const t_rr_node& node, int x, int y) {
 
 static BoundingBox<int> bounding_box_for_node(const t_rr_node& node) {
     return BoundingBox<int>(node.xlow(), node.ylow(),
-                       node.xhigh(), node.yhigh());
+                            node.xhigh(), node.yhigh());
 }
 
 void ConnectionBoxMapLookahead::find_start_inodes_for_segment_types(int num_segments) {
@@ -612,37 +607,33 @@ void ConnectionBoxMapLookahead::find_start_inodes_for_segment_types(int num_segm
     // select an inode near the center of the bounding box for each segment type
     start_inode_for_segment_.clear();
     start_inode_for_segment_.resize(num_segments);
-    for (auto &grid : start_inode_for_segment_) {
-        for (auto &row : grid) {
-            for (auto &cell : row) {
+    for (auto& grid : start_inode_for_segment_) {
+        for (auto& row : grid) {
+            for (auto& cell : row) {
                 cell = std::list<ssize_t>();
             }
         }
     }
     for (size_t i = 0; i < rr_nodes.size(); i++) {
-      assigned:
+    assigned:
         auto& node = rr_nodes[i];
         if (node.type() != CHANX && node.type() != CHANY) continue;
-        if (node.capacity() == 0 ||
-            device_ctx.connection_boxes.find_canonical_loc(i) == nullptr) continue;
+        if (node.capacity() == 0 || device_ctx.connection_boxes.find_canonical_loc(i) == nullptr) continue;
 
         int seg_index = device_ctx.rr_indexed_data[node.cost_index()].seg_index;
 
         VTR_ASSERT(seg_index != OPEN);
         VTR_ASSERT(seg_index < num_segments);
 
-        auto &grid = start_inode_for_segment_[seg_index];
+        auto& grid = start_inode_for_segment_[seg_index];
         for (int sy = 0; sy < SAMPLE_GRID_SIZE; sy++) {
             for (int sx = 0; sx < SAMPLE_GRID_SIZE; sx++) {
-                auto &stored_inodes = grid[sy][sx];
+                auto& stored_inodes = grid[sy][sx];
                 if (stored_inodes.empty()) {
                     stored_inodes.push_back(i);
                 } else {
-                    auto &first_stored_node = rr_nodes[stored_inodes.front()];
-                    if (first_stored_node.xhigh() >= node.xhigh() &&
-                        first_stored_node.xlow()  <= node.xlow() &&
-                        first_stored_node.yhigh() >= node.yhigh() &&
-                        first_stored_node.ylow()  <= node.ylow()) {
+                    auto& first_stored_node = rr_nodes[stored_inodes.front()];
+                    if (first_stored_node.xhigh() >= node.xhigh() && first_stored_node.xlow() <= node.xlow() && first_stored_node.yhigh() >= node.yhigh() && first_stored_node.ylow() <= node.ylow()) {
                         stored_inodes.push_back(i);
                     } else {
                         int target_x, target_y;
