@@ -717,17 +717,6 @@ RouteStatus vpr_route_fixed_W(t_vpr_setup& vpr_setup,
                               std::shared_ptr<SetupHoldTimingInfo> timing_info,
                               std::shared_ptr<RoutingDelayCalculator> delay_calc,
                               vtr::vector<ClusterNetId, float*>& net_delay) {
-    if (router_needs_lookahead(vpr_setup.RouterOpts.router_algorithm)) {
-        // Prime lookahead cache to avoid adding lookahead computation cost to
-        // the routing timer.
-        get_cached_router_lookahead(
-            vpr_setup.RouterOpts.lookahead_type,
-            vpr_setup.RouterOpts.write_router_lookahead,
-            vpr_setup.RouterOpts.read_router_lookahead,
-            vpr_setup.Segments,
-            vpr_setup.RouterOpts.lookahead_search_locations);
-    }
-
     vtr::ScopedStartFinishTimer timer("Routing");
 
     if (NO_FIXED_CHANNEL_WIDTH == fixed_channel_width || fixed_channel_width <= 0) {

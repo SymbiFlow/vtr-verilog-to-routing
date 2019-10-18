@@ -141,4 +141,12 @@ void expand_dijkstra_neighbours(util::PQ_Entry parent_entry,
                                 std::vector<bool>& node_expanded,
                                 std::priority_queue<util::PQ_Entry>& pq);
 
+void propigate_delay(
+    int set_rr_node_ind,
+    int switch_ind,
+    float parent_delay,
+    float parent_congestion_upstream,
+    float *delay,
+    float *congestion_upstream);
+
 #endif

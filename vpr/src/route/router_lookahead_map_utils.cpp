@@ -7,6 +7,49 @@
 /* Number of CLBs I think the average conn. goes. */
 static const int CLB_DIST = 3;
 
+void propigate_delay(
+    int set_rr_node_ind,
+    int switch_ind,
+    float parent_delay,
+    float parent_congestion_upstream,
+    float *delay,
+    float *congestion_upstream) {
+    auto& device_ctx = g_vpr_ctx.device();
+
+    int cost_index = device_ctx.rr_nodes[set_rr_node_ind].cost_index();
+
+    float Tsw = device_ctx.rr_switch_inf[switch_ind].Tdel;
+    float Rsw = device_ctx.rr_switch_inf[switch_ind].R;
+    float Cnode = device_ctx.rr_nodes[set_rr_node_ind].C();
+    float Rnode = device_ctx.rr_nodes[set_rr_node_ind].R();
+
+    float T_linear = 0.f;
+    float T_quadratic = 0.f;
+    if (device_ctx.rr_switch_inf[switch_ind].buffered()) {
+        T_linear = Tsw + Rsw * Cnode + 0.5 * Rnode * Cnode;
+        T_quadratic = 0.;
+    } else { /* Pass transistor */
+        T_linear = Tsw + 0.5 * Rsw * Cnode;
+        T_quadratic = (Rsw + Rnode) * 0.5 * Cnode;
+    }
+
+    float base_cost;
+    if (device_ctx.rr_indexed_data[cost_index].inv_length < 0) {
+        base_cost = device_ctx.rr_indexed_data[cost_index].base_cost;
+    } else {
+        float frac_num_seg = CLB_DIST * device_ctx.rr_indexed_data[cost_index].inv_length;
+
+        base_cost = frac_num_seg * T_linear
+                    + frac_num_seg * frac_num_seg * T_quadratic;
+    }
+
+    VTR_ASSERT(T_linear >= 0.);
+    VTR_ASSERT(base_cost >= 0.);
+
+    *delay = parent_delay + T_linear;
+    *congestion_upstream = parent_congestion_upstream + base_cost;
+}
+
 util::PQ_Entry::PQ_Entry(
     int set_rr_node_ind,
     int switch_ind,
@@ -21,38 +64,13 @@ util::PQ_Entry::PQ_Entry(
     this->congestion_upstream = parent_congestion_upstream;
     this->R_upstream = parent_R_upstream;
     if (!starting_node) {
-        int cost_index = device_ctx.rr_nodes[set_rr_node_ind].cost_index();
-
-        float Tsw = device_ctx.rr_switch_inf[switch_ind].Tdel;
-        float Rsw = device_ctx.rr_switch_inf[switch_ind].R;
-        float Cnode = device_ctx.rr_nodes[set_rr_node_ind].C();
-        float Rnode = device_ctx.rr_nodes[set_rr_node_ind].R();
-
-        float T_linear = 0.f;
-        float T_quadratic = 0.f;
-        if (device_ctx.rr_switch_inf[switch_ind].buffered()) {
-            T_linear = Tsw + Rsw * Cnode + 0.5 * Rnode * Cnode;
-            T_quadratic = 0.;
-        } else { /* Pass transistor */
-            T_linear = Tsw + 0.5 * Rsw * Cnode;
-            T_quadratic = (Rsw + Rnode) * 0.5 * Cnode;
-        }
-
-        float base_cost;
-        if (device_ctx.rr_indexed_data[cost_index].inv_length < 0) {
-            base_cost = device_ctx.rr_indexed_data[cost_index].base_cost;
-        } else {
-            float frac_num_seg = CLB_DIST * device_ctx.rr_indexed_data[cost_index].inv_length;
-
-            base_cost = frac_num_seg * T_linear
-                        + frac_num_seg * frac_num_seg * T_quadratic;
-        }
-
-        VTR_ASSERT(T_linear >= 0.);
-        VTR_ASSERT(base_cost >= 0.);
-        this->delay += T_linear;
-
-        this->congestion_upstream += base_cost;
+        propigate_delay(
+            set_rr_node_ind,
+            switch_ind,
+            parent_delay,
+            parent_congestion_upstream,
+            &this->delay,
+            &this->congestion_upstream);
     }
 
     /* set the cost of this node */
