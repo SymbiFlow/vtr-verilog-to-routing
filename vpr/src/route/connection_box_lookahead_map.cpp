@@ -231,8 +231,10 @@ class SearchGrid {
         vtr::NdMatrix<GridEntry, 2> grid;
     };
 public:
-    void setup(const std::vector<t_bb> &grid_elements) {
-        constexpr int kTargetGridSize = 5;
+    void setup(const std::vector<t_bb> &grid_elements, size_t num_nodes) {
+        expanded_.resize(num_nodes, false);
+
+        constexpr int kTargetGridSize = 3;
         elements_.resize(grid_elements.size());
 
         for(size_t i = 0; i < grid_elements.size(); ++i) {
@@ -291,8 +293,19 @@ public:
         find_grid_entry(element, x, y).nodes.push_back(node);
     }
 
+    void expanded(int node) {
+        VTR_ASSERT(node < expanded_.size());
+        expanded_[node] = true;
+    }
+
     void visit_entry(size_t element, int x, int y) {
-        find_grid_entry(element, x, y).samples += 1;
+        auto & grid_entry = find_grid_entry(element, x, y);
+        if(grid_entry.samples == 0) {
+            VTR_LOG("First sample for %zu for grid at %d, %d (sampled at %d, %d)\n",
+                    element, grid_entry.bounds.xmin(), grid_entry.bounds.ymin(),
+                    x, y);
+        }
+        grid_entry.samples += 1;
     }
 
     int next_node() {
@@ -303,7 +316,8 @@ public:
         while(next_ix_ >= elements_[next_element_].grid.dim_size(0) ||
               next_iy_ >= elements_[next_element_].grid.dim_size(1) ||
               next_node_ >= elements_[next_element_].grid[next_ix_][next_iy_].nodes.size() ||
-              elements_[next_element_].grid[next_ix_][next_iy_].samples > 0) {
+              elements_[next_element_].grid[next_ix_][next_iy_].samples > 0 ||
+              expanded_[elements_[next_element_].grid[next_ix_][next_iy_].nodes[next_node_]]) {
             advance_one();
             if(next_element_ >= elements_.size()) {
                 return OPEN;
@@ -377,6 +391,8 @@ private:
     size_t next_ix_;
     size_t next_iy_;
     size_t next_node_;
+
+    std::vector<uint8_t> expanded_;
 };
 
 
@@ -387,6 +403,7 @@ struct CostCongestion {
 };
 
 void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
+    grid->expanded(src_rr_node);
     const auto& device_ctx = g_vpr_ctx.device();
     const auto& route_ctx = g_vpr_ctx.routing();
 
@@ -426,6 +443,7 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
         }
 
         VTR_ASSERT(shortest_paths[sink_rr_node].index == sink_rr_node);
+        grid->expanded(sink_rr_node);
 
         if(device_ctx.rr_nodes[sink_rr_node].type() != IPIN) {
             continue;
@@ -592,7 +610,7 @@ static void compute_connection_box_lookahead(
         segment_bb[node_seg_ind].ymax = std::max<int>(node.yhigh(), segment_bb[node_seg_ind].ymax);
     }
     SearchGrid grid;
-    grid.setup(segment_bb);
+    grid.setup(segment_bb, device_ctx.rr_nodes.size());
     for(size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
         const auto & node = device_ctx.rr_nodes[inode];
 
@@ -618,6 +636,11 @@ static void compute_connection_box_lookahead(
             current_segment = node_seg_ind;
         }
 
+        VTR_LOG("Expanding at %d,%d\n",
+                device_ctx.rr_nodes[inode].xlow(),
+                device_ctx.rr_nodes[inode].ylow()
+                );
+
         for (e_rr_type chan_type : {CHANX, CHANY}) {
             StartNode start_node(
                     device_ctx.rr_nodes[inode].xlow(),
@@ -625,7 +648,7 @@ static void compute_connection_box_lookahead(
             for (int start_node_ind = start_node.get_next_node();
                  start_node_ind != UNDEFINED;
                  start_node_ind = start_node.get_next_node()) {
-                 expand_from_node(start_node_ind, &grid, &data);
+                expand_from_node(start_node_ind, &grid, &data);
             }
         }
     }
