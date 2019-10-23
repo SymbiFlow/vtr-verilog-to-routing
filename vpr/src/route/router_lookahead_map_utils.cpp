@@ -12,8 +12,8 @@ void propigate_delay(
     int switch_ind,
     float parent_delay,
     float parent_congestion_upstream,
-    float *delay,
-    float *congestion_upstream) {
+    float* delay,
+    float* congestion_upstream) {
     auto& device_ctx = g_vpr_ctx.device();
 
     int cost_index = device_ctx.rr_nodes[set_rr_node_ind].cost_index();

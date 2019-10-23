@@ -42,17 +42,16 @@ static int signum(int x) {
         return 0;
 }
 
+/* Tuple key is: segment, connection_box, dx, dy */
 typedef std::tuple<int, ConnectionBoxId, int, int> routing_data_key_t;
 
-template <class T>
+template<class T>
 class HashTuple;
 
 template<>
-class HashTuple<routing_data_key_t>
-{
-public:
-    std::size_t operator()(routing_data_key_t const& s) const
-    {
+class HashTuple<routing_data_key_t> {
+  public:
+    std::size_t operator()(routing_data_key_t const& s) const {
         std::size_t h = std::hash<int>()(std::get<0>(s));
         vtr::hash_combine<size_t>(h, size_t(std::get<1>(s)));
         vtr::hash_combine<int>(h, std::get<2>(s));
@@ -61,13 +60,15 @@ public:
     }
 };
 
-
-/* segment, connection_box, dx, dy */
 typedef std::unordered_map<routing_data_key_t, Expansion_Cost_Entry, HashTuple<routing_data_key_t>>
-        routing_data_t;
+    routing_data_t;
 
+// Storage of connection box lookahead costs.
 class CostMap {
   public:
+    // Resize data to account for number of segments and connection boxes.
+    //
+    // Builds lookup between rr node index and segment.
     void set_counts(size_t seg_count, size_t box_count) {
         cost_map_.clear();
         offset_.clear();
@@ -86,10 +87,12 @@ class CostMap {
         }
     }
 
+    // Map node id to segment id.
     int node_to_segment(int from_node_ind) {
         return segment_map_[from_node_ind];
     }
 
+    // Find the cost entry for a given segment to connection box, and distance from segment to connection box.
     Cost_Entry find_cost(int from_seg_index, ConnectionBoxId box_id, int delta_x, int delta_y) const {
         VTR_ASSERT(from_seg_index >= 0 && from_seg_index < (ssize_t)offset_.size());
         int dx = delta_x - offset_[from_seg_index][size_t(box_id)].first;
@@ -113,13 +116,14 @@ class CostMap {
         return cost_map_[from_seg_index][size_t(box_id)][dx][dy];
     }
 
+    // Set cost map from sparse hash table of data.
     void set_cost_map(const routing_data_t& data, e_representative_entry_method method) {
         vtr::NdMatrix<t_bb, 2> bounds({cost_map_.dim_size(0), cost_map_.dim_size(1)},
-                {0, 0, 0, 0});
+                                      {0, 0, 0, 0});
 
         // Find coordinate offset for this segment.
         for (const auto& entry : data) {
-            t_bb & bound = bounds[std::get<0>(entry.first)][size_t(std::get<1>(entry.first))];
+            t_bb& bound = bounds[std::get<0>(entry.first)][size_t(std::get<1>(entry.first))];
 
             bound.xmin = std::min(std::get<2>(entry.first), bound.xmin);
             bound.xmax = std::max(std::get<2>(entry.first), bound.xmax);
@@ -128,9 +132,10 @@ class CostMap {
             bound.ymax = std::max(std::get<3>(entry.first), bound.ymax);
         }
 
-        for(size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
-            for(size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
-                const t_bb &bound = bounds[from_seg_index][box_id];
+        // Allocate cost matricies based on bounds.
+        for (size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
+            for (size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
+                const t_bb& bound = bounds[from_seg_index][box_id];
                 offset_[from_seg_index][box_id].first = bound.xmin;
                 offset_[from_seg_index][box_id].second = bound.ymin;
                 size_t dim_x = bound.xmax - bound.xmin + 1;
@@ -146,18 +151,17 @@ class CostMap {
         for (const auto& entry : data) {
             auto from_seg_index = std::get<0>(entry.first);
             auto box_id = std::get<1>(entry.first);
-            const auto & offset = offset_[from_seg_index][size_t(box_id)];
+            const auto& offset = offset_[from_seg_index][size_t(box_id)];
             unsigned ix = std::get<2>(entry.first) - offset.first;
             unsigned iy = std::get<3>(entry.first) - offset.second;
             cost_map_[from_seg_index][size_t(box_id)][ix][iy] = entry.second.get_representative_cost_entry(method);
         }
 
-
         /* find missing cost entries and fill them in by copying a nearby cost entry */
-        for(size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
-            for(size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
-                const auto & offset = offset_[from_seg_index][size_t(box_id)];
-                auto & matrix = cost_map_[from_seg_index][size_t(box_id)];
+        for (size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
+            for (size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
+                const auto& offset = offset_[from_seg_index][size_t(box_id)];
+                auto& matrix = cost_map_[from_seg_index][size_t(box_id)];
                 for (unsigned ix = 0; ix < matrix.dim_size(0); ix++) {
                     for (unsigned iy = 0; iy < matrix.dim_size(1); iy++) {
                         Cost_Entry cost_entry = matrix[ix][iy];
@@ -220,31 +224,62 @@ class CostMap {
 
 static CostMap g_cost_map;
 
+// Search grid used for sampling segments from graph.
+//
+// SearchGrid divides the graph based on segment type, and within each
+// segment type defines a NxN uniform search grid, where N is kTargetGridSize.
+//
+// SearchGrid needs to be initialized with the setup and add_node methods.
+//
+// Once initialized, next_node can be invoked to determine next rr node to
+// expand.
+//
+// During expansion, visit_entry and expanded should be called to indicate
+// that an expansion found data relevant to the search.
 class SearchGrid {
-
+    // Representation of one search area of the grid.
     struct GridEntry {
-        GridEntry() : samples(0), bounds(vtr::Rect<int>(-1, -1, -1, -1)) {}
+        GridEntry()
+            : samples(0)
+            , bounds(vtr::Rect<int>(-1, -1, -1, -1)) {}
+
+        // Number of samples take from this section of the grid.
         int samples;
+
+        // Geometric boundry of this section of the grid.
         vtr::Rect<int> bounds;
+
+        // rr nodes that belong to this section of the grid.
         std::vector<int> nodes;
     };
 
+    // Represent of one segment (element) type within the grid.
     struct ElementDefinition {
+        // Bounding box that contains all instances of a particular segment type.
         t_bb box;
+
+        // Stride is choosen such that dim_size(0)*x_stride and
+        // dim_size(1)*y_stride encompass box (e.g. the grid includes all
+        // elements).
         size_t x_stride;
         size_t y_stride;
+
+        // Search grid for this element.
         vtr::NdMatrix<GridEntry, 2> grid;
     };
-public:
-    void setup(const std::vector<t_bb> &grid_elements, size_t num_nodes) {
+
+  public:
+    // Initial search grid with bound boxes of each search instance, and total
+    // number of nodes that could be expanded.
+    void setup(const std::vector<t_bb>& grid_elements, size_t num_nodes) {
         expanded_.resize(num_nodes, false);
 
         constexpr int kTargetGridSize = 3;
         elements_.resize(grid_elements.size());
 
-        for(size_t i = 0; i < grid_elements.size(); ++i) {
+        for (size_t i = 0; i < grid_elements.size(); ++i) {
             elements_[i].box = grid_elements[i];
-            if(grid_elements[i].xmin > grid_elements[i].xmax) {
+            if (grid_elements[i].xmin > grid_elements[i].xmax) {
                 continue;
             }
 
@@ -252,14 +287,16 @@ public:
 
             size_t x_dim = std::min(kTargetGridSize, grid_elements[i].xmax - grid_elements[i].xmin + 1);
             size_t y_dim = std::min(kTargetGridSize, grid_elements[i].ymax - grid_elements[i].ymin + 1);
+
+            // Choose strides to encompass all elements.
             size_t x_stride = (grid_elements[i].xmax - grid_elements[i].xmin + 1) / x_dim;
-            while(x_stride * x_dim + grid_elements[i].xmin <= grid_elements[i].xmax) {
+            while (x_stride * x_dim + grid_elements[i].xmin <= grid_elements[i].xmax) {
                 x_stride += 1;
             }
             VTR_ASSERT(x_stride * x_dim + grid_elements[i].xmin > grid_elements[i].xmax);
 
             size_t y_stride = (grid_elements[i].ymax - grid_elements[i].ymin + 1) / y_dim;
-            while(y_stride * y_dim + grid_elements[i].ymin <= grid_elements[i].ymax) {
+            while (y_stride * y_dim + grid_elements[i].ymin <= grid_elements[i].ymax) {
                 y_stride += 1;
             }
             VTR_ASSERT(y_stride * y_dim + grid_elements[i].ymin > grid_elements[i].ymax);
@@ -268,44 +305,46 @@ public:
             elements_[i].y_stride = y_stride;
             elements_[i].grid.resize({x_dim, y_dim});
 
-            for(size_t ix = 0; ix < x_dim; ++ix) {
-                for(size_t iy = 0; iy < y_dim; ++iy) {
-                    auto & entry = elements_[i].grid[ix][iy];
+            // Initial search grid to contain all elements.
+            for (size_t ix = 0; ix < x_dim; ++ix) {
+                for (size_t iy = 0; iy < y_dim; ++iy) {
+                    auto& entry = elements_[i].grid[ix][iy];
                     entry.bounds = vtr::Rect<int>(
-                            grid_elements[i].xmin + ix*x_stride,
-                            grid_elements[i].ymin + iy*y_stride,
-                            grid_elements[i].xmin + (ix+1)*x_stride,
-                            grid_elements[i].ymin + (iy+1)*y_stride);
+                        grid_elements[i].xmin + ix * x_stride,
+                        grid_elements[i].ymin + iy * y_stride,
+                        grid_elements[i].xmin + (ix + 1) * x_stride,
+                        grid_elements[i].ymin + (iy + 1) * y_stride);
                 }
             }
 
-            // Check grid
-            for(int x = grid_elements[i].xmin; x <= grid_elements[i].xmax; ++x) {
-                for(int y = grid_elements[i].ymin; y <= grid_elements[i].ymax; ++y) {
+            // Check that grid includes all elements.
+            for (int x = grid_elements[i].xmin; x <= grid_elements[i].xmax; ++x) {
+                for (int y = grid_elements[i].ymin; y <= grid_elements[i].ymax; ++y) {
                     auto grid_entry = find_grid_entry(i, x, y);
                     VTR_ASSERT(grid_entry.bounds.contains(vtr::Point<int>(x, y)));
                 }
             }
         }
 
-        next_element_ = 0;
-        next_ix_ = 0;
-        next_iy_ = 0;
-        next_node_ = 0;
+        reset_iteration();
     }
 
+    // Store rr node in search grid.
     void add_node(size_t element, int x, int y, int node) {
         find_grid_entry(element, x, y).nodes.push_back(node);
     }
 
+    // Mark that rr node has been expanded, and will not need to be expanded
+    // again.
     void expanded(int node) {
         VTR_ASSERT(node < expanded_.size());
         expanded_[node] = true;
     }
 
+    // Mark that part of the search grid has been searched.
     void visit_entry(size_t element, int x, int y) {
-        auto & grid_entry = find_grid_entry(element, x, y);
-        if(grid_entry.samples == 0) {
+        auto& grid_entry = find_grid_entry(element, x, y);
+        if (grid_entry.samples == 0) {
             VTR_LOG("First sample for %zu for grid at %d, %d (sampled at %d, %d)\n",
                     element, grid_entry.bounds.xmin(), grid_entry.bounds.ymin(),
                     x, y);
@@ -313,18 +352,21 @@ public:
         grid_entry.samples += 1;
     }
 
+    // Get next rr node to visit in search pattern.
+    //
+    // Returns OPEN if no more nodes.
     int next_node() {
-        if(next_element_ >= elements_.size()) {
+        if (done()) {
             return OPEN;
         }
 
-        while(next_ix_ >= elements_[next_element_].grid.dim_size(0) ||
-              next_iy_ >= elements_[next_element_].grid.dim_size(1) ||
-              next_node_ >= elements_[next_element_].grid[next_ix_][next_iy_].nodes.size() ||
-              elements_[next_element_].grid[next_ix_][next_iy_].samples > 0 ||
-              expanded_[elements_[next_element_].grid[next_ix_][next_iy_].nodes[next_node_]]) {
+        while (!is_next_node_valid() ||
+               // Have samples from this grid location?
+               elements_[next_element_].grid[next_ix_][next_iy_].samples > 0 ||
+               // Have already expanded this node?
+               expanded_[elements_[next_element_].grid[next_ix_][next_iy_].nodes[next_node_]]) {
             advance_one();
-            if(next_element_ >= elements_.size()) {
+            if (done()) {
                 return OPEN;
             }
         }
@@ -338,14 +380,35 @@ public:
 
         return next_node;
     }
-private:
+
+  private:
+    // Is next_node valid to read?
+    bool is_next_node_valid() {
+        return next_element_ < elements_.size() && next_ix_ < elements_[next_element_].grid.dim_size(0) && next_iy_ < elements_[next_element_].grid.dim_size(1) && next_node_ < elements_[next_element_].grid[next_ix_][next_iy_].nodes.size();
+    }
+
+    // Is done with iteration?
+    bool done() {
+        return next_element_ >= elements_.size();
+    }
+
+    // Reset counters so that iteration via next_node will visit all nodes.
+    void reset_iteration() {
+        next_element_ = 0;
+        next_ix_ = 0;
+        next_iy_ = 0;
+        next_node_ = 0;
+    }
+
+    // Advance iteration one step.
+    //
+    // May be invalid, check step is valid with is_next_node_valid().
     void advance_one() {
-        if(next_element_ >= elements_.size()) {
+        if (done()) {
             return;
         }
 
-        if(next_ix_ >= elements_[next_element_].grid.dim_size(0) ||
-           next_iy_ >= elements_[next_element_].grid.dim_size(1)) {
+        if (next_ix_ >= elements_[next_element_].grid.dim_size(0) || next_iy_ >= elements_[next_element_].grid.dim_size(1)) {
             VTR_ASSERT(next_ix_ == 0);
             VTR_ASSERT(next_iy_ == 0);
             VTR_ASSERT(next_node_ == 0);
@@ -353,21 +416,21 @@ private:
             return;
         }
 
-        if(next_node_+1 < elements_[next_element_].grid[next_ix_][next_iy_].nodes.size()) {
+        if (next_node_ + 1 < elements_[next_element_].grid[next_ix_][next_iy_].nodes.size()) {
             next_node_ += 1;
             return;
         }
 
         next_node_ = 0;
 
-        if(next_iy_+1 < elements_[next_element_].grid.dim_size(1)) {
+        if (next_iy_ + 1 < elements_[next_element_].grid.dim_size(1)) {
             next_iy_ += 1;
             return;
         }
 
         next_iy_ = 0;
 
-        if(next_ix_+1 < elements_[next_element_].grid.dim_size(0)) {
+        if (next_ix_ + 1 < elements_[next_element_].grid.dim_size(0)) {
             next_ix_ += 1;
             return;
         }
@@ -376,7 +439,8 @@ private:
         next_element_ += 1;
     }
 
-    GridEntry &find_grid_entry(size_t element, size_t x, size_t y) {
+    // Return grid entry for given search location.
+    GridEntry& find_grid_entry(size_t element, size_t x, size_t y) {
         VTR_ASSERT(element < elements_.size());
         VTR_ASSERT(x >= elements_[element].box.xmin);
         VTR_ASSERT(x <= elements_[element].box.xmax);
@@ -391,7 +455,12 @@ private:
 
         return elements_[element].grid[ix][iy];
     }
+
+    // Search grids for each element.
     std::vector<ElementDefinition> elements_;
+
+    // Location of next node to return, may be invalid, check with
+    // is_next_node_valid() and done().
     size_t next_element_;
     size_t next_ix_;
     size_t next_iy_;
@@ -400,15 +469,16 @@ private:
     std::vector<uint8_t> expanded_;
 };
 
-
+// Storage for expanding path during expand_from_node.
 struct CostCongestion {
     int inode;
     float delay;
     float congestion_upstream;
 };
 
-
-void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
+// Perform expansion from src_rr_node, and store all costs from expanded nodes
+// to IPINs.
+void expand_from_node(int src_rr_node, SearchGrid* grid, routing_data_t* data) {
     grid->expanded(src_rr_node);
     const auto& device_ctx = g_vpr_ctx.device();
     const auto& route_ctx = g_vpr_ctx.routing();
@@ -431,6 +501,7 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
 
     init_heap(device_ctx.grid);
 
+    // Perform expansion starting from src_rr_node.
     std::vector<t_heap> shortest_paths = timing_driven_find_all_shortest_paths_from_route_tree(rt_root,
                                                                                                cost_params,
                                                                                                bounding_box,
@@ -439,6 +510,8 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
     free_route_tree(rt_root);
 
     VTR_ASSERT(shortest_paths.size() == device_ctx.rr_nodes.size());
+
+    // Collect data from all IPIN nodes.
     std::vector<CostCongestion> path_cost;
     int num_nodes = device_ctx.rr_nodes.size();
     for (int sink_rr_node = 0; sink_rr_node < num_nodes; ++sink_rr_node) {
@@ -450,9 +523,11 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
         }
 
         VTR_ASSERT(shortest_paths[sink_rr_node].index == sink_rr_node);
+
+        // Mark that this rr node has been expanded.
         grid->expanded(sink_rr_node);
 
-        if(device_ctx.rr_nodes[sink_rr_node].type() != IPIN) {
+        if (device_ctx.rr_nodes[sink_rr_node].type() != IPIN) {
             continue;
         }
 
@@ -464,9 +539,10 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
             VPR_THROW(VPR_ERROR_ROUTE, "No connection box for IPIN %d", sink_rr_node);
         }
 
+        // Work from IPIN back to source.
         size_t path_length = 1;
         int current_node = sink_rr_node;
-        while(current_node != src_rr_node) {
+        while (current_node != src_rr_node) {
             path_length += 1;
 
             current_node = route_ctx.rr_node_route_inf[current_node].prev_node;
@@ -475,10 +551,9 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
 
         path_cost.resize(path_length);
 
-
         current_node = sink_rr_node;
         size_t i = 0;
-        while(current_node != src_rr_node) {
+        while (current_node != src_rr_node) {
             i += 1;
 
             path_cost[path_length - i].inode = current_node;
@@ -486,14 +561,16 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
             VTR_ASSERT(current_node != OPEN);
         }
 
-        VTR_ASSERT(i+1 == path_length);
+        // Now that path is defined, work from source by to IPIN and propigate
+        // delays.
+        VTR_ASSERT(i + 1 == path_length);
         VTR_ASSERT(current_node == src_rr_node);
         path_cost[0].inode = src_rr_node;
         path_cost[0].delay = 0.f;
         path_cost[0].congestion_upstream = 0.f;
 
-        for(i = 1; i < path_length; ++i) {
-            const auto & parent_node = device_ctx.rr_nodes[path_cost[i-1].inode];
+        for (i = 1; i < path_length; ++i) {
+            const auto& parent_node = device_ctx.rr_nodes[path_cost[i - 1].inode];
             int parent_edge = route_ctx.rr_node_route_inf[path_cost[i].inode].prev_edge;
             VTR_ASSERT(parent_node.edge_sink_node(parent_edge) == path_cost[i].inode);
             int switch_ind = parent_node.edge_switch(parent_edge);
@@ -501,21 +578,22 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
             propigate_delay(
                 path_cost[i].inode,
                 switch_ind,
-                path_cost[i-1].delay,
-                path_cost[i-1].congestion_upstream,
+                path_cost[i - 1].delay,
+                path_cost[i - 1].congestion_upstream,
                 &path_cost[i].delay,
                 &path_cost[i].congestion_upstream);
         }
 
-        for(i = 0; i < path_length-1; ++i) {
-            const auto & node = device_ctx.rr_nodes[path_cost[i].inode];
+        // For each CHANX or CHANY, add a sample.
+        for (i = 0; i < path_length - 1; ++i) {
+            const auto& node = device_ctx.rr_nodes[path_cost[i].inode];
 
-            if(node.type() != CHANX && node.type() != CHANY) {
+            if (node.type() != CHANX && node.type() != CHANY) {
                 continue;
             }
 
             const std::pair<size_t, size_t>* from_canonical_loc = device_ctx.connection_boxes.find_canonical_loc(path_cost[i].inode);
-            if(from_canonical_loc == nullptr) {
+            if (from_canonical_loc == nullptr) {
                 continue;
             }
 
@@ -525,12 +603,13 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
             int node_cost_ind = device_ctx.rr_nodes[path_cost[i].inode].cost_index();
             int node_seg_ind = device_ctx.rr_indexed_data[node_cost_ind].seg_index;
             (*data)[std::make_tuple(node_seg_ind, box_id, delta_x, delta_y)].add_cost_entry(
-                    REPRESENTATIVE_ENTRY_METHOD,
-                    path_cost.back().delay - path_cost[i].delay,
-                    path_cost.back().congestion_upstream - path_cost[i].congestion_upstream);
+                REPRESENTATIVE_ENTRY_METHOD,
+                path_cost.back().delay - path_cost[i].delay,
+                path_cost.back().congestion_upstream - path_cost[i].congestion_upstream);
+            // Mark that a sample from this part of the grid was found.
             grid->visit_entry(node_seg_ind,
-                    device_ctx.rr_nodes[path_cost[i].inode].xlow(),
-                    device_ctx.rr_nodes[path_cost[i].inode].ylow());
+                              device_ctx.rr_nodes[path_cost[i].inode].xlow(),
+                              device_ctx.rr_nodes[path_cost[i].inode].ylow());
         }
     }
 
@@ -593,7 +672,6 @@ class StartNode {
     size_t index_;
 };
 
-
 static void compute_connection_box_lookahead(
     const std::vector<t_segment_inf>& segment_inf,
     const std::string& /*search_locations_str*/) {
@@ -601,10 +679,11 @@ static void compute_connection_box_lookahead(
 
     auto& device_ctx = g_vpr_ctx.device();
 
+    // First find bounding boxes for all segments.
     std::vector<t_bb> segment_bb(segment_inf.size(), t_bb{INT_MAX, INT_MIN, INT_MAX, INT_MIN});
 
-    for(const auto & node : device_ctx.rr_nodes) {
-        if(node.type() != CHANX && node.type() != CHANY) {
+    for (const auto& node : device_ctx.rr_nodes) {
+        if (node.type() != CHANX && node.type() != CHANY) {
             continue;
         }
 
@@ -616,12 +695,14 @@ static void compute_connection_box_lookahead(
         segment_bb[node_seg_ind].ymin = std::min<int>(node.ylow(), segment_bb[node_seg_ind].ymin);
         segment_bb[node_seg_ind].ymax = std::max<int>(node.yhigh(), segment_bb[node_seg_ind].ymax);
     }
+
+    // Initial search grid.
     SearchGrid grid;
     grid.setup(segment_bb, device_ctx.rr_nodes.size());
-    for(size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
-        const auto & node = device_ctx.rr_nodes[inode];
+    for (size_t inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
+        const auto& node = device_ctx.rr_nodes[inode];
 
-        if(node.type() != CHANX && node.type() != CHANY) {
+        if (node.type() != CHANX && node.type() != CHANY) {
             continue;
         }
 
@@ -633,28 +714,31 @@ static void compute_connection_box_lookahead(
     routing_data_t data;
     int current_segment = -1;
     std::unique_ptr<vtr::ScopedStartFinishTimer> segment_timer;
-    for(int inode = grid.next_node(); inode != OPEN; inode = grid.next_node()) {
-        VTR_ASSERT(device_ctx.rr_nodes[inode].type() == CHANX ||device_ctx.rr_nodes[inode].type() == CHANY);
+    // Start expanding based on rr nodes given from the search grid.
+    for (int inode = grid.next_node(); inode != OPEN; inode = grid.next_node()) {
+        VTR_ASSERT(device_ctx.rr_nodes[inode].type() == CHANX || device_ctx.rr_nodes[inode].type() == CHANY);
 
         int node_cost_ind = device_ctx.rr_nodes[inode].cost_index();
         int node_seg_ind = device_ctx.rr_indexed_data[node_cost_ind].seg_index;
 
-        if(node_seg_ind != current_segment) {
+        // Add output whenever a new segment is being search for diagnostic
+        // purposes.
+        if (node_seg_ind != current_segment) {
             current_segment = node_seg_ind;
             segment_timer.reset();
             segment_timer = std::make_unique<vtr::ScopedStartFinishTimer>(
-                    vtr::string_fmt("Expanding %s (%d)", segment_inf[node_seg_ind].name.c_str(), node_seg_ind));
+                vtr::string_fmt("Expanding %s (%d)", segment_inf[node_seg_ind].name.c_str(), node_seg_ind));
         }
 
         VTR_LOG("Expanding at %d,%d\n",
                 device_ctx.rr_nodes[inode].xlow(),
-                device_ctx.rr_nodes[inode].ylow()
-                );
+                device_ctx.rr_nodes[inode].ylow());
 
+        // Expand all nodes at this location to get connection variety.
         for (e_rr_type chan_type : {CHANX, CHANY}) {
             StartNode start_node(
-                    device_ctx.rr_nodes[inode].xlow(),
-                    device_ctx.rr_nodes[inode].ylow(), chan_type, node_seg_ind);
+                device_ctx.rr_nodes[inode].xlow(),
+                device_ctx.rr_nodes[inode].ylow(), chan_type, node_seg_ind);
             for (int start_node_ind = start_node.get_next_node();
                  start_node_ind != UNDEFINED;
                  start_node_ind = start_node.get_next_node()) {
