@@ -632,6 +632,7 @@ static void compute_connection_box_lookahead(
 
     routing_data_t data;
     int current_segment = -1;
+    std::unique_ptr<vtr::ScopedStartFinishTimer> segment_timer;
     for(int inode = grid.next_node(); inode != OPEN; inode = grid.next_node()) {
         VTR_ASSERT(device_ctx.rr_nodes[inode].type() == CHANX ||device_ctx.rr_nodes[inode].type() == CHANY);
 
@@ -639,8 +640,10 @@ static void compute_connection_box_lookahead(
         int node_seg_ind = device_ctx.rr_indexed_data[node_cost_ind].seg_index;
 
         if(node_seg_ind != current_segment) {
-            VTR_LOG("Expanding %s (%d)\n", segment_inf[node_seg_ind].name.c_str(), node_seg_ind);
             current_segment = node_seg_ind;
+            segment_timer.reset();
+            segment_timer = std::make_unique<vtr::ScopedStartFinishTimer>(
+                    vtr::string_fmt("Expanding %s (%d)", segment_inf[node_seg_ind].name.c_str(), node_seg_ind));
         }
 
         VTR_LOG("Expanding at %d,%d\n",
@@ -659,6 +662,8 @@ static void compute_connection_box_lookahead(
             }
         }
     }
+
+    segment_timer.reset();
 
     g_cost_map.set_counts(segment_inf.size(), device_ctx.connection_boxes.num_connection_box_types());
     g_cost_map.set_cost_map(data, REPRESENTATIVE_ENTRY_METHOD);
