@@ -113,59 +113,64 @@ class CostMap {
         return cost_map_[from_seg_index][size_t(box_id)][dx][dy];
     }
 
-    void set_cost_map(int from_seg_index, ConnectionBoxId box_id, const routing_data_t& data, e_representative_entry_method method) {
-        VTR_ASSERT(from_seg_index >= 0 && from_seg_index < (ssize_t)offset_.size());
+    void set_cost_map(const routing_data_t& data, e_representative_entry_method method) {
+        vtr::NdMatrix<t_bb, 2> bounds({cost_map_.dim_size(0), cost_map_.dim_size(1)},
+                {0, 0, 0, 0});
 
         // Find coordinate offset for this segment.
-        int min_dx = 0;
-        int min_dy = 0;
-        int max_dx = 0;
-        int max_dy = 0;
         for (const auto& entry : data) {
-            if (std::get<0>(entry.first) != from_seg_index) {
-                continue;
-            }
-            if (std::get<1>(entry.first) != box_id) {
-                continue;
-            }
-            min_dx = std::min(std::get<2>(entry.first), min_dx);
-            min_dy = std::min(std::get<3>(entry.first), min_dy);
+            t_bb & bound = bounds[std::get<0>(entry.first)][size_t(std::get<1>(entry.first))];
 
-            max_dx = std::max(std::get<2>(entry.first), max_dx);
-            max_dy = std::max(std::get<3>(entry.first), max_dy);
+            bound.xmin = std::min(std::get<2>(entry.first), bound.xmin);
+            bound.xmax = std::max(std::get<2>(entry.first), bound.xmax);
+
+            bound.ymin = std::min(std::get<3>(entry.first), bound.ymin);
+            bound.ymax = std::max(std::get<3>(entry.first), bound.ymax);
         }
 
-        offset_[from_seg_index][size_t(box_id)].first = min_dx;
-        offset_[from_seg_index][size_t(box_id)].second = min_dy;
-        size_t dim_x = max_dx - min_dx + 1;
-        size_t dim_y = max_dy - min_dy + 1;
+        for(size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
+            for(size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
+                const t_bb &bound = bounds[from_seg_index][box_id];
+                offset_[from_seg_index][box_id].first = bound.xmin;
+                offset_[from_seg_index][box_id].second = bound.ymin;
+                size_t dim_x = bound.xmax - bound.xmin + 1;
+                size_t dim_y = bound.ymax - bound.ymin + 1;
 
-        cost_map_[from_seg_index][size_t(box_id)] = vtr::NdMatrix<Cost_Entry, 2>(
-            {dim_x, dim_y});
+                cost_map_[from_seg_index][size_t(box_id)] = vtr::NdMatrix<Cost_Entry, 2>(
+                    {dim_x, dim_y});
+            }
+        }
 
         /* set the lookahead cost map entries with a representative cost
          * entry from routing_cost_map */
-        for (unsigned ix = 0; ix < dim_x; ix++) {
-            for (unsigned iy = 0; iy < dim_y; iy++) {
-                auto itr = data.find(std::make_tuple(from_seg_index, box_id, ix + min_dx, iy + min_dy));
-                if(itr != data.end()) {
-                    cost_map_[from_seg_index][size_t(box_id)][ix][iy] = itr->second.get_representative_cost_entry(method);
-                }
-            }
+        for (const auto& entry : data) {
+            auto from_seg_index = std::get<0>(entry.first);
+            auto box_id = std::get<1>(entry.first);
+            const auto & offset = offset_[from_seg_index][size_t(box_id)];
+            unsigned ix = std::get<2>(entry.first) - offset.first;
+            unsigned iy = std::get<3>(entry.first) - offset.second;
+            cost_map_[from_seg_index][size_t(box_id)][ix][iy] = entry.second.get_representative_cost_entry(method);
         }
 
-        /* find missing cost entries and fill them in by copying a nearby cost entry */
-        for (unsigned ix = 0; ix < dim_x; ix++) {
-            for (unsigned iy = 0; iy < dim_y; iy++) {
-                Cost_Entry cost_entry = cost_map_[from_seg_index][size_t(box_id)][ix][iy];
 
-                if (!cost_entry.valid()) {
-                    Cost_Entry copied_entry = get_nearby_cost_entry(
-                        from_seg_index,
-                        box_id,
-                        offset_[from_seg_index][size_t(box_id)].first + ix,
-                        offset_[from_seg_index][size_t(box_id)].second + iy);
-                    cost_map_[from_seg_index][size_t(box_id)][ix][iy] = copied_entry;
+        /* find missing cost entries and fill them in by copying a nearby cost entry */
+        for(size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
+            for(size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
+                const auto & offset = offset_[from_seg_index][size_t(box_id)];
+                auto & matrix = cost_map_[from_seg_index][size_t(box_id)];
+                for (unsigned ix = 0; ix < matrix.dim_size(0); ix++) {
+                    for (unsigned iy = 0; iy < matrix.dim_size(1); iy++) {
+                        Cost_Entry cost_entry = matrix[ix][iy];
+
+                        if (!cost_entry.valid()) {
+                            Cost_Entry copied_entry = get_nearby_cost_entry(
+                                from_seg_index,
+                                ConnectionBoxId(box_id),
+                                offset.first + ix,
+                                offset.second + iy);
+                            matrix[ix][iy] = copied_entry;
+                        }
+                    }
                 }
             }
         }
@@ -402,6 +407,7 @@ struct CostCongestion {
     float congestion_upstream;
 };
 
+
 void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
     grid->expanded(src_rr_node);
     const auto& device_ctx = g_vpr_ctx.device();
@@ -434,7 +440,8 @@ void expand_from_node(int src_rr_node, SearchGrid *grid, routing_data_t *data) {
 
     VTR_ASSERT(shortest_paths.size() == device_ctx.rr_nodes.size());
     std::vector<CostCongestion> path_cost;
-    for (int sink_rr_node = 0; sink_rr_node < (int)device_ctx.rr_nodes.size(); ++sink_rr_node) {
+    int num_nodes = device_ctx.rr_nodes.size();
+    for (int sink_rr_node = 0; sink_rr_node < num_nodes; ++sink_rr_node) {
         if (sink_rr_node == src_rr_node) {
             continue;
         }
@@ -654,14 +661,7 @@ static void compute_connection_box_lookahead(
     }
 
     g_cost_map.set_counts(segment_inf.size(), device_ctx.connection_boxes.num_connection_box_types());
-    for(size_t from_seg_index = 0; from_seg_index < segment_inf.size(); ++from_seg_index) {
-        for(size_t connection_box = 0; connection_box < device_ctx.connection_boxes.num_connection_box_types(); ++connection_box) {
-            g_cost_map.set_cost_map(from_seg_index,
-                    ConnectionBoxId(connection_box), data,
-                    REPRESENTATIVE_ENTRY_METHOD);
-
-        }
-    }
+    g_cost_map.set_cost_map(data, REPRESENTATIVE_ENTRY_METHOD);
 
     return;
 }
