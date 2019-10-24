@@ -31,6 +31,10 @@
  * See e_representative_entry_method */
 #define REPRESENTATIVE_ENTRY_METHOD SMALLEST
 
+// Enabling TRUNCATED_SEARCH has a dramatic reduction in runtime (15000 sec to
+// 600 sec for full 50T), but does result in a lower quality result.
+#define TRUNCATED_SEARCH
+
 #define REF_X 25
 #define REF_Y 23
 
@@ -524,8 +528,10 @@ void expand_from_node(int src_rr_node, SearchGrid* grid, routing_data_t* data) {
 
         VTR_ASSERT(shortest_paths[sink_rr_node].index == sink_rr_node);
 
+#ifdef TRUNCATED_SEARCH
         // Mark that this rr node has been expanded.
         grid->expanded(sink_rr_node);
+#endif
 
         if (device_ctx.rr_nodes[sink_rr_node].type() != IPIN) {
             continue;
@@ -606,10 +612,13 @@ void expand_from_node(int src_rr_node, SearchGrid* grid, routing_data_t* data) {
                 REPRESENTATIVE_ENTRY_METHOD,
                 path_cost.back().delay - path_cost[i].delay,
                 path_cost.back().congestion_upstream - path_cost[i].congestion_upstream);
+
+#ifdef TRUNCATED_SEARCH
             // Mark that a sample from this part of the grid was found.
             grid->visit_entry(node_seg_ind,
                               device_ctx.rr_nodes[path_cost[i].inode].xlow(),
                               device_ctx.rr_nodes[path_cost[i].inode].ylow());
+#endif
         }
     }
 
@@ -733,6 +742,9 @@ static void compute_connection_box_lookahead(
         VTR_LOG("Expanding at %d,%d\n",
                 device_ctx.rr_nodes[inode].xlow(),
                 device_ctx.rr_nodes[inode].ylow());
+        grid.visit_entry(node_seg_ind,
+                         device_ctx.rr_nodes[inode].xlow(),
+                         device_ctx.rr_nodes[inode].ylow());
 
         // Expand all nodes at this location to get connection variety.
         for (e_rr_type chan_type : {CHANX, CHANY}) {
