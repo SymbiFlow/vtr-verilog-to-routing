@@ -140,8 +140,7 @@ class CostMap {
         for (size_t from_seg_index = 0; from_seg_index < cost_map_.dim_size(0); ++from_seg_index) {
             for (size_t box_id = 0; box_id < cost_map_.dim_size(1); ++box_id) {
                 const t_bb& bound = bounds[from_seg_index][box_id];
-                offset_[from_seg_index][box_id].first = bound.xmin;
-                offset_[from_seg_index][box_id].second = bound.ymin;
+                offset_[from_seg_index][box_id] = std::make_pair(bound.xmin, bound.ymin);
                 size_t dim_x = bound.xmax - bound.xmin + 1;
                 size_t dim_y = bound.ymax - bound.ymin + 1;
 
