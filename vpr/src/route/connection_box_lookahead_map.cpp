@@ -741,9 +741,6 @@ static void compute_connection_box_lookahead(
         VTR_LOG("Expanding at %d,%d\n",
                 device_ctx.rr_nodes[inode].xlow(),
                 device_ctx.rr_nodes[inode].ylow());
-        grid.visit_entry(node_seg_ind,
-                         device_ctx.rr_nodes[inode].xlow(),
-                         device_ctx.rr_nodes[inode].ylow());
 
         // Expand all nodes at this location to get connection variety.
         for (e_rr_type chan_type : {CHANX, CHANY}) {
