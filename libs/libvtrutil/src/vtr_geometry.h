@@ -118,8 +118,10 @@ class Rect {
     friend bool operator== <>(const Rect<T>& lhs, const Rect<T>& rhs);
     friend bool operator!= <>(const Rect<T>& lhs, const Rect<T>& rhs);
 
-    template<class U> friend Rect<U> operator|(const Rect<U>& lhs, const Rect<U>& rhs);
-    template<class U> friend Rect<U>& operator|=(Rect<U>& lhs, const Rect<U>& rhs);
+    //Return the smallest rectangle containing both given rectangles
+    //Note that this isn't a union and the resulting rectangle may include points not in either given rectangle
+    template<class U>
+    friend Rect<U> bounding_box(const Rect<U>& lhs, const Rect<U>& rhs);
 
   public: //Mutators
     //Co-ordinates
