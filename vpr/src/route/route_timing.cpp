@@ -1024,6 +1024,8 @@ bool timing_driven_route_net(Router& router,
             conn_delay_budget.short_path_criticality = budgeting_inf.get_crit_short_path(net_id, target_pin);
         }
 
+        profiling::conn_start();
+
         // build a branch in the route tree to the target
         if (!timing_driven_route_sink(router,
                                       net_id,
@@ -1037,10 +1039,15 @@ bool timing_driven_route_net(Router& router,
                                       router_stats))
             return false;
 
+        profiling::conn_finish(route_ctx.net_rr_terminals[net_id][0],
+                               sink_rr,
+                               pin_criticality[target_pin]);
+
         ++router_stats.connections_routed;
     } // finished all sinks
 
     ++router_stats.nets_routed;
+    profiling::net_finish();
 
     /* For later timing analysis. */
 
@@ -2090,6 +2097,8 @@ void Router::timing_driven_add_to_heap(const t_conn_cost_params cost_params,
         //
         //Pre-heap prune to keep the heap small, by not putting paths which are known to be
         //sub-optimal (at this point in time) into the heap.
+        VTR_LOGV_DEBUG(f_router_debug, "  Adding node %8d to heap from init route tree with cost %g (%s)\n",
+                       next->index, new_next_total_cost, describe_rr_node(next->index).c_str());
         t_heap* next_ptr = alloc_heap_data();
 
         //Record how we reached this node
