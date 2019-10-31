@@ -12,6 +12,8 @@
 #include "router_lookahead.h"
 #include "spatial_route_tree_lookup.h"
 
+extern bool f_router_debug;
+
 int get_max_pins_per_net();
 
 class Router {
