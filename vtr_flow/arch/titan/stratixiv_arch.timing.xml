@@ -4412,11 +4412,7 @@
   <tiles>
     <tile capacity="2" name="io">
       <equivalent_sites>
-        <site pb_type="io">
-          <direct from="io.core_in" to="io.core_in"/>
-          <direct from="io.core_out" to="io.core_out"/>
-          <direct from="io.clk" to="io.clk"/>
-        </site>
+        <site pb_type="io"/>
       </equivalent_sites>
       <input name="core_in" num_pins="50" equivalent="none"/>
       <output name="core_out" num_pins="40" equivalent="none"/>
@@ -4439,12 +4435,7 @@
     </tile>
     <tile height="1" name="PLL">
       <equivalent_sites>
-        <site pb_type="PLL">
-          <direct from="PLL.in_signal" to="PLL.in_signal"/>
-          <direct from="PLL.in_clock" to="PLL.in_clock"/>
-          <direct from="PLL.out_clock" to="PLL.out_clock"/>
-          <direct from="PLL.out_signal" to="PLL.out_signal"/>
-        </site>
+        <site pb_type="PLL"/>
       </equivalent_sites>
       <input name="in_signal" num_pins="14"/>
       <clock name="in_clock" num_pins="2"/>
@@ -4460,16 +4451,7 @@
     </tile>
     <tile name="LAB">
       <equivalent_sites>
-        <site pb_type="LAB">
-          <direct from="LAB.data_in" to="LAB.data_in"/>
-          <direct from="LAB.control_in" to="LAB.control_in"/>
-          <direct from="LAB.cin" to="LAB.cin"/>
-          <direct from="LAB.sharein" to="LAB.sharein"/>
-          <direct from="LAB.data_out" to="LAB.data_out"/>
-          <direct from="LAB.cout" to="LAB.cout"/>
-          <direct from="LAB.shareout" to="LAB.shareout"/>
-          <direct from="LAB.clk" to="LAB.clk"/>
-        </site>
+        <site pb_type="LAB"/>
       </equivalent_sites>
       <input name="data_in" num_pins="80" equivalent="full"/>
       <input name="control_in" num_pins="7" equivalent="full"/>
@@ -4523,18 +4505,7 @@
     </tile>
     <tile name="DSP" height="4">
       <equivalent_sites>
-        <site pb_type="DSP">
-          <direct from="DSP.data_in" to="DSP.data_in"/>
-          <direct from="DSP.chain_in" to="DSP.chain_in"/>
-          <direct from="DSP.control_in" to="DSP.control_in"/>
-          <direct from="DSP.scan_a_in" to="DSP.scan_a_in"/>
-          <direct from="DSP.clk" to="DSP.clk"/>
-          <direct from="DSP.data_out_top" to="DSP.data_out_top"/>
-          <direct from="DSP.data_out_bot" to="DSP.data_out_bot"/>
-          <direct from="DSP.chain_out" to="DSP.chain_out"/>
-          <direct from="DSP.scan_a_out" to="DSP.scan_a_out"/>
-          <direct from="DSP.signal_out" to="DSP.signal_out"/>
-        </site>
+        <site pb_type="DSP"/>
       </equivalent_sites>
       <input name="data_in" num_pins="288"/>
       <input name="chain_in" num_pins="44"/>
@@ -4625,12 +4596,7 @@
     </tile>
     <tile height="1" name="M9K">
       <equivalent_sites>
-        <site pb_type="M9K">
-          <direct from="M9K.data_addr_control_in" to="M9K.data_addr_control_in"/>
-          <direct from="M9K.data_out" to="M9K.data_out"/>
-          <direct from="M9K.control_out" to="M9K.control_out"/>
-          <direct from="M9K.clk_in" to="M9K.clk_in"/>
-        </site>
+        <site pb_type="M9K"/>
       </equivalent_sites>
       <input name="data_addr_control_in" num_pins="104"/>
       <output name="data_out" num_pins="36"/>
@@ -4668,12 +4634,7 @@
     </tile>
     <tile height="8" name="M144K">
       <equivalent_sites>
-        <site pb_type="M144K">
-          <direct from="M144K.data_addr_control_in" to="M144K.data_addr_control_in"/>
-          <direct from="M144K.data_out" to="M144K.data_out"/>
-          <direct from="M144K.control_out" to="M144K.control_out"/>
-          <direct from="M144K.clk_in" to="M144K.clk_in"/>
-        </site>
+        <site pb_type="M144K"/>
       </equivalent_sites>
       <input name="data_addr_control_in" num_pins="416"/>
       <output name="data_out" num_pins="120"/>
