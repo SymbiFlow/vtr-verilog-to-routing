@@ -47,6 +47,7 @@
 #include "rr_graph_reader.h"
 
 /*********************** Subroutines local to this module *******************/
+void process_connection_boxes(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
 void process_switches(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
 void verify_segments(pugi::xml_node parent, const pugiutil::loc_data& loc_data, const std::vector<t_segment_inf>& segment_inf);
 void verify_blocks(pugi::xml_node parent, const pugiutil::loc_data& loc_data);
@@ -218,6 +219,8 @@ void load_rr_file(const t_graph_type graph_type,
                                        max_chan_width, *wire_to_rr_ipin_switch, base_cost_type);
 
         process_seg_id(next_component, loc_data);
+
+        device_ctx.connection_boxes.create_sink_back_ref();
 
         device_ctx.chan_width = nodes_per_chan;
         device_ctx.read_rr_graph_filename = std::string(read_rr_graph_name);
