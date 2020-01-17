@@ -43,7 +43,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <unordered_map>
+#include "absl/container/flat_hash_map.h"
 #include <stdexcept>
 #include <climits>
 #include <algorithm>
@@ -365,7 +365,7 @@ class string_internment {
     // approach taken.
     vtr::vector<StringId, std::string> strings_;
     std::string temporary_;
-    std::unordered_map<std::string, StringId> string_to_id_;
+    absl::flat_hash_map<std::string, StringId> string_to_id_;
 };
 
 inline void interned_string::get(const string_internment* internment, std::string* output) const {

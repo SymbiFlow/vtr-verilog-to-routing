@@ -102,7 +102,10 @@ add_dependencies(libvtrutil version)
 
 #Specify link-time dependancies
 target_link_libraries(libvtrutil
-                        liblog)
+                        PUBLIC
+                        liblog
+                        absl::flat_hash_map
+                        )
 
 install(TARGETS libvtrutil DESTINATION bin)
 

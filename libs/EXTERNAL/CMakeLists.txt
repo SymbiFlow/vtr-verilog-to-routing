@@ -18,6 +18,7 @@ if(${VTR_ENABLE_CAPNPROTO})
     # Override default policy for capnproto (CMake policy version 3.1)
     # Enable new IPO variables
     set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+    add_subdirectory(abseil-cpp)
 
     # Enable option overrides via variables
     set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
