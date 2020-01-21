@@ -1694,8 +1694,6 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
         /* Alloc the lookup table */
         auto& indices = *rr_node_indices_;
 
-        indices.resize(NUM_RR_TYPES);
-
         typedef struct max_ptc {
             short chanx_max_ptc = 0;
             short chany_max_ptc = 0;
@@ -1712,21 +1710,9 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
         /* Alloc the lookup table */
         for (t_rr_type rr_type : RR_TYPES) {
             if (rr_type == CHANX) {
-                indices[rr_type].resize(grid_.height());
-                for (size_t y = 0; y < grid_.height(); ++y) {
-                    indices[rr_type][y].resize(grid_.width());
-                    for (size_t x = 0; x < grid_.width(); ++x) {
-                        indices[rr_type][y][x].resize(NUM_SIDES);
-                    }
-                }
+                indices[rr_type].resize({grid_.height(), grid_.width(), NUM_SIDES});
             } else {
-                indices[rr_type].resize(grid_.width());
-                for (size_t x = 0; x < grid_.width(); ++x) {
-                    indices[rr_type][x].resize(grid_.height());
-                    for (size_t y = 0; y < grid_.height(); ++y) {
-                        indices[rr_type][x][y].resize(NUM_SIDES);
-                    }
-                }
+                indices[rr_type].resize({grid_.width(), grid_.height(), NUM_SIDES});
             }
         }
 
