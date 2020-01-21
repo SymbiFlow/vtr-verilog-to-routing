@@ -2137,6 +2137,7 @@ void Router::evaluate_timing_driven_node_costs(t_heap* to,
     float switch_R = rr_switch_inf_[iswitch].R;
     float switch_Tdel = rr_switch_inf_[iswitch].Tdel;
     float switch_Cinternal = rr_switch_inf_[iswitch].Cinternal;
+    float switch_penalty_cost = device_ctx.rr_switch_inf[iswitch].penalty_cost;
 
     //To node info
     auto rc_index = rr_nodes_->node_rc_index(RRNodeId(to_node));
@@ -2192,8 +2193,9 @@ void Router::evaluate_timing_driven_node_costs(t_heap* to,
     }
 
     //Update the backward cost (upstream already included)
-    to->backward_path_cost += (1. - cost_params.criticality) * cong_cost; //Congestion cost
-    to->backward_path_cost += cost_params.criticality * Tdel;             //Delay cost
+    to->backward_path_cost += (1. - cost_params.criticality) * cong_cost;       //Congestion cost
+    to->backward_path_cost += cost_params.criticality * Tdel;                   //Delay cost
+    to->backward_path_cost += cost_params.criticality * switch_penalty_cost;    //Penalty cost
 
     if (cost_params.bend_cost != 0.) {
         t_rr_type from_type = rr_nodes_->node_type(RRNodeId(from_node));
