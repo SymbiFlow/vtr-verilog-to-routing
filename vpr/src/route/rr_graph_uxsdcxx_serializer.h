@@ -83,10 +83,16 @@ class MetadataBind {
     void bind() {
         if (is_node_) {
             vpr::add_rr_node_metadata(inode_,
-                                      std::move(name_), std::move(value_));
+                                      vtr::string_view(name_.data(), name_.size()),
+                                      vtr::string_view(value_.data(), value_.size()));
+            name_.clear();
+            value_.clear();
         } else if (is_edge_) {
             vpr::add_rr_edge_metadata(inode_, sink_node_, switch_id_,
-                                      std::move(name_), std::move(value_));
+                                      vtr::string_view(name_.data(), name_.size()),
+                                      vtr::string_view(value_.data(), value_.size()));
+            name_.clear();
+            value_.clear();
         } else if (ignore_) {
             // Do nothing.
         } else {
@@ -285,9 +291,9 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
         const std::vector<t_segment_inf>& segment_inf,
         const std::vector<t_physical_tile_type>& physical_tile_types,
         const DeviceGrid& grid,
-        const std::unordered_map<int, t_metadata_dict>& rr_node_metadata,
-        const std::unordered_map<std::tuple<int, int, short>,
-                                 t_metadata_dict>& rr_edge_metadata)
+        const MetadataStorage<int>& rr_node_metadata,
+        const MetadataStorage<std::tuple<int, int, short>>& rr_edge_metadata,
+        const vtr::string_internment& strings)
         : wire_to_rr_ipin_switch_(wire_to_rr_ipin_switch)
         , chan_width_(chan_width)
         , rr_nodes_(rr_nodes)
@@ -308,6 +314,7 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
         , grid_(grid)
         , rr_node_metadata_(rr_node_metadata)
         , rr_edge_metadata_(rr_edge_metadata)
+        , strings_(strings)
         , report_error_(nullptr) {}
 
     void start_load(const std::function<void(const char*)>* report_error_in) final {
@@ -494,8 +501,14 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
     inline void set_meta_name(const char* name, MetadataBind& bind) final {
         bind.set_name(name);
     }
+
+  private:
+    std::string temp_;
+
+  public:
     inline const char* get_meta_name(const t_metadata_dict::value_type*& meta_value) final {
-        return meta_value->first.c_str();
+        meta_value->first.get(&strings_, &temp_);
+        return temp_.c_str();
     }
 
     inline void set_meta_value(const char* value, MetadataBind& bind) final {
@@ -503,7 +516,8 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
     }
     inline const char* get_meta_value(const t_metadata_dict::value_type*& meta_value) final {
         VTR_ASSERT(meta_value->second.size() == 1);
-        return meta_value->second[0].as_string().c_str();
+        meta_value->second[0].as_string().get(&strings_, &temp_);
+        return temp_.c_str();
     }
 
     /** Generated for complex type "metadata":
@@ -2064,8 +2078,8 @@ class RrGraphSerializer final : public uxsd::RrGraphBase<RrGraphContextTypes> {
     const std::vector<t_segment_inf>& segment_inf_;
     const std::vector<t_physical_tile_type>& physical_tile_types_;
     const DeviceGrid& grid_;
-    const std::unordered_map<int, t_metadata_dict>& rr_node_metadata_;
-    const std::unordered_map<std::tuple<int, int, short>,
-                             t_metadata_dict>& rr_edge_metadata_;
+    const MetadataStorage<int>& rr_node_metadata_;
+    const MetadataStorage<std::tuple<int, int, short>>& rr_edge_metadata_;
+    const vtr::string_internment& strings_;
     const std::function<void(const char*)>* report_error_;
 };
