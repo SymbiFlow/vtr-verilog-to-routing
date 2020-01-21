@@ -21,6 +21,7 @@ set_target_properties(libarchfpga PROPERTIES PREFIX "") #Avoid extra 'lib' prefi
 target_link_libraries(libarchfpga
                         libvtrutil
                         libpugixml
+                        absl::inlined_vector
                         libpugiutil)
 
 #Create the test executable

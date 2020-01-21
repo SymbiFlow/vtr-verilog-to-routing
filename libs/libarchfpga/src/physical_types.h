@@ -40,6 +40,7 @@
 #include "vtr_hash.h"
 #include "vtr_bimap.h"
 #include "vtr_string_interning.h"
+#include "absl/container/inlined_vector.h"
 
 #include "logic_types.h"
 #include "clock_types.h"
@@ -105,9 +106,10 @@ class t_metadata_value {
 
 // Metadata storage dictionary.
 struct t_metadata_dict : vtr::flat_map<
-                             vtr::interned_string,
-                             std::vector<t_metadata_value>,
-                             vtr::interned_string_less> {
+                             /*Key=*/vtr::interned_string,
+                             /*Value=*/absl::InlinedVector<t_metadata_value, 1>,
+                             /*Compare=*/vtr::interned_string_less,
+                             /*Storage=*/absl::InlinedVector<std::pair<vtr::interned_string, absl::InlinedVector<t_metadata_value, 1>>, 1>> {
     // Is this key present in the map?
     inline bool has(vtr::interned_string key) const {
         return this->count(key) >= 1;
@@ -116,7 +118,7 @@ struct t_metadata_dict : vtr::flat_map<
     // Get all metadata values matching key.
     //
     // Returns nullptr if key is not found.
-    inline const std::vector<t_metadata_value>* get(vtr::interned_string key) const {
+    inline const absl::InlinedVector<t_metadata_value, 1>* get(vtr::interned_string key) const {
         auto iter = this->find(key);
         if (iter != this->end()) {
             return &iter->second;
@@ -143,8 +145,7 @@ struct t_metadata_dict : vtr::flat_map<
     void add(vtr::interned_string key, vtr::interned_string value) {
         // Get the iterator to the key, which may already have elements if
         // add was called with this key in the past.
-        auto iter_inserted = this->emplace(std::make_pair(key, std::vector<t_metadata_value>()));
-        iter_inserted.first->second.push_back(t_metadata_value(value));
+        (*this)[key].push_back(t_metadata_value(value));
     }
 };
 
