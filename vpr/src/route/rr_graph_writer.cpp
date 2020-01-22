@@ -47,7 +47,7 @@ void write_rr_graph(const char* file_name, const std::vector<t_segment_inf>& seg
         device_ctx.grid,
         &device_ctx.rr_node_metadata,
         &device_ctx.rr_edge_metadata,
-        device_ctx.arch->strings);
+        &device_ctx.arch->strings);
 
     std::fstream fp;
     fp.open(file_name, std::fstream::out | std::fstream::trunc);
