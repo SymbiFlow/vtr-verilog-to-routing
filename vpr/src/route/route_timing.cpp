@@ -1211,12 +1211,14 @@ static bool timing_driven_route_sink(ClusterNetId net_id,
     bool net_is_global = cluster_ctx.clb_nlist.net_is_global(net_id);
     bool high_fanout = is_high_fanout(cluster_ctx.clb_nlist.net_sinks(net_id).size(), high_fanout_threshold);
     constexpr float HIGH_FANOUT_CRITICALITY_THRESHOLD = 0.9;
+    constexpr size_t HIGH_FANOUT_CONNECTIONS_ROUTED_THRESHOLD = 5;
     bool sink_critical = (cost_params.criticality > HIGH_FANOUT_CRITICALITY_THRESHOLD);
+    bool many_connections_routed = router_stats.connections_routed > HIGH_FANOUT_CONNECTIONS_ROUTED_THRESHOLD;
 
     //We normally route high fanout nets by only adding spatially close-by routing to the heap (reduces run-time).
     //However, if the current sink is 'critical' from a timing perspective, we put the entire route tree back onto
     //the heap to ensure it has more flexibility to find the best path.
-    if (high_fanout && !sink_critical && !net_is_global) {
+    if (high_fanout && !sink_critical && !net_is_global && many_connections_routed) {
         cheapest = timing_driven_route_connection_from_route_tree_high_fanout(rt_root,
                                                                               sink_node,
                                                                               cost_params,
