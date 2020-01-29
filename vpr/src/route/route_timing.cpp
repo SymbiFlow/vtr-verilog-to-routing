@@ -415,6 +415,11 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
      * Subsequent iterations use the net delays from the previous iteration.
      */
     RouterStats router_stats;
+    RouterStats router_iteration_stats;
+
+    //router_iteration_stats.no_progress will be set if .connections_routed doesn't decrease.
+    size_t connections_routed_last_iteration = std::numeric_limits<size_t>::max();
+
     print_route_status_header();
     timing_driven_route_structs route_structs;
     float prev_iter_cumm_time = 0;
@@ -422,7 +427,6 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
     int num_net_bounding_boxes_updated = 0;
     int itry_since_last_convergence = -1;
     for (itry = 1; itry <= router_opts.max_router_iterations; ++itry) {
-        RouterStats router_iteration_stats;
         std::vector<ClusterNetId> rerouted_nets;
 
         /* Reset "is_routed" and "is_fixed" flags to indicate nets not pre-routed (yet) */
@@ -735,6 +739,12 @@ bool try_timing_driven_route(const t_router_opts& router_opts,
         if (router_opts.congestion_analysis) profiling::congestion_analysis();
         if (router_opts.fanout_analysis) profiling::time_on_fanout_analysis();
         // profiling::time_on_criticality_analysis();
+
+        // clear router_iteration_stats and set .no_progress for the next iteration
+        size_t connections_routed_this_iteration = router_iteration_stats.connections_routed;
+        router_iteration_stats = {};
+        router_iteration_stats.no_progress = !(connections_routed_this_iteration < connections_routed_last_iteration);
+        connections_routed_last_iteration = connections_routed_this_iteration;
     }
 
     if (routing_is_successful) {
@@ -1211,14 +1221,12 @@ static bool timing_driven_route_sink(ClusterNetId net_id,
     bool net_is_global = cluster_ctx.clb_nlist.net_is_global(net_id);
     bool high_fanout = is_high_fanout(cluster_ctx.clb_nlist.net_sinks(net_id).size(), high_fanout_threshold);
     constexpr float HIGH_FANOUT_CRITICALITY_THRESHOLD = 0.9;
-    constexpr size_t HIGH_FANOUT_CONNECTIONS_ROUTED_THRESHOLD = 5;
     bool sink_critical = (cost_params.criticality > HIGH_FANOUT_CRITICALITY_THRESHOLD);
-    bool many_connections_routed = router_stats.connections_routed > HIGH_FANOUT_CONNECTIONS_ROUTED_THRESHOLD;
 
     //We normally route high fanout nets by only adding spatially close-by routing to the heap (reduces run-time).
     //However, if the current sink is 'critical' from a timing perspective, we put the entire route tree back onto
     //the heap to ensure it has more flexibility to find the best path.
-    if (high_fanout && !sink_critical && !net_is_global && many_connections_routed) {
+    if (high_fanout && !sink_critical && !net_is_global && !router_stats.no_progress) {
         cheapest = timing_driven_route_connection_from_route_tree_high_fanout(rt_root,
                                                                               sink_node,
                                                                               cost_params,
