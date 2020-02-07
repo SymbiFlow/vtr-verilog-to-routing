@@ -1933,8 +1933,8 @@ static void add_route_tree_node_to_heap(t_rt_node* rt_node,
 
     VTR_LOGV_DEBUG(f_router_debug, "  Adding node %8d to heap from init route tree with cost %g (%s)\n", inode, tot_cost, describe_rr_node(inode).c_str());
 
-    heap_::add_node_to_heap(inode, tot_cost, NO_PREVIOUS, NO_PREVIOUS,
-                            backward_path_cost, R_upstream);
+    node_to_heap(inode, tot_cost, NO_PREVIOUS, NO_PREVIOUS,
+                 backward_path_cost, R_upstream);
 
     ++router_stats.heap_pushes;
 }

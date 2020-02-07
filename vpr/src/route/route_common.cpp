@@ -754,28 +754,7 @@ void mark_remaining_ends(const std::vector<int>& remaining_sinks) {
 }
 
 void node_to_heap(int inode, float total_cost, int prev_node, int prev_edge, float backward_path_cost, float R_upstream) {
-    /* Puts an rr_node on the heap, if the new cost given is lower than the     *
-     * current path_cost to this channel segment.  The index of its predecessor *
-     * is stored to make traceback easy.  The index of the edge used to get     *
-     * from its predecessor to it is also stored to make timing analysis, etc.  *
-     * easy.  The backward_path_cost and R_upstream values are used only by the *
-     * timing-driven router -- the breadth-first router ignores them.           */
-
-    auto& route_ctx = g_vpr_ctx.routing();
-
-    if (total_cost >= route_ctx.rr_node_route_inf[inode].path_cost)
-        return;
-
-    t_heap* hptr = alloc_heap_data();
-    hptr->index = inode;
-    hptr->cost = total_cost;
-    VTR_ASSERT_SAFE(hptr->u.prev.node == NO_PREVIOUS);
-    VTR_ASSERT_SAFE(hptr->u.prev.edge == NO_PREVIOUS);
-    hptr->u.prev.node = prev_node;
-    hptr->u.prev.edge = prev_edge;
-    hptr->backward_path_cost = backward_path_cost;
-    hptr->R_upstream = R_upstream;
-    add_to_heap(hptr);
+    heap_::push_back_node(inode, total_cost, prev_node, prev_edge, backward_path_cost, R_upstream);
 }
 
 void drop_traceback_tail(ClusterNetId net_id) {
