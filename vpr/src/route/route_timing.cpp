@@ -1024,6 +1024,8 @@ bool timing_driven_route_net(Router& router,
             conn_delay_budget.short_path_criticality = budgeting_inf.get_crit_short_path(net_id, target_pin);
         }
 
+        profiling::conn_start();
+
         // build a branch in the route tree to the target
         if (!timing_driven_route_sink(router,
                                       net_id,
@@ -1037,10 +1039,15 @@ bool timing_driven_route_net(Router& router,
                                       router_stats))
             return false;
 
+        profiling::conn_finish(route_ctx.net_rr_terminals[net_id][0],
+                               sink_rr,
+                               pin_criticality[target_pin]);
+
         ++router_stats.connections_routed;
     } // finished all sinks
 
     ++router_stats.nets_routed;
+    profiling::net_finish();
 
     /* For later timing analysis. */
 
@@ -1933,8 +1940,8 @@ static void add_route_tree_node_to_heap(t_rt_node* rt_node,
 
     VTR_LOGV_DEBUG(f_router_debug, "  Adding node %8d to heap from init route tree with cost %g (%s)\n", inode, tot_cost, describe_rr_node(inode).c_str());
 
-    heap_::add_node_to_heap(inode, tot_cost, NO_PREVIOUS, NO_PREVIOUS,
-                            backward_path_cost, R_upstream);
+    node_to_heap(inode, tot_cost, NO_PREVIOUS, NO_PREVIOUS,
+                 backward_path_cost, R_upstream);
 
     ++router_stats.heap_pushes;
 }
@@ -2090,6 +2097,8 @@ void Router::timing_driven_add_to_heap(const t_conn_cost_params cost_params,
         //
         //Pre-heap prune to keep the heap small, by not putting paths which are known to be
         //sub-optimal (at this point in time) into the heap.
+        VTR_LOGV_DEBUG(f_router_debug, "  Adding node %8d to heap from init route tree with cost %g (%s)\n",
+                       next.index, new_total_cost, describe_rr_node(next.index).c_str());
         t_heap* next_ptr = alloc_heap_data();
 
         //Record how we reached this node
@@ -2128,6 +2137,7 @@ void Router::evaluate_timing_driven_node_costs(t_heap* to,
     float switch_R = rr_switch_inf_[iswitch].R;
     float switch_Tdel = rr_switch_inf_[iswitch].Tdel;
     float switch_Cinternal = rr_switch_inf_[iswitch].Cinternal;
+    float switch_penalty_cost = rr_switch_inf_[iswitch].penalty_cost;
 
     //To node info
     auto rc_index = rr_nodes_->node_rc_index(RRNodeId(to_node));
@@ -2185,6 +2195,7 @@ void Router::evaluate_timing_driven_node_costs(t_heap* to,
     //Update the backward cost (upstream already included)
     to->backward_path_cost += (1. - cost_params.criticality) * cong_cost; //Congestion cost
     to->backward_path_cost += cost_params.criticality * Tdel;             //Delay cost
+    to->backward_path_cost += switch_penalty_cost;                        //Penalty cost
 
     if (cost_params.bend_cost != 0.) {
         t_rr_type from_type = rr_nodes_->node_type(RRNodeId(from_node));
