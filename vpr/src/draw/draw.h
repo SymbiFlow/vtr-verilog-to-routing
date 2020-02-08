@@ -32,7 +32,7 @@ void free_draw_structs();
 #ifndef NO_GRAPHICS
 
 void draw_get_rr_pin_coords(int inode, float* xcen, float* ycen);
-void draw_get_rr_pin_coords(const t_rr_node* node, float* xcen, float* ycen);
+void draw_get_rr_pin_coords(const t_rr_node node, float* xcen, float* ycen);
 
 void draw_triangle_along_line(ezgl::renderer* g, ezgl::point2d start, ezgl::point2d end, float relative_position = 1., float arrow_size = DEFAULT_ARROW_SIZE);
 void draw_triangle_along_line(ezgl::renderer* g, ezgl::point2d loc, ezgl::point2d start, ezgl::point2d end, float arrow_size = DEFAULT_ARROW_SIZE);
@@ -74,7 +74,7 @@ void toggle_routing_bounding_box(GtkWidget* /*widget*/, gint /*response_id*/, gp
 void toggle_routing_util(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
 void toggle_crit_path(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
 void toggle_block_pin_util(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
-void toggle_router_rr_costs(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
+void toggle_router_expansion_costs(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
 void toggle_placement_macros(GtkWidget* /*widget*/, gint /*response_id*/, gpointer /*data*/);
 
 ezgl::color get_block_type_color(t_physical_tile_type_ptr type);

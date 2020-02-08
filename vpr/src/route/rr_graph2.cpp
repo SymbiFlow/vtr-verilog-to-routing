@@ -68,7 +68,8 @@ static int get_unidir_track_to_chan_seg(const int from_track,
                                         const t_chan_seg_details* seg_details,
                                         bool* Fs_clipped,
                                         const int from_rr_node,
-                                        t_rr_edge_info_set& rr_edges_to_create);
+                                        t_rr_edge_info_set& rr_edges_to_create,
+                                        t_opin_connections_scratchpad* scratchpad);
 
 static int get_track_to_chan_seg(const int from_track,
                                  const int to_chan,
@@ -88,7 +89,7 @@ static int vpr_to_phy_track(const int itrack,
                             const t_chan_seg_details* seg_details,
                             const enum e_directionality directionality);
 
-static int* label_wire_muxes(const int chan_num,
+static void label_wire_muxes(const int chan_num,
                              const int seg_num,
                              const t_chan_seg_details* seg_details,
                              const int seg_type_index,
@@ -96,16 +97,18 @@ static int* label_wire_muxes(const int chan_num,
                              const enum e_direction dir,
                              const int max_chan_width,
                              const bool check_cb,
+                             std::vector<int>* labels,
                              int* num_wire_muxes,
                              int* num_wire_muxes_cb_restricted);
 
-static int* label_incoming_wires(const int chan_num,
+static void label_incoming_wires(const int chan_num,
                                  const int seg_num,
                                  const int sb_seg,
                                  const t_chan_seg_details* seg_details,
                                  const int max_len,
                                  const enum e_direction dir,
                                  const int max_chan_width,
+                                 std::vector<int>* labels,
                                  int* num_incoming_wires,
                                  int* num_ending_wires);
 
@@ -143,16 +146,15 @@ static bool should_apply_switch_override(int switch_override);
  * no longer less than the requested number of tracks. As a final
  * step, if we were closer to target before last more, undo it
  * and end up with a result that uses fewer tracks than given. */
-int* get_seg_track_counts(const int num_sets,
-                          const std::vector<t_segment_inf>& segment_inf,
-                          const bool use_full_seg_groups) {
-    int* result;
-    double* demand;
+std::unique_ptr<int[]> get_seg_track_counts(const int num_sets,
+                                            const std::vector<t_segment_inf>& segment_inf,
+                                            const bool use_full_seg_groups) {
+    std::unique_ptr<int[]> result;
     int imax, freq_sum, assigned, size;
     double scale, max, reduce;
 
-    result = (int*)vtr::malloc(sizeof(int) * segment_inf.size());
-    demand = (double*)vtr::malloc(sizeof(double) * segment_inf.size());
+    result = std::make_unique<int[]>(segment_inf.size());
+    std::vector<double> demand(segment_inf.size());
 
     /* Scale factor so we can divide by any length
      * and still use integers */
@@ -199,12 +201,6 @@ int* get_seg_track_counts(const int num_sets,
         result[imax] -= size;
     }
 
-    /* Free temps */
-    if (demand) {
-        vtr::free(demand);
-        demand = nullptr;
-    }
-
     /* This must be freed by caller */
     return result;
 }
@@ -228,7 +224,7 @@ t_seg_details* alloc_and_load_seg_details(int* max_chan_width,
     int cur_track, ntracks, itrack, length, j, index;
     int arch_wire_switch, arch_opin_switch, fac, num_sets, tmp;
     int group_start, first_track;
-    int* sets_per_seg_type = nullptr;
+    std::unique_ptr<int[]> sets_per_seg_type;
     t_seg_details* seg_details = nullptr;
     bool longline;
 
@@ -294,7 +290,7 @@ t_seg_details* alloc_and_load_seg_details(int* max_chan_width,
             seg_details[cur_track].longline = longline;
 
             /* Stagger the start points in for each track set. The
-             * pin mappings should be aware of this when chosing an
+             * pin mappings should be aware of this when choosing an
              * intelligent way of connecting pins and tracks.
              * cur_track is used as an offset so that extra tracks
              * from different segment types are hopefully better
@@ -355,9 +351,6 @@ t_seg_details* alloc_and_load_seg_details(int* max_chan_width,
             ++cur_track;
         }
     } /* End for each segment type. */
-
-    /* free variables */
-    vtr::free(sets_per_seg_type);
 
     if (num_seg_details) {
         *num_seg_details = cur_track;
@@ -757,12 +750,11 @@ int get_unidir_opin_connections(const int chan,
                                 const int max_len,
                                 const int max_chan_width,
                                 const t_rr_node_indices& L_rr_node_indices,
-                                bool* Fc_clipped) {
+                                bool* Fc_clipped,
+                                t_opin_connections_scratchpad* scratchpad) {
     /* Gets a linked list of Fc nodes of specified seg_type_index to connect
      * to in given chan seg. Fc_ofs is used for the opin staggering pattern. */
 
-    int* inc_muxes = nullptr;
-    int* dec_muxes = nullptr;
     int num_inc_muxes, num_dec_muxes, iconn;
     int inc_inode_index, dec_inode_index;
     int inc_mux, dec_mux;
@@ -781,10 +773,13 @@ int get_unidir_opin_connections(const int chan,
 
     /* Get the lists of possible muxes. */
     int dummy;
-    inc_muxes = label_wire_muxes(chan, seg, seg_details, seg_type_index, max_len,
-                                 INC_DIRECTION, max_chan_width, true, &num_inc_muxes, &dummy);
-    dec_muxes = label_wire_muxes(chan, seg, seg_details, seg_type_index, max_len,
-                                 DEC_DIRECTION, max_chan_width, true, &num_dec_muxes, &dummy);
+    std::vector<int>& inc_muxes = scratchpad->scratch[0];
+    std::vector<int>& dec_muxes = scratchpad->scratch[1];
+
+    label_wire_muxes(chan, seg, seg_details, seg_type_index, max_len,
+                     INC_DIRECTION, max_chan_width, true, &inc_muxes, &num_inc_muxes, &dummy);
+    label_wire_muxes(chan, seg, seg_details, seg_type_index, max_len,
+                     DEC_DIRECTION, max_chan_width, true, &dec_muxes, &num_dec_muxes, &dummy);
 
     /* Clip Fc to the number of muxes. */
     if (((Fc / 2) > num_inc_muxes) || ((Fc / 2) > num_dec_muxes)) {
@@ -801,10 +796,7 @@ int get_unidir_opin_connections(const int chan,
         ++Fc_ofs[chan][seg][seg_type_index];
 
         /* Figure out the track it corresponds to. */
-        VTR_ASSERT(inc_muxes != nullptr);
         inc_track = inc_muxes[inc_mux];
-
-        VTR_ASSERT(dec_muxes != nullptr);
         dec_track = dec_muxes[dec_mux];
 
         /* Figure the inodes of those muxes */
@@ -821,15 +813,6 @@ int get_unidir_opin_connections(const int chan,
 
         rr_edges_to_create.emplace_back(from_rr_node, dec_inode_index, seg_details[dec_track].arch_opin_switch());
         ++num_edges;
-    }
-
-    if (inc_muxes) {
-        vtr::free(inc_muxes);
-        inc_muxes = nullptr;
-    }
-    if (dec_muxes) {
-        vtr::free(dec_muxes);
-        dec_muxes = nullptr;
     }
 
     return num_edges;
@@ -1081,7 +1064,7 @@ static void load_block_rr_indices(const DeviceGrid& grid,
                 //Process each block from it's root location
                 auto type = grid[x][y].type;
 
-                //Assign indicies for SINKs and SOURCEs
+                //Assign indices for SINKs and SOURCEs
                 // Note that SINKS/SOURCES have no side, so we always use side 0
                 for (int iclass = 0; iclass < type->num_class; ++iclass) {
                     auto class_type = type->class_inf[iclass].type;
@@ -1098,7 +1081,7 @@ static void load_block_rr_indices(const DeviceGrid& grid,
                 VTR_ASSERT(indices[SOURCE][x][y][0].size() == size_t(type->num_class));
                 VTR_ASSERT(indices[SINK][x][y][0].size() == size_t(type->num_class));
 
-                //Assign indicies for IPINs and OPINs at all offsets from root
+                //Assign indices for IPINs and OPINs at all offsets from root
                 for (int ipin = 0; ipin < type->num_pins; ++ipin) {
                     for (int width_offset = 0; width_offset < type->width; ++width_offset) {
                         int x_tile = x + width_offset;
@@ -1204,17 +1187,19 @@ std::vector<int> get_rr_node_chan_wires_at_location(const t_rr_node_indices& L_r
     return L_rr_node_indices[rr_type][x][y][SIDES[0]];
 }
 
-std::vector<int> get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
-                                     int x,
-                                     int y,
-                                     t_rr_type rr_type,
-                                     int ptc) {
+void get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
+                         int x,
+                         int y,
+                         t_rr_type rr_type,
+                         int ptc,
+                         std::vector<int>* indices) {
+    indices->resize(0);
+
     /*
      * Like get_rr_node_index() but returns all matching nodes,
      * rather than just the first. This is particularly useful for getting all instances
      * of a specific IPIN/OPIN at a specific gird tile (x,y) location.
      */
-    std::vector<int> indices;
 
     if (rr_type == IPIN || rr_type == OPIN) {
         //For pins we need to look at all the sides of the current grid tile
@@ -1223,7 +1208,7 @@ std::vector<int> get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
             int rr_node_index = get_rr_node_index(L_rr_node_indices, x, y, rr_type, ptc, side);
 
             if (rr_node_index >= 0) {
-                indices.push_back(rr_node_index);
+                indices->push_back(rr_node_index);
             }
         }
     } else {
@@ -1231,11 +1216,58 @@ std::vector<int> get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
         int rr_node_index = get_rr_node_index(L_rr_node_indices, x, y, rr_type, ptc);
 
         if (rr_node_index != OPEN) {
-            indices.push_back(rr_node_index);
+            indices->push_back(rr_node_index);
         }
     }
+}
 
-    return indices;
+void get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
+                         int x,
+                         int y,
+                         t_rr_type rr_type,
+                         std::vector<int>* indices,
+                         e_side side) {
+    if (rr_type == SOURCE
+        || rr_type == SINK
+        || rr_type == CHANX
+        || rr_type == CHANY) {
+        /* Currently need to swap x and y for CHANX because of chan, seg convention */
+        if (CHANX == rr_type) {
+            std::swap(x, y);
+        }
+
+        VTR_ASSERT_MSG(side == NUM_SIDES, "Non-IPINs/OPINs must not specify side");
+        indices->resize(L_rr_node_indices[rr_type][x][y][0].size());
+        std::copy(
+            L_rr_node_indices[rr_type][x][y][0].begin(),
+            L_rr_node_indices[rr_type][x][y][0].end(),
+            indices->begin());
+    } else {
+        VTR_ASSERT(rr_type == OPIN || rr_type == IPIN);
+        if (side == NUM_SIDES) {
+            //All sides
+            size_t capacity_needed = 0;
+            for (e_side tmp_side : SIDES) {
+                capacity_needed += L_rr_node_indices[rr_type][x][y][tmp_side].size();
+            }
+
+            indices->resize(0);
+            indices->reserve(capacity_needed);
+            for (e_side tmp_side : SIDES) {
+                std::copy(
+                    L_rr_node_indices[rr_type][x][y][tmp_side].begin(),
+                    L_rr_node_indices[rr_type][x][y][tmp_side].end(),
+                    std::back_inserter(*indices));
+            }
+        } else {
+            //Side specified
+            indices->resize(L_rr_node_indices[rr_type][x][y][side].size());
+            std::copy(
+                L_rr_node_indices[rr_type][x][y][side].begin(),
+                L_rr_node_indices[rr_type][x][y][side].end(),
+                indices->begin());
+        }
+    }
 }
 
 int get_rr_node_index(const t_rr_node_indices& L_rr_node_indices,
@@ -1335,7 +1367,7 @@ int find_average_rr_node_index(int device_width,
                                const t_rr_node_indices& L_rr_node_indices) {
     /* Find and return the index to a rr_node that is located at the "center" *
      * of the current grid array, if possible.  In the event the "center" of  *
-     * the grid array is an EMPTY or IO node, then retry alterate locations.  *
+     * the grid array is an EMPTY or IO node, then retry alternate locations.  *
      * Worst case, this function will simply return the 1st non-EMPTY and     *
      * non-IO node.                                                           */
 
@@ -1484,7 +1516,8 @@ int get_track_to_tracks(const int from_chan,
                         const enum e_directionality directionality,
                         const t_rr_node_indices& L_rr_node_indices,
                         const vtr::NdMatrix<std::vector<int>, 3>& switch_block_conn,
-                        t_sb_connection_map* sb_conn_map) {
+                        t_sb_connection_map* sb_conn_map,
+                        t_opin_connections_scratchpad* scratchpad) {
     int to_chan, to_sb;
     std::vector<int> conn_tracks;
     bool from_is_sblock, is_behind, Fs_clipped;
@@ -1507,7 +1540,7 @@ int get_track_to_tracks(const int from_chan,
     int start_sb_seg = from_seg - 1;
 
     //The absolute coordinate along the channel where the switch block at the
-    //end of the current wire segment is lcoated
+    //end of the current wire segment is located
     int end_sb_seg = get_seg_end(from_seg_details, from_track, from_seg, from_chan, chan_len);
 
     /* Figure out the sides of SB the from_wire will use */
@@ -1640,7 +1673,7 @@ int get_track_to_tracks(const int from_chan,
                                                                  sblock_pattern,
                                                                  switch_override,
                                                                  L_rr_node_indices, to_seg_details,
-                                                                 &Fs_clipped, from_rr_node, rr_edges_to_create);
+                                                                 &Fs_clipped, from_rr_node, rr_edges_to_create, scratchpad);
                     }
                 }
             }
@@ -1680,7 +1713,7 @@ int get_track_to_tracks(const int from_chan,
                                                                  sblock_pattern,
                                                                  switch_override,
                                                                  L_rr_node_indices, to_seg_details,
-                                                                 &Fs_clipped, from_rr_node, rr_edges_to_create);
+                                                                 &Fs_clipped, from_rr_node, rr_edges_to_create, scratchpad);
                     }
                 }
             }
@@ -1848,9 +1881,10 @@ static int get_unidir_track_to_chan_seg(const int from_track,
                                         const t_chan_seg_details* seg_details,
                                         bool* Fs_clipped,
                                         const int from_rr_node,
-                                        t_rr_edge_info_set& rr_edges_to_create) {
+                                        t_rr_edge_info_set& rr_edges_to_create,
+                                        t_opin_connections_scratchpad* scratchpad) {
     int num_labels = 0;
-    int* mux_labels = nullptr;
+    std::vector<int>& mux_labels = scratchpad->scratch[0];
 
     /* x, y coords for get_rr_node lookups */
     int to_x = (CHANX == to_type ? to_seg : to_chan);
@@ -1868,15 +1902,11 @@ static int get_unidir_track_to_chan_seg(const int from_track,
 
     /* get list of muxes to which we can connect */
     int dummy;
-    mux_labels = label_wire_muxes(to_chan, to_seg, seg_details, UNDEFINED, max_len,
-                                  to_dir, max_chan_width, false, &num_labels, &dummy);
+    label_wire_muxes(to_chan, to_seg, seg_details, UNDEFINED, max_len,
+                     to_dir, max_chan_width, false, &mux_labels, &num_labels, &dummy);
 
     /* Can't connect if no muxes. */
     if (num_labels < 1) {
-        if (mux_labels) {
-            vtr::free(mux_labels);
-            mux_labels = nullptr;
-        }
         return 0;
     }
 
@@ -1929,10 +1959,6 @@ static int get_unidir_track_to_chan_seg(const int from_track,
         }
     }
 
-    if (mux_labels) {
-        vtr::free(mux_labels);
-        mux_labels = nullptr;
-    }
     return count;
 }
 
@@ -1949,7 +1975,7 @@ bool is_sblock(const int chan, int wire_seg, const int sb_seg, const int track, 
     /* Make sure they gave us correct start */
     wire_seg = get_seg_start(seg_details, track, chan, wire_seg);
 
-    ofs = sb_seg - wire_seg + 1; /* Ofset 0 is behind us, so add 1 */
+    ofs = sb_seg - wire_seg + 1; /* Offset 0 is behind us, so add 1 */
 
     VTR_ASSERT(ofs >= 0);
     VTR_ASSERT(ofs < (length + 1));
@@ -2083,7 +2109,7 @@ t_sblock_pattern alloc_sblock_pattern_lookup(const DeviceGrid& grid,
 
     /* Do chunked allocations to make freeing easier, speed up malloc and free, and
      * reduce some of the memory overhead. Could use fewer malloc's but this way
-     * avoids all considerations of pointer sizes and allignment. */
+     * avoids all considerations of pointer sizes and alignment. */
 
     /* Alloc each list of pointers in one go. items is a running product that increases
      * with each new dimension of the matrix. */
@@ -2114,7 +2140,8 @@ void load_sblock_pattern_lookup(const int i,
                                 const t_chan_details& chan_details_y,
                                 const int /*Fs*/,
                                 const enum e_switch_block_type switch_block_type,
-                                t_sblock_pattern& sblock_pattern) {
+                                t_sblock_pattern& sblock_pattern,
+                                t_opin_connections_scratchpad* scratchpad) {
     /* This routine loads a lookup table for sblock topology. The lookup table is huge
      * because the sblock varies from location to location. The i, j means the owning
      * location of the sblock under investigation. */
@@ -2137,11 +2164,11 @@ void load_sblock_pattern_lookup(const int i,
      * ending wires (the word "incoming" is sometimes dropped for ease of discussion). It appropriately
      * labels all the wires on each side by the following order: By the call to label_incoming_wires,
      * which labels for one side, the order is such that the incoming ending wires (always with sblock)
-     * are labelled first 0,1,2,... p-1, then the incoming passing wires with sblock are labelled
+     * are labeled first 0,1,2,... p-1, then the incoming passing wires with sblock are labeled
      * p,p+1,p+2,... k-1 (for total of k). By this convention, one can easily distinguish the ending
      * wires from the passing wires by checking a label against num_ending_wires variable.
      *
-     * After labelling all the incoming wires, this routine labels the muxes on the side we're currently
+     * After labeling all the incoming wires, this routine labels the muxes on the side we're currently
      * connecting to (iterated for four sides of the sblock), called the to_side. The label scheme is
      * the natural order of the muxes by their track #. Also we find the number of muxes.
      *
@@ -2159,11 +2186,17 @@ void load_sblock_pattern_lookup(const int i,
 
     /* SB's range from (0, 0) to (grid.width() - 2, grid.height() - 2) */
     /* First find all four sides' incoming wires */
-    int* wire_mux_on_track[4];
-    int* incoming_wire_label[4];
-    int num_incoming_wires[4];
-    int num_ending_wires[4];
-    int num_wire_muxes[4];
+
+    static_assert(NUM_SIDES == 4, "Should be 4 sides");
+    VTR_ASSERT(scratchpad->scratch.size() == NUM_SIDES * 2);
+    std::array<std::vector<int>*, NUM_SIDES> wire_mux_on_track;
+    std::array<std::vector<int>*, NUM_SIDES> incoming_wire_label;
+    int num_incoming_wires[NUM_SIDES];
+    int num_ending_wires[NUM_SIDES];
+    int num_wire_muxes[NUM_SIDES];
+
+    wire_mux_on_track.fill(nullptr);
+    incoming_wire_label.fill(nullptr);
 
     /* "Label" the wires around the switch block by connectivity. */
     for (e_side side : {TOP, RIGHT, BOTTOM, LEFT}) {
@@ -2174,7 +2207,7 @@ void load_sblock_pattern_lookup(const int i,
         num_ending_wires[side] = 0;
         num_wire_muxes[side] = 0;
 
-        /* Skip the side and leave the zero'd value if the
+        /* Skip the side and leave the zeroed value if the
          * channel segment doesn't exist. */
         bool skip = true;
         switch (side) {
@@ -2199,7 +2232,7 @@ void load_sblock_pattern_lookup(const int i,
                 }
                 break;
             default:
-                VTR_ASSERT_MSG(false, "Unrecognzied side");
+                VTR_ASSERT_MSG(false, "Unrecognized side");
                 break;
         }
         if (skip) {
@@ -2221,16 +2254,20 @@ void load_sblock_pattern_lookup(const int i,
         /* Figure out all the tracks on a side that are ending and the
          * ones that are passing through and have a SB. */
         enum e_direction end_dir = (pos_dir ? DEC_DIRECTION : INC_DIRECTION);
-        incoming_wire_label[side] = label_incoming_wires(chan, seg, sb_seg,
-                                                         seg_details, chan_len, end_dir, nodes_per_chan->max,
-                                                         &num_incoming_wires[side], &num_ending_wires[side]);
+        incoming_wire_label[side] = &scratchpad->scratch[NUM_SIDES + side];
+        label_incoming_wires(chan, seg, sb_seg,
+                             seg_details, chan_len, end_dir, nodes_per_chan->max,
+                             incoming_wire_label[side],
+                             &num_incoming_wires[side],
+                             &num_ending_wires[side]);
 
         /* Figure out all the tracks on a side that are starting. */
         int dummy;
         enum e_direction start_dir = (pos_dir ? INC_DIRECTION : DEC_DIRECTION);
-        wire_mux_on_track[side] = label_wire_muxes(chan, seg,
-                                                   seg_details, UNDEFINED, chan_len, start_dir, nodes_per_chan->max,
-                                                   false, &num_wire_muxes[side], &dummy);
+        wire_mux_on_track[side] = &scratchpad->scratch[side];
+        label_wire_muxes(chan, seg,
+                         seg_details, UNDEFINED, chan_len, start_dir, nodes_per_chan->max,
+                         false, wire_mux_on_track[side], &num_wire_muxes[side], &dummy);
     }
 
     for (e_side to_side : {TOP, RIGHT, BOTTOM, LEFT}) {
@@ -2264,10 +2301,10 @@ void load_sblock_pattern_lookup(const int i,
                     itrack = ichan % nodes_per_chan->x_list[j];
                 }
 
-                if (incoming_wire_label[side_cw][itrack] != UN_SET) {
+                if ((*incoming_wire_label[side_cw])[itrack] != UN_SET) {
                     int mux = get_simple_switch_block_track((enum e_side)side_cw,
                                                             (enum e_side)to_side,
-                                                            incoming_wire_label[side_cw][ichan],
+                                                            (*incoming_wire_label[side_cw])[ichan],
                                                             switch_block_type,
                                                             num_wire_muxes[to_side]);
 
@@ -2289,10 +2326,10 @@ void load_sblock_pattern_lookup(const int i,
                     itrack = ichan % nodes_per_chan->x_list[j];
                 }
 
-                if (incoming_wire_label[side_ccw][itrack] != UN_SET) {
+                if ((*incoming_wire_label[side_ccw])[itrack] != UN_SET) {
                     int mux = get_simple_switch_block_track((enum e_side)side_ccw,
                                                             (enum e_side)to_side,
-                                                            incoming_wire_label[side_ccw][ichan],
+                                                            (*incoming_wire_label[side_ccw])[ichan],
                                                             switch_block_type, num_wire_muxes[to_side]);
 
                     if (sblock_pattern[i][j][side_ccw][to_side][itrack][0] == UN_SET) {
@@ -2307,14 +2344,14 @@ void load_sblock_pattern_lookup(const int i,
         if (incoming_wire_label[side_opp]) {
             for (int itrack = 0; itrack < nodes_per_chan->max; itrack++) {
                 /* not ending wire nor passing wire with sblock */
-                if (incoming_wire_label[side_opp][itrack] != UN_SET) {
+                if ((*incoming_wire_label[side_opp])[itrack] != UN_SET) {
                     /* corner sblocks for sure have no opposite channel segments so don't care about them */
-                    if (incoming_wire_label[side_opp][itrack] < num_ending_wires[side_opp]) {
+                    if ((*incoming_wire_label[side_opp])[itrack] < num_ending_wires[side_opp]) {
                         /* The ending wires in core sblocks form N-to-N assignment problem, so can
                          * use any pattern such as Wilton */
                         /* In the direct connect case, I know for sure the init mux is at the same track #
                          * as this ending wire, but still need to find the init mux label for Fs > 3 */
-                        int mux = find_label_of_track(wire_mux_on_track[to_side],
+                        int mux = find_label_of_track(wire_mux_on_track[to_side]->data(),
                                                       num_wire_muxes[to_side], itrack);
                         sblock_pattern[i][j][side_opp][to_side][itrack][0] = mux;
                     } else {
@@ -2324,25 +2361,16 @@ void load_sblock_pattern_lookup(const int i,
                          * side, so there's nothing to be done here (at Fs=3, this connection is implicit for passing
                          * wires and at Fs>3 the code in this function seems to create heavily unbalanced
                          * switch patterns). Additionally, the code in build_rr_chan() explicitly skips
-                         * connections from wire segment midpoints to the opposide sb side (for switch block patterns
+                         * connections from wire segment midpoints to the opposite sb side (for switch block patterns
                          * generated with this function) so any such assignment to sblock_pattern will be ignored anyway. */
                     }
                 }
             }
         }
     }
-
-    for (e_side side : {TOP, RIGHT, BOTTOM, LEFT}) {
-        if (incoming_wire_label[side]) {
-            vtr::free(incoming_wire_label[side]);
-        }
-        if (wire_mux_on_track[side]) {
-            vtr::free(wire_mux_on_track[side]);
-        }
-    }
 }
 
-static int* label_wire_muxes(const int chan_num,
+static void label_wire_muxes(const int chan_num,
                              const int seg_num,
                              const t_chan_seg_details* seg_details,
                              const int seg_type_index,
@@ -2350,6 +2378,7 @@ static int* label_wire_muxes(const int chan_num,
                              const enum e_direction dir,
                              const int max_chan_width,
                              const bool check_cb,
+                             std::vector<int>* labels_ptr,
                              int* num_wire_muxes,
                              int* num_wire_muxes_cb_restricted) {
     /* Labels the muxes on that side (seg_num, chan_num, direction). The returned array
@@ -2358,8 +2387,8 @@ static int* label_wire_muxes(const int chan_num,
      * If seg_type_index == UNDEFINED, all segments in the channel are considered. Otherwise this routine
      * only looks at segments that belong to the specified segment type. */
 
+    std::vector<int>& labels = *labels_ptr;
     int itrack, start, end, num_labels, num_labels_restricted, pass;
-    int* labels = nullptr;
     bool is_endpoint;
 
     /* COUNT pass then a LOAD pass */
@@ -2368,7 +2397,8 @@ static int* label_wire_muxes(const int chan_num,
     for (pass = 0; pass < 2; ++pass) {
         /* Alloc the list on LOAD pass */
         if (pass > 0) {
-            labels = (int*)vtr::malloc(sizeof(int) * num_labels);
+            labels.resize(num_labels);
+            std::fill(labels.begin(), labels.end(), 0);
             num_labels = 0;
         }
 
@@ -2423,32 +2453,29 @@ static int* label_wire_muxes(const int chan_num,
 
     *num_wire_muxes = num_labels;
     *num_wire_muxes_cb_restricted = num_labels_restricted;
-
-    return labels;
 }
 
-static int* label_incoming_wires(const int chan_num,
+static void label_incoming_wires(const int chan_num,
                                  const int seg_num,
                                  const int sb_seg,
                                  const t_chan_seg_details* seg_details,
                                  const int max_len,
                                  const enum e_direction dir,
                                  const int max_chan_width,
+                                 std::vector<int>* labels_ptr,
                                  int* num_incoming_wires,
                                  int* num_ending_wires) {
     /* Labels the incoming wires on that side (seg_num, chan_num, direction).
      * The returned array maps a track # to a label: array[0] = <the new hash value/label for track 0>,
      * the labels 0,1,2,.. identify consecutive incoming wires that have sblock (passing wires with sblock and ending wires) */
 
-    int itrack, start, end, i, num_passing, num_ending, pass;
-    int* labels;
+    std::vector<int>& labels = *labels_ptr;
+    int itrack, start, end, num_passing, num_ending, pass;
     bool sblock_exists, is_endpoint;
 
     /* Alloc the list of labels for the tracks */
-    labels = (int*)vtr::malloc(max_chan_width * sizeof(int));
-    for (i = 0; i < max_chan_width; ++i) {
-        labels[i] = UN_SET; /* crash hard if unset */
-    }
+    labels.resize(max_chan_width);
+    std::fill(labels.begin(), labels.end(), UN_SET);
 
     num_ending = 0;
     num_passing = 0;
@@ -2500,7 +2527,6 @@ static int* label_incoming_wires(const int chan_num,
 
     *num_incoming_wires = num_passing + num_ending;
     *num_ending_wires = num_ending;
-    return labels;
 }
 
 static int find_label_of_track(int* wire_mux_on_track,
@@ -2524,7 +2550,7 @@ static int find_label_of_track(int* wire_mux_on_track,
 }
 
 static int should_create_switchblock(const DeviceGrid& grid, int from_chan_coord, int from_seg_coord, t_rr_type from_chan_type, t_rr_type to_chan_type) {
-    //Convert the chan/seg indicies to real x/y coordinates
+    //Convert the chan/seg indices to real x/y coordinates
     int y_coord;
     int x_coord;
     if (from_chan_type == CHANX) {
@@ -2564,12 +2590,4 @@ static bool should_apply_switch_override(int switch_override) {
         return true;
     }
     return false;
-}
-
-void partition_rr_graph_edges(std::vector<t_rr_node>* rr_nodes) {
-    for (auto& node : *rr_nodes) {
-        node.partition_edges();
-
-        VTR_ASSERT_SAFE(node.validate());
-    }
 }
