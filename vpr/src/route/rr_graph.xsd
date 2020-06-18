@@ -359,10 +359,10 @@
         <xs:element name="switches" type="switches"/>
         <xs:element name="segments" type="segments"/>
         <xs:element name="block_types" type="block_types"/>
-        <xs:element name="connection_boxes" type="connection_boxes" minOccurs="0"/>
         <xs:element name="grid" type="grid_locs"/>
         <xs:element name="rr_nodes" type="rr_nodes"/>
         <xs:element name="rr_edges" type="rr_edges"/>
+        <xs:element name="connection_boxes" type="connection_boxes" minOccurs="0"/>
       </xs:all>
 
       <xs:attribute name="tool_name" type="xs:string"/>

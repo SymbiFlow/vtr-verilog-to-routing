@@ -6,7 +6,7 @@
  *
  * Cmdline: uxsdcxx/uxsdcxx.py rr_graph.xsd
  * Input file: rr_graph.xsd
- * md5sum of input file: d9e439fa173fdf56b51feeed0ac48272
+ * md5sum of input file: bea3923ac9822e94db96d5d9d15e18c6
  */
 
 #include <functional>
@@ -80,12 +80,6 @@ inline void load_block_type_required_attributes(const pugi::xml_node& root, int*
 template<class T, typename Context>
 inline void load_block_types(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
 template<class T, typename Context>
-inline void load_connection_box_declaration(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
-inline void load_connection_box_declaration_required_attributes(const pugi::xml_node& root, unsigned int* id, const std::function<void(const char*)>* report_error);
-template<class T, typename Context>
-inline void load_connection_boxes(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
-inline void load_connection_boxes_required_attributes(const pugi::xml_node& root, unsigned int* num_boxes, unsigned int* x_dim, unsigned int* y_dim, const std::function<void(const char*)>* report_error);
-template<class T, typename Context>
 inline void load_grid_loc(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
 inline void load_grid_loc_required_attributes(const pugi::xml_node& root, int* block_type_id, int* height_offset, int* width_offset, int* x, int* y, const std::function<void(const char*)>* report_error);
 template<class T, typename Context>
@@ -120,6 +114,12 @@ inline void load_edge_required_attributes(const pugi::xml_node& root, unsigned i
 template<class T, typename Context>
 inline void load_rr_edges(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
 template<class T, typename Context>
+inline void load_connection_box_declaration(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
+inline void load_connection_box_declaration_required_attributes(const pugi::xml_node& root, unsigned int* id, const std::function<void(const char*)>* report_error);
+template<class T, typename Context>
+inline void load_connection_boxes(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
+inline void load_connection_boxes_required_attributes(const pugi::xml_node& root, unsigned int* num_boxes, unsigned int* x_dim, unsigned int* y_dim, const std::function<void(const char*)>* report_error);
+template<class T, typename Context>
 inline void load_rr_graph(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug);
 
 /* Declarations for internal write functions for the complex types. */
@@ -142,8 +142,6 @@ inline void write_block_type(T& in, std::ostream& os, const void* data, void* it
 template<class T>
 inline void write_block_types(T& in, std::ostream& os, const void* data, void* iter);
 template<class T>
-inline void write_connection_boxes(T& in, std::ostream& os, const void* data, void* iter);
-template<class T>
 inline void write_grid_locs(T& in, std::ostream& os, const void* data, void* iter);
 template<class T>
 inline void write_meta(T& in, std::ostream& os, const void* data, void* iter);
@@ -157,6 +155,8 @@ template<class T>
 inline void write_edge(T& in, std::ostream& os, const void* data, void* iter);
 template<class T>
 inline void write_rr_edges(T& in, std::ostream& os, const void* data, void* iter);
+template<class T>
+inline void write_connection_boxes(T& in, std::ostream& os, const void* data, void* iter);
 template<class T>
 inline void write_rr_graph(T& in, std::ostream& os, const void* data, void* iter);
 
@@ -301,17 +301,6 @@ constexpr const char* atok_lookup_t_block_type[] = {"height", "id", "name", "wid
 enum class gtok_t_block_types { BLOCK_TYPE };
 constexpr const char* gtok_lookup_t_block_types[] = {"block_type"};
 
-enum class atok_t_connection_box_declaration { ID,
-                                               NAME };
-constexpr const char* atok_lookup_t_connection_box_declaration[] = {"id", "name"};
-
-enum class gtok_t_connection_boxes { CONNECTION_BOX };
-constexpr const char* gtok_lookup_t_connection_boxes[] = {"connection_box"};
-enum class atok_t_connection_boxes { NUM_BOXES,
-                                     X_DIM,
-                                     Y_DIM };
-constexpr const char* atok_lookup_t_connection_boxes[] = {"num_boxes", "x_dim", "y_dim"};
-
 enum class atok_t_grid_loc { BLOCK_TYPE_ID,
                              HEIGHT_OFFSET,
                              WIDTH_OFFSET,
@@ -377,15 +366,27 @@ constexpr const char* atok_lookup_t_edge[] = {"sink_node", "src_node", "switch_i
 
 enum class gtok_t_rr_edges { EDGE };
 constexpr const char* gtok_lookup_t_rr_edges[] = {"edge"};
+
+enum class atok_t_connection_box_declaration { ID,
+                                               NAME };
+constexpr const char* atok_lookup_t_connection_box_declaration[] = {"id", "name"};
+
+enum class gtok_t_connection_boxes { CONNECTION_BOX };
+constexpr const char* gtok_lookup_t_connection_boxes[] = {"connection_box"};
+enum class atok_t_connection_boxes { NUM_BOXES,
+                                     X_DIM,
+                                     Y_DIM };
+constexpr const char* atok_lookup_t_connection_boxes[] = {"num_boxes", "x_dim", "y_dim"};
+
 enum class gtok_t_rr_graph { CHANNELS,
                              SWITCHES,
                              SEGMENTS,
                              BLOCK_TYPES,
-                             CONNECTION_BOXES,
                              GRID,
                              RR_NODES,
-                             RR_EDGES };
-constexpr const char* gtok_lookup_t_rr_graph[] = {"channels", "switches", "segments", "block_types", "connection_boxes", "grid", "rr_nodes", "rr_edges"};
+                             RR_EDGES,
+                             CONNECTION_BOXES };
+constexpr const char* gtok_lookup_t_rr_graph[] = {"channels", "switches", "segments", "block_types", "grid", "rr_nodes", "rr_edges", "connection_boxes"};
 enum class atok_t_rr_graph { TOOL_COMMENT,
                              TOOL_NAME,
                              TOOL_VERSION };
@@ -1198,122 +1199,6 @@ inline gtok_t_block_types lex_node_t_block_types(const char* in, const std::func
     noreturn_report(report_error, ("Found unrecognized child " + std::string(in) + " of <block_types>.").c_str());
 }
 
-inline atok_t_connection_box_declaration lex_attr_t_connection_box_declaration(const char* in, const std::function<void(const char*)>* report_error) {
-    unsigned int len = strlen(in);
-    switch (len) {
-        case 2:
-            switch (in[0]) {
-                case onechar('i', 0, 8):
-                    switch (in[1]) {
-                        case onechar('d', 0, 8):
-                            return atok_t_connection_box_declaration::ID;
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            break;
-        case 4:
-            switch (*((triehash_uu32*)&in[0])) {
-                case onechar('n', 0, 32) | onechar('a', 8, 32) | onechar('m', 16, 32) | onechar('e', 24, 32):
-                    return atok_t_connection_box_declaration::NAME;
-                    break;
-                default:
-                    break;
-            }
-            break;
-        default:
-            break;
-    }
-    noreturn_report(report_error, ("Found unrecognized attribute " + std::string(in) + " of <connection_box_declaration>.").c_str());
-}
-
-inline gtok_t_connection_boxes lex_node_t_connection_boxes(const char* in, const std::function<void(const char*)>* report_error) {
-    unsigned int len = strlen(in);
-    switch (len) {
-        case 14:
-            switch (*((triehash_uu64*)&in[0])) {
-                case onechar('c', 0, 64) | onechar('o', 8, 64) | onechar('n', 16, 64) | onechar('n', 24, 64) | onechar('e', 32, 64) | onechar('c', 40, 64) | onechar('t', 48, 64) | onechar('i', 56, 64):
-                    switch (*((triehash_uu32*)&in[8])) {
-                        case onechar('o', 0, 32) | onechar('n', 8, 32) | onechar('_', 16, 32) | onechar('b', 24, 32):
-                            switch (in[12]) {
-                                case onechar('o', 0, 8):
-                                    switch (in[13]) {
-                                        case onechar('x', 0, 8):
-                                            return gtok_t_connection_boxes::CONNECTION_BOX;
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                    break;
-                                default:
-                                    break;
-                            }
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            break;
-        default:
-            break;
-    }
-    noreturn_report(report_error, ("Found unrecognized child " + std::string(in) + " of <connection_boxes>.").c_str());
-}
-inline atok_t_connection_boxes lex_attr_t_connection_boxes(const char* in, const std::function<void(const char*)>* report_error) {
-    unsigned int len = strlen(in);
-    switch (len) {
-        case 5:
-            switch (*((triehash_uu32*)&in[0])) {
-                case onechar('x', 0, 32) | onechar('_', 8, 32) | onechar('d', 16, 32) | onechar('i', 24, 32):
-                    switch (in[4]) {
-                        case onechar('m', 0, 8):
-                            return atok_t_connection_boxes::X_DIM;
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                case onechar('y', 0, 32) | onechar('_', 8, 32) | onechar('d', 16, 32) | onechar('i', 24, 32):
-                    switch (in[4]) {
-                        case onechar('m', 0, 8):
-                            return atok_t_connection_boxes::Y_DIM;
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            break;
-        case 9:
-            switch (*((triehash_uu64*)&in[0])) {
-                case onechar('n', 0, 64) | onechar('u', 8, 64) | onechar('m', 16, 64) | onechar('_', 24, 64) | onechar('b', 32, 64) | onechar('o', 40, 64) | onechar('x', 48, 64) | onechar('e', 56, 64):
-                    switch (in[8]) {
-                        case onechar('s', 0, 8):
-                            return atok_t_connection_boxes::NUM_BOXES;
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            break;
-        default:
-            break;
-    }
-    noreturn_report(report_error, ("Found unrecognized attribute " + std::string(in) + " of <connection_boxes>.").c_str());
-}
-
 inline atok_t_grid_loc lex_attr_t_grid_loc(const char* in, const std::function<void(const char*)>* report_error) {
     unsigned int len = strlen(in);
     switch (len) {
@@ -1928,6 +1813,122 @@ inline gtok_t_rr_edges lex_node_t_rr_edges(const char* in, const std::function<v
             break;
     }
     noreturn_report(report_error, ("Found unrecognized child " + std::string(in) + " of <rr_edges>.").c_str());
+}
+
+inline atok_t_connection_box_declaration lex_attr_t_connection_box_declaration(const char* in, const std::function<void(const char*)>* report_error) {
+    unsigned int len = strlen(in);
+    switch (len) {
+        case 2:
+            switch (in[0]) {
+                case onechar('i', 0, 8):
+                    switch (in[1]) {
+                        case onechar('d', 0, 8):
+                            return atok_t_connection_box_declaration::ID;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case 4:
+            switch (*((triehash_uu32*)&in[0])) {
+                case onechar('n', 0, 32) | onechar('a', 8, 32) | onechar('m', 16, 32) | onechar('e', 24, 32):
+                    return atok_t_connection_box_declaration::NAME;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
+    }
+    noreturn_report(report_error, ("Found unrecognized attribute " + std::string(in) + " of <connection_box_declaration>.").c_str());
+}
+
+inline gtok_t_connection_boxes lex_node_t_connection_boxes(const char* in, const std::function<void(const char*)>* report_error) {
+    unsigned int len = strlen(in);
+    switch (len) {
+        case 14:
+            switch (*((triehash_uu64*)&in[0])) {
+                case onechar('c', 0, 64) | onechar('o', 8, 64) | onechar('n', 16, 64) | onechar('n', 24, 64) | onechar('e', 32, 64) | onechar('c', 40, 64) | onechar('t', 48, 64) | onechar('i', 56, 64):
+                    switch (*((triehash_uu32*)&in[8])) {
+                        case onechar('o', 0, 32) | onechar('n', 8, 32) | onechar('_', 16, 32) | onechar('b', 24, 32):
+                            switch (in[12]) {
+                                case onechar('o', 0, 8):
+                                    switch (in[13]) {
+                                        case onechar('x', 0, 8):
+                                            return gtok_t_connection_boxes::CONNECTION_BOX;
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                    break;
+                                default:
+                                    break;
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
+    }
+    noreturn_report(report_error, ("Found unrecognized child " + std::string(in) + " of <connection_boxes>.").c_str());
+}
+inline atok_t_connection_boxes lex_attr_t_connection_boxes(const char* in, const std::function<void(const char*)>* report_error) {
+    unsigned int len = strlen(in);
+    switch (len) {
+        case 5:
+            switch (*((triehash_uu32*)&in[0])) {
+                case onechar('x', 0, 32) | onechar('_', 8, 32) | onechar('d', 16, 32) | onechar('i', 24, 32):
+                    switch (in[4]) {
+                        case onechar('m', 0, 8):
+                            return atok_t_connection_boxes::X_DIM;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case onechar('y', 0, 32) | onechar('_', 8, 32) | onechar('d', 16, 32) | onechar('i', 24, 32):
+                    switch (in[4]) {
+                        case onechar('m', 0, 8):
+                            return atok_t_connection_boxes::Y_DIM;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case 9:
+            switch (*((triehash_uu64*)&in[0])) {
+                case onechar('n', 0, 64) | onechar('u', 8, 64) | onechar('m', 16, 64) | onechar('_', 24, 64) | onechar('b', 32, 64) | onechar('o', 40, 64) | onechar('x', 48, 64) | onechar('e', 56, 64):
+                    switch (in[8]) {
+                        case onechar('s', 0, 8):
+                            return atok_t_connection_boxes::NUM_BOXES;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
+    }
+    noreturn_report(report_error, ("Found unrecognized attribute " + std::string(in) + " of <connection_boxes>.").c_str());
 }
 
 inline gtok_t_rr_graph lex_node_t_rr_graph(const char* in, const std::function<void(const char*)>* report_error) {
@@ -2696,55 +2697,6 @@ inline void load_block_type_required_attributes(const pugi::xml_node& root, int*
     if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_block_type, report_error);
 }
 
-inline void load_connection_box_declaration_required_attributes(const pugi::xml_node& root, unsigned int* id, const std::function<void(const char*)>* report_error) {
-    std::bitset<2> astate = 0;
-    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
-        atok_t_connection_box_declaration in = lex_attr_t_connection_box_declaration(attr.name(), report_error);
-        if (astate[(int)in] == 0)
-            astate[(int)in] = 1;
-        else
-            noreturn_report(report_error, ("Duplicate attribute " + std::string(attr.name()) + " in <connection_box_declaration>.").c_str());
-        switch (in) {
-            case atok_t_connection_box_declaration::ID:
-                *id = load_unsigned_int(attr.value(), report_error);
-                break;
-            case atok_t_connection_box_declaration::NAME:
-                /* Attribute name set after element init */
-                break;
-            default:
-                break; /* Not possible. */
-        }
-    }
-    std::bitset<2> test_astate = astate | std::bitset<2>(0b00);
-    if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_connection_box_declaration, report_error);
-}
-
-inline void load_connection_boxes_required_attributes(const pugi::xml_node& root, unsigned int* num_boxes, unsigned int* x_dim, unsigned int* y_dim, const std::function<void(const char*)>* report_error) {
-    std::bitset<3> astate = 0;
-    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
-        atok_t_connection_boxes in = lex_attr_t_connection_boxes(attr.name(), report_error);
-        if (astate[(int)in] == 0)
-            astate[(int)in] = 1;
-        else
-            noreturn_report(report_error, ("Duplicate attribute " + std::string(attr.name()) + " in <connection_boxes>.").c_str());
-        switch (in) {
-            case atok_t_connection_boxes::NUM_BOXES:
-                *num_boxes = load_unsigned_int(attr.value(), report_error);
-                break;
-            case atok_t_connection_boxes::X_DIM:
-                *x_dim = load_unsigned_int(attr.value(), report_error);
-                break;
-            case atok_t_connection_boxes::Y_DIM:
-                *y_dim = load_unsigned_int(attr.value(), report_error);
-                break;
-            default:
-                break; /* Not possible. */
-        }
-    }
-    std::bitset<3> test_astate = astate | std::bitset<3>(0b000);
-    if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_connection_boxes, report_error);
-}
-
 inline void load_grid_loc_required_attributes(const pugi::xml_node& root, int* block_type_id, int* height_offset, int* width_offset, int* x, int* y, const std::function<void(const char*)>* report_error) {
     std::bitset<5> astate = 0;
     for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
@@ -2960,6 +2912,55 @@ inline void load_edge_required_attributes(const pugi::xml_node& root, unsigned i
     }
     std::bitset<3> test_astate = astate | std::bitset<3>(0b000);
     if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_edge, report_error);
+}
+
+inline void load_connection_box_declaration_required_attributes(const pugi::xml_node& root, unsigned int* id, const std::function<void(const char*)>* report_error) {
+    std::bitset<2> astate = 0;
+    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
+        atok_t_connection_box_declaration in = lex_attr_t_connection_box_declaration(attr.name(), report_error);
+        if (astate[(int)in] == 0)
+            astate[(int)in] = 1;
+        else
+            noreturn_report(report_error, ("Duplicate attribute " + std::string(attr.name()) + " in <connection_box_declaration>.").c_str());
+        switch (in) {
+            case atok_t_connection_box_declaration::ID:
+                *id = load_unsigned_int(attr.value(), report_error);
+                break;
+            case atok_t_connection_box_declaration::NAME:
+                /* Attribute name set after element init */
+                break;
+            default:
+                break; /* Not possible. */
+        }
+    }
+    std::bitset<2> test_astate = astate | std::bitset<2>(0b00);
+    if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_connection_box_declaration, report_error);
+}
+
+inline void load_connection_boxes_required_attributes(const pugi::xml_node& root, unsigned int* num_boxes, unsigned int* x_dim, unsigned int* y_dim, const std::function<void(const char*)>* report_error) {
+    std::bitset<3> astate = 0;
+    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
+        atok_t_connection_boxes in = lex_attr_t_connection_boxes(attr.name(), report_error);
+        if (astate[(int)in] == 0)
+            astate[(int)in] = 1;
+        else
+            noreturn_report(report_error, ("Duplicate attribute " + std::string(attr.name()) + " in <connection_boxes>.").c_str());
+        switch (in) {
+            case atok_t_connection_boxes::NUM_BOXES:
+                *num_boxes = load_unsigned_int(attr.value(), report_error);
+                break;
+            case atok_t_connection_boxes::X_DIM:
+                *x_dim = load_unsigned_int(attr.value(), report_error);
+                break;
+            case atok_t_connection_boxes::Y_DIM:
+                *y_dim = load_unsigned_int(attr.value(), report_error);
+                break;
+            default:
+                break; /* Not possible. */
+        }
+    }
+    std::bitset<3> test_astate = astate | std::bitset<3>(0b000);
+    if (!test_astate.all()) attr_error(test_astate, atok_lookup_t_connection_boxes, report_error);
 }
 template<class T, typename Context>
 inline void load_channel(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
@@ -3635,94 +3636,6 @@ inline void load_block_types(const pugi::xml_node& root, T& out, Context& contex
 }
 
 template<class T, typename Context>
-inline void load_connection_box_declaration(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
-    (void)root;
-    (void)out;
-    (void)context;
-    (void)report_error;
-    // Update current file offset in case an error is encountered.
-    *offset_debug = root.offset_debug();
-
-    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
-        atok_t_connection_box_declaration in = lex_attr_t_connection_box_declaration(attr.name(), report_error);
-        switch (in) {
-            case atok_t_connection_box_declaration::ID:
-                /* Attribute id is already set */
-                break;
-            case atok_t_connection_box_declaration::NAME:
-                out.set_connection_box_declaration_name(attr.value(), context);
-                break;
-            default:
-                break; /* Not possible. */
-        }
-    }
-
-    if (root.first_child().type() == pugi::node_element)
-        noreturn_report(report_error, "Unexpected child element in <connection_box_declaration>.");
-}
-
-constexpr int NUM_T_CONNECTION_BOXES_STATES = 2;
-constexpr const int NUM_T_CONNECTION_BOXES_INPUTS = 1;
-constexpr int gstate_t_connection_boxes[NUM_T_CONNECTION_BOXES_STATES][NUM_T_CONNECTION_BOXES_INPUTS] = {
-    {0},
-    {0},
-};
-template<class T, typename Context>
-inline void load_connection_boxes(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
-    (void)root;
-    (void)out;
-    (void)context;
-    (void)report_error;
-    // Update current file offset in case an error is encountered.
-    *offset_debug = root.offset_debug();
-
-    // Preallocate arrays by counting child nodes (if any)
-    size_t connection_box_count = 0;
-    {
-        int next, state = 1;
-        for (pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {
-            *offset_debug = node.offset_debug();
-            gtok_t_connection_boxes in = lex_node_t_connection_boxes(node.name(), report_error);
-            next = gstate_t_connection_boxes[state][(int)in];
-            if (next == -1)
-                dfa_error(gtok_lookup_t_connection_boxes[(int)in], gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
-            state = next;
-            switch (in) {
-                case gtok_t_connection_boxes::CONNECTION_BOX:
-                    connection_box_count += 1;
-                    break;
-                default:
-                    break; /* Not possible. */
-            }
-        }
-
-        out.preallocate_connection_boxes_connection_box(context, connection_box_count);
-    }
-    int next, state = 1;
-    for (pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {
-        *offset_debug = node.offset_debug();
-        gtok_t_connection_boxes in = lex_node_t_connection_boxes(node.name(), report_error);
-        next = gstate_t_connection_boxes[state][(int)in];
-        if (next == -1)
-            dfa_error(gtok_lookup_t_connection_boxes[(int)in], gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
-        state = next;
-        switch (in) {
-            case gtok_t_connection_boxes::CONNECTION_BOX: {
-                unsigned int connection_box_declaration_id;
-                memset(&connection_box_declaration_id, 0, sizeof(connection_box_declaration_id));
-                load_connection_box_declaration_required_attributes(node, &connection_box_declaration_id, report_error);
-                auto child_context = out.add_connection_boxes_connection_box(context, connection_box_declaration_id);
-                load_connection_box_declaration(node, out, child_context, report_error, offset_debug);
-                out.finish_connection_boxes_connection_box(child_context);
-            } break;
-            default:
-                break; /* Not possible. */
-        }
-    }
-    if (state != 0) dfa_error("end of input", gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
-}
-
-template<class T, typename Context>
 inline void load_grid_loc(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
     (void)root;
     (void)out;
@@ -4261,6 +4174,94 @@ inline void load_rr_edges(const pugi::xml_node& root, T& out, Context& context, 
 }
 
 template<class T, typename Context>
+inline void load_connection_box_declaration(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
+    (void)root;
+    (void)out;
+    (void)context;
+    (void)report_error;
+    // Update current file offset in case an error is encountered.
+    *offset_debug = root.offset_debug();
+
+    for (pugi::xml_attribute attr = root.first_attribute(); attr; attr = attr.next_attribute()) {
+        atok_t_connection_box_declaration in = lex_attr_t_connection_box_declaration(attr.name(), report_error);
+        switch (in) {
+            case atok_t_connection_box_declaration::ID:
+                /* Attribute id is already set */
+                break;
+            case atok_t_connection_box_declaration::NAME:
+                out.set_connection_box_declaration_name(attr.value(), context);
+                break;
+            default:
+                break; /* Not possible. */
+        }
+    }
+
+    if (root.first_child().type() == pugi::node_element)
+        noreturn_report(report_error, "Unexpected child element in <connection_box_declaration>.");
+}
+
+constexpr int NUM_T_CONNECTION_BOXES_STATES = 2;
+constexpr const int NUM_T_CONNECTION_BOXES_INPUTS = 1;
+constexpr int gstate_t_connection_boxes[NUM_T_CONNECTION_BOXES_STATES][NUM_T_CONNECTION_BOXES_INPUTS] = {
+    {0},
+    {0},
+};
+template<class T, typename Context>
+inline void load_connection_boxes(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
+    (void)root;
+    (void)out;
+    (void)context;
+    (void)report_error;
+    // Update current file offset in case an error is encountered.
+    *offset_debug = root.offset_debug();
+
+    // Preallocate arrays by counting child nodes (if any)
+    size_t connection_box_count = 0;
+    {
+        int next, state = 1;
+        for (pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {
+            *offset_debug = node.offset_debug();
+            gtok_t_connection_boxes in = lex_node_t_connection_boxes(node.name(), report_error);
+            next = gstate_t_connection_boxes[state][(int)in];
+            if (next == -1)
+                dfa_error(gtok_lookup_t_connection_boxes[(int)in], gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
+            state = next;
+            switch (in) {
+                case gtok_t_connection_boxes::CONNECTION_BOX:
+                    connection_box_count += 1;
+                    break;
+                default:
+                    break; /* Not possible. */
+            }
+        }
+
+        out.preallocate_connection_boxes_connection_box(context, connection_box_count);
+    }
+    int next, state = 1;
+    for (pugi::xml_node node = root.first_child(); node; node = node.next_sibling()) {
+        *offset_debug = node.offset_debug();
+        gtok_t_connection_boxes in = lex_node_t_connection_boxes(node.name(), report_error);
+        next = gstate_t_connection_boxes[state][(int)in];
+        if (next == -1)
+            dfa_error(gtok_lookup_t_connection_boxes[(int)in], gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
+        state = next;
+        switch (in) {
+            case gtok_t_connection_boxes::CONNECTION_BOX: {
+                unsigned int connection_box_declaration_id;
+                memset(&connection_box_declaration_id, 0, sizeof(connection_box_declaration_id));
+                load_connection_box_declaration_required_attributes(node, &connection_box_declaration_id, report_error);
+                auto child_context = out.add_connection_boxes_connection_box(context, connection_box_declaration_id);
+                load_connection_box_declaration(node, out, child_context, report_error, offset_debug);
+                out.finish_connection_boxes_connection_box(child_context);
+            } break;
+            default:
+                break; /* Not possible. */
+        }
+    }
+    if (state != 0) dfa_error("end of input", gstate_t_connection_boxes[state], gtok_lookup_t_connection_boxes, 1, report_error);
+}
+
+template<class T, typename Context>
 inline void load_rr_graph(const pugi::xml_node& root, T& out, Context& context, const std::function<void(const char*)>* report_error, ptrdiff_t* offset_debug) {
     (void)root;
     (void)out;
@@ -4315,18 +4316,6 @@ inline void load_rr_graph(const pugi::xml_node& root, T& out, Context& context, 
                 load_block_types(node, out, child_context, report_error, offset_debug);
                 out.finish_rr_graph_block_types(child_context);
             } break;
-            case gtok_t_rr_graph::CONNECTION_BOXES: {
-                unsigned int connection_boxes_num_boxes;
-                memset(&connection_boxes_num_boxes, 0, sizeof(connection_boxes_num_boxes));
-                unsigned int connection_boxes_x_dim;
-                memset(&connection_boxes_x_dim, 0, sizeof(connection_boxes_x_dim));
-                unsigned int connection_boxes_y_dim;
-                memset(&connection_boxes_y_dim, 0, sizeof(connection_boxes_y_dim));
-                load_connection_boxes_required_attributes(node, &connection_boxes_num_boxes, &connection_boxes_x_dim, &connection_boxes_y_dim, report_error);
-                auto child_context = out.init_rr_graph_connection_boxes(context, connection_boxes_num_boxes, connection_boxes_x_dim, connection_boxes_y_dim);
-                load_connection_boxes(node, out, child_context, report_error, offset_debug);
-                out.finish_rr_graph_connection_boxes(child_context);
-            } break;
             case gtok_t_rr_graph::GRID: {
                 auto child_context = out.init_rr_graph_grid(context);
                 load_grid_locs(node, out, child_context, report_error, offset_debug);
@@ -4342,11 +4331,23 @@ inline void load_rr_graph(const pugi::xml_node& root, T& out, Context& context, 
                 load_rr_edges(node, out, child_context, report_error, offset_debug);
                 out.finish_rr_graph_rr_edges(child_context);
             } break;
+            case gtok_t_rr_graph::CONNECTION_BOXES: {
+                unsigned int connection_boxes_num_boxes;
+                memset(&connection_boxes_num_boxes, 0, sizeof(connection_boxes_num_boxes));
+                unsigned int connection_boxes_x_dim;
+                memset(&connection_boxes_x_dim, 0, sizeof(connection_boxes_x_dim));
+                unsigned int connection_boxes_y_dim;
+                memset(&connection_boxes_y_dim, 0, sizeof(connection_boxes_y_dim));
+                load_connection_boxes_required_attributes(node, &connection_boxes_num_boxes, &connection_boxes_x_dim, &connection_boxes_y_dim, report_error);
+                auto child_context = out.init_rr_graph_connection_boxes(context, connection_boxes_num_boxes, connection_boxes_x_dim, connection_boxes_y_dim);
+                load_connection_boxes(node, out, child_context, report_error, offset_debug);
+                out.finish_rr_graph_connection_boxes(child_context);
+            } break;
             default:
                 break; /* Not possible. */
         }
     }
-    std::bitset<8> test_gstate = gstate | std::bitset<8>(0b00010000);
+    std::bitset<8> test_gstate = gstate | std::bitset<8>(0b10000000);
     if (!test_gstate.all()) all_error(test_gstate, gtok_lookup_t_rr_graph, report_error);
 }
 
@@ -4538,22 +4539,6 @@ inline void write_block_types(T& in, std::ostream& os, Context& context) {
 }
 
 template<class T, typename Context>
-inline void write_connection_boxes(T& in, std::ostream& os, Context& context) {
-    (void)in;
-    (void)os;
-    (void)context;
-    {
-        for (size_t i = 0, n = in.num_connection_boxes_connection_box(context); i < n; i++) {
-            auto child_context = in.get_connection_boxes_connection_box(i, context);
-            os << "<connection_box";
-            os << " id=\"" << in.get_connection_box_declaration_id(child_context) << "\"";
-            os << " name=\"" << in.get_connection_box_declaration_name(child_context) << "\"";
-            os << "/>\n";
-        }
-    }
-}
-
-template<class T, typename Context>
 inline void write_grid_locs(T& in, std::ostream& os, Context& context) {
     (void)in;
     (void)os;
@@ -4717,6 +4702,22 @@ inline void write_rr_edges(T& in, std::ostream& os, Context& context) {
 }
 
 template<class T, typename Context>
+inline void write_connection_boxes(T& in, std::ostream& os, Context& context) {
+    (void)in;
+    (void)os;
+    (void)context;
+    {
+        for (size_t i = 0, n = in.num_connection_boxes_connection_box(context); i < n; i++) {
+            auto child_context = in.get_connection_boxes_connection_box(i, context);
+            os << "<connection_box";
+            os << " id=\"" << in.get_connection_box_declaration_id(child_context) << "\"";
+            os << " name=\"" << in.get_connection_box_declaration_name(child_context) << "\"";
+            os << "/>\n";
+        }
+    }
+}
+
+template<class T, typename Context>
 inline void write_rr_graph(T& in, std::ostream& os, Context& context) {
     (void)in;
     (void)os;
@@ -4746,18 +4747,6 @@ inline void write_rr_graph(T& in, std::ostream& os, Context& context) {
         os << "</block_types>\n";
     }
     {
-        if (in.has_rr_graph_connection_boxes(context)) {
-            auto child_context = in.get_rr_graph_connection_boxes(context);
-            os << "<connection_boxes";
-            os << " num_boxes=\"" << in.get_connection_boxes_num_boxes(child_context) << "\"";
-            os << " x_dim=\"" << in.get_connection_boxes_x_dim(child_context) << "\"";
-            os << " y_dim=\"" << in.get_connection_boxes_y_dim(child_context) << "\"";
-            os << ">";
-            write_connection_boxes(in, os, child_context);
-            os << "</connection_boxes>\n";
-        }
-    }
-    {
         auto child_context = in.get_rr_graph_grid(context);
         os << "<grid>\n";
         write_grid_locs(in, os, child_context);
@@ -4774,6 +4763,18 @@ inline void write_rr_graph(T& in, std::ostream& os, Context& context) {
         os << "<rr_edges>\n";
         write_rr_edges(in, os, child_context);
         os << "</rr_edges>\n";
+    }
+    {
+        if (in.has_rr_graph_connection_boxes(context)) {
+            auto child_context = in.get_rr_graph_connection_boxes(context);
+            os << "<connection_boxes";
+            os << " num_boxes=\"" << in.get_connection_boxes_num_boxes(child_context) << "\"";
+            os << " x_dim=\"" << in.get_connection_boxes_x_dim(child_context) << "\"";
+            os << " y_dim=\"" << in.get_connection_boxes_y_dim(child_context) << "\"";
+            os << ">";
+            write_connection_boxes(in, os, child_context);
+            os << "</connection_boxes>\n";
+        }
     }
 }
 

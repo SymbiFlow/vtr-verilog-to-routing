@@ -4,9 +4,9 @@
 #
 # Cmdline: uxsdcxx/uxsdcap.py rr_graph.xsd
 # Input file: rr_graph.xsd
-# md5sum of input file: d9e439fa173fdf56b51feeed0ac48272
+# md5sum of input file: bea3923ac9822e94db96d5d9d15e18c6
 
-@0xa90e1cca7f71265c;
+@0xf281a101eeb2a247;
 using Cxx = import "/capnp/c++.capnp";
 $Cxx.namespace("ucap");
 
@@ -138,18 +138,6 @@ struct BlockTypes {
 	blockTypes @0 :List(BlockType);
 }
 
-struct ConnectionBoxDeclaration {
-	id @0 :UInt32;
-	name @1 :Text;
-}
-
-struct ConnectionBoxes {
-	numBoxes @0 :UInt32;
-	xDim @1 :UInt32;
-	yDim @2 :UInt32;
-	connectionBoxes @3 :List(ConnectionBoxDeclaration);
-}
-
 struct GridLoc {
 	blockTypeId @0 :Int32;
 	heightOffset @1 :Int32;
@@ -229,6 +217,18 @@ struct RrEdges {
 	edges @0 :List(Edge);
 }
 
+struct ConnectionBoxDeclaration {
+	id @0 :UInt32;
+	name @1 :Text;
+}
+
+struct ConnectionBoxes {
+	numBoxes @0 :UInt32;
+	xDim @1 :UInt32;
+	yDim @2 :UInt32;
+	connectionBoxes @3 :List(ConnectionBoxDeclaration);
+}
+
 struct RrGraph {
 	toolComment @0 :Text;
 	toolName @1 :Text;
@@ -237,8 +237,8 @@ struct RrGraph {
 	switches @4 :Switches;
 	segments @5 :Segments;
 	blockTypes @6 :BlockTypes;
-	connectionBoxes @7 :ConnectionBoxes;
-	grid @8 :GridLocs;
-	rrNodes @9 :RrNodes;
-	rrEdges @10 :RrEdges;
+	grid @7 :GridLocs;
+	rrNodes @8 :RrNodes;
+	rrEdges @9 :RrEdges;
+	connectionBoxes @10 :ConnectionBoxes;
 }
