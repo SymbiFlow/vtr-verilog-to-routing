@@ -891,6 +891,8 @@ class NetlistWriterVisitor : public NetlistVisitor {
                 verilog_os_ << indent(depth + 1) << "wire " << escape_verilog_identifier(wire_tnode_pair.first) << ";\n";
             }
         }
+        
+        verilog_os_ << indent(depth + 1) << "wire DummyOut;\n";
 
         //connections between primary I/Os and their internal wires
         verilog_os_ << "\n";
@@ -2125,7 +2127,7 @@ void print_verilog_port(std::ostream& os, const std::string& port_name, const st
                 os << "1'b0";
             } else {
                 VTR_ASSERT(type == PortType::OUTPUT);
-                os << "";
+                os << "DummyOut";
             }
         } else {
             //Connected
@@ -2144,7 +2146,7 @@ void print_verilog_port(std::ostream& os, const std::string& port_name, const st
                     os << "1'b0";
                 } else {
                     VTR_ASSERT(type == PortType::OUTPUT);
-                    os << "";
+                    os << "DummyOut";
                 }
             } else {
                 //Connected
