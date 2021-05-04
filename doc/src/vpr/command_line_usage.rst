@@ -828,7 +828,7 @@ The following options are only valid when the placement engine is in timing-driv
 
 .. option:: --place_delay_model_reducer {min, max, median, arithmean, geomean}
 
-    When calculating delta delays for the placment delay model how are multiple values combined?
+    When calculating delta delays for the placement delay model how are multiple values combined?
 
     **Default:** ``min``
 

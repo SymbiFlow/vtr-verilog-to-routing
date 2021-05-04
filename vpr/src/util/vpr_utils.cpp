@@ -182,7 +182,7 @@ void sync_grid_to_blocks() {
         }
 
         if (device_ctx.grid[blk_x][blk_y].width_offset != 0 || device_ctx.grid[blk_x][blk_y].height_offset != 0) {
-            VPR_FATAL_ERROR(VPR_ERROR_PLACE, "Large block not aligned in placment for cluster_ctx.blocks %lu at (%d, %d, %d).",
+            VPR_FATAL_ERROR(VPR_ERROR_PLACE, "Large block not aligned in placement for cluster_ctx.blocks %lu at (%d, %d, %d).",
                             size_t(blk_id), blk_x, blk_y, blk_z);
         }
 
