@@ -1,14 +1,10 @@
-#ifndef POST_CLUSTER_DELAY_CALCULATOR_H
-#define POST_CLUSTER_DELAY_CALCULATOR_H
-#include "vtr_linear_map.h"
+#pragma once
 
 #include "tatum/Time.hpp"
 #include "tatum/TimingGraph.hpp"
 #include "tatum/delay_calc/DelayCalculator.hpp"
 
 #include "atom_netlist.h"
-#include "clustered_netlist.h"
-#include "vpr_utils.h"
 #include "vpr_net_pins_matrix.h"
 
 #include "atom_delay_calc.h"
@@ -18,7 +14,17 @@ class VprTimingGraphResolver; //Forward declaration
 
 class PostClusterDelayCalculator : public tatum::DelayCalculator {
   public:
-    PostClusterDelayCalculator(const AtomNetlist& netlist, const AtomLookup& netlist_lookup, const ClbNetPinsMatrix<float>& net_delay);
+    /**
+     * @param net_delay_min Min routing delay of each net connection, used for hold analysis.
+     * @param net_delay_max Max routing delay of each net connection, used for setup analysis.
+     *                      Callers without separate min delays (e.g. placement) pass the
+     *                      same matrix for both.
+     */
+    PostClusterDelayCalculator(const AtomNetlist& netlist,
+                               const AtomLookup& netlist_lookup,
+                               const NetPinsMatrix<float>& net_delay_min,
+                               const NetPinsMatrix<float>& net_delay_max,
+                               bool is_flat);
 
     tatum::Time max_edge_delay(const tatum::TimingGraph& tg, tatum::EdgeId edge_id) const override;
     tatum::Time setup_time(const tatum::TimingGraph& tg, tatum::EdgeId edge_id) const override;
@@ -44,7 +50,10 @@ class PostClusterDelayCalculator : public tatum::DelayCalculator {
     tatum::Time atom_setup_time(const tatum::TimingGraph& tg, tatum::EdgeId edge_id) const;
     tatum::Time atom_hold_time(const tatum::TimingGraph& tg, tatum::EdgeId edge_id) const;
 
-    float inter_cluster_delay(ClusterNetId net_id, const int driver_net_pin_index, const int sink_net_pin_index) const;
+    float inter_cluster_delay(ParentNetId net_id, const int driver_net_pin_index, const int sink_net_pin_index, DelayType delay_type) const;
+
+    //Returns the delay type of the net delay used for an edge of the given delay type
+    DelayType routing_delay_type(DelayType delay_type) const;
 
     tatum::Time get_cached_delay(tatum::EdgeId edge, DelayType delay_type) const;
     void set_cached_delay(tatum::EdgeId edge, DelayType delay_type, tatum::Time delay) const;
@@ -61,13 +70,14 @@ class PostClusterDelayCalculator : public tatum::DelayCalculator {
     tatum::Time get_cached_hold_time(tatum::EdgeId edge) const;
     void set_cached_hold_time(tatum::EdgeId edge, tatum::Time hold) const;
 
-    std::pair<ClusterPinId, ClusterPinId> get_cached_pins(tatum::EdgeId edge, DelayType delay_type) const;
-    void set_cached_pins(tatum::EdgeId edge, DelayType delay_type, ClusterPinId src_pin, ClusterPinId sink_pin) const;
+    std::pair<ParentPinId, ParentPinId> get_cached_pins(tatum::EdgeId edge, DelayType delay_type) const;
+    void set_cached_pins(tatum::EdgeId edge, DelayType delay_type, ParentPinId src_pin, ParentPinId sink_pin) const;
 
   private:
     const AtomNetlist& netlist_;
     const AtomLookup& netlist_lookup_;
-    const ClbNetPinsMatrix<float>& net_delay_;
+    const NetPinsMatrix<float>& net_delay_min_;
+    const NetPinsMatrix<float>& net_delay_max_;
 
     ClbDelayCalc clb_delay_calc_;
     AtomDelayCalc atom_delay_calc_;
@@ -81,9 +91,9 @@ class PostClusterDelayCalculator : public tatum::DelayCalculator {
     mutable vtr::vector<tatum::EdgeId, tatum::Time> driver_clb_max_delay_cache_;
     mutable vtr::vector<tatum::EdgeId, tatum::Time> sink_clb_min_delay_cache_;
     mutable vtr::vector<tatum::EdgeId, tatum::Time> sink_clb_max_delay_cache_;
-    mutable vtr::vector<tatum::EdgeId, std::pair<ClusterPinId, ClusterPinId>> pin_cache_min_;
-    mutable vtr::vector<tatum::EdgeId, std::pair<ClusterPinId, ClusterPinId>> pin_cache_max_;
+    mutable vtr::vector<tatum::EdgeId, std::pair<ParentPinId, ParentPinId>> pin_cache_min_;
+    mutable vtr::vector<tatum::EdgeId, std::pair<ParentPinId, ParentPinId>> pin_cache_max_;
+    bool is_flat_;
 };
 
 #include "PostClusterDelayCalculator.tpp"
-#endif

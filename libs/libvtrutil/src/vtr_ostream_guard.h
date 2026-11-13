@@ -1,11 +1,13 @@
-#ifndef VTR_OSTREAM_GUARD_H
-#define VTR_OSTREAM_GUARD_H
+#pragma once
+
+#include <ostream>
 
 namespace vtr {
 
-//A RAII guard class to ensure restoration of output stream format
+///@brief A RAII guard class to ensure restoration of output stream format
 class OsFormatGuard {
   public:
+    ///@brief constructor
     explicit OsFormatGuard(std::ostream& os)
         : os_(os)
         , flags_(os_.flags()) //Save formatting flag state
@@ -13,6 +15,7 @@ class OsFormatGuard {
         , precision_(os.precision())
         , fill_(os.fill()) {}
 
+    ///@brief destructor
     ~OsFormatGuard() {
         os_.flags(flags_); //Restore
         os_.width(width_);
@@ -34,5 +37,3 @@ class OsFormatGuard {
 };
 
 } // namespace vtr
-
-#endif

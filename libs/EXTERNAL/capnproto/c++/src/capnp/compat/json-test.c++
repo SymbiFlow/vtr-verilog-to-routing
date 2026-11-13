@@ -50,6 +50,17 @@ KJ_TEST("basic json encoding") {
   KJ_EXPECT(json.encode(Data::Reader(bytes, 3)) == "[12, 34, 56]");
 }
 
+KJ_TEST("raw encoding") {
+  JsonCodec json;
+
+  auto text = kj::str("{\"field\":\"value\"}");
+  MallocMessageBuilder message;
+  auto value = message.initRoot<JsonValue>();
+  value.setRaw(text);
+
+  KJ_EXPECT(json.encodeRaw(value) == text);
+}
+
 const char ALL_TYPES_JSON[] =
     "{ \"voidField\": null,\n"
     "  \"boolField\": true,\n"
@@ -606,6 +617,17 @@ KJ_TEST("basic json decoding") {
     KJ_EXPECT_THROW_MESSAGE("Unexpected input", json.decodeRaw("\f{}", root));
     KJ_EXPECT_THROW_MESSAGE("Unexpected input", json.decodeRaw("{\v}", root));
   }
+
+  {
+    MallocMessageBuilder message;
+    auto root = message.initRoot<JsonValue>();
+
+    json.decodeRaw(R"("\u007f")", root);
+    KJ_EXPECT(root.which() == JsonValue::STRING);
+
+    char utf_buffer[] = {127, 0};
+    KJ_EXPECT(kj::str(utf_buffer) == root.getString());
+  }
 }
 
 KJ_TEST("maximum nesting depth") {
@@ -645,6 +667,23 @@ KJ_TEST("maximum nesting depth") {
 
     json.decodeRaw(input, root);
   }
+}
+
+KJ_TEST("unknown fields") {
+  JsonCodec json;
+  MallocMessageBuilder message;
+  auto root = message.initRoot<TestJsonAnnotations2>();
+  auto valid = R"({"foo": "a"})"_kj;
+  auto unknown = R"({"foo": "a", "unknown-field": "b"})"_kj;
+  json.decode(valid, root);
+  json.decode(unknown, root);
+  json.setRejectUnknownFields(true);
+  json.decode(valid, root);
+  KJ_EXPECT_THROW_MESSAGE("Unknown field", json.decode(unknown, root));
+
+  // Verify unknown field rejection still works when handling by annotation.
+  json.handleByAnnotation<TestJsonAnnotations2>();
+  KJ_EXPECT_THROW_MESSAGE("Unknown field", json.decode(unknown, root));
 }
 
 class TestCallHandler: public JsonCodec::Handler<Text> {
@@ -973,6 +1012,21 @@ KJ_TEST("rename fields") {
 
     KJ_EXPECT(kj::str(root) == goldenText, root, goldenText);
   }
+}
+
+KJ_TEST("base64 union encoded correctly") {
+  // At one point field handlers were not correctly applied when the field was a member of a union
+  // in a type that was handled by annotation.
+
+  JsonCodec json;
+  json.handleByAnnotation<TestBase64Union>();
+  json.setPrettyPrint(true);
+
+  MallocMessageBuilder message;
+  auto root = message.getRoot<TestBase64Union>();
+  root.initFoo(5);
+
+  KJ_EXPECT(json.encode(root) == "{\"foo\": \"AAAAAAA=\"}", json.encode(root));
 }
 
 }  // namespace

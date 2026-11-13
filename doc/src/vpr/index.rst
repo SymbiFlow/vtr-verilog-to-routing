@@ -7,7 +7,9 @@ VPR (Versatile Place and Route) is an open source academic CAD tool designed for
 Since its public introduction, VPR has been used extensively in many academic projects partly because it is robust, well documented, easy-to-use, and can flexibly target a range of architectures.
 
 VPR takes, as input, a description of an FPGA architecture along with a technology-mapped user circuit.
-It then performs packing, placement, and routing to map the circuit onto the FPGA.
+It then maps the circuit onto the FPGA via packing, placement, routing, and analysis.
+By default VPR uses the **analytical placement flow**, which performs integrated packing and placement followed by routing and analysis.
+The traditional sequential pack → place → route flow is also available (see :ref:`stage_options`).
 The output of VPR includes the FPGA configuration needed to implement the circuit and statistics about the final mapped design (eg. critical path delay, area, etc).
 
 .. |bitcoin_place| image:: https://www.verilogtorouting.org/img/bitcoin_placement_macros.gif
@@ -55,7 +57,9 @@ The purpose of VPR is to make the packing, placement, and routing stages of the 
    graphics
 
    timing_constraints
+   vpr_constraints
    sdc_commands
 
    file_formats
    debug_aids
+   custom_rr_graph_generator

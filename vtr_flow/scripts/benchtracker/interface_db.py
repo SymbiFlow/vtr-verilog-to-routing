@@ -82,7 +82,6 @@ def retrieve_data(x_param, y_param, filters, tasks, dbname="results.db"):
             if t == 0:
                 filter_command = "WHERE "
                 for f in range(len(filters)):
-
                     filter_command += str(filters[f])
                     sql_val_args.extend(filters[f].args)
 
@@ -140,7 +139,7 @@ def export_data_csv_todisk(selected_cols, data, tasks, dir="benchtracker_data"):
 def describe_param(param, mode, tasks, dbname="results.db"):
     """
     Give back metainformation about a parameter to allow for easier filtering.
-    
+
     Param would be an element of the list returned by describe_tasks - space separated name and type
     Returns a 2-tuple describing the parameter type and values for some tasks of a database.
     - 1st value is either 'range' or 'categorical'
@@ -149,7 +148,7 @@ def describe_param(param, mode, tasks, dbname="results.db"):
     db = connect_db(dbname)
     cursor = db.cursor()
 
-    (param_name, param_type) = param.split()
+    param_name, param_type = param.split()
     if param_type == "TEXT":
         mode = "categorical"
     elif mode not in {"categorical", "range"}:

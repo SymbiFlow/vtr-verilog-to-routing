@@ -4,10 +4,10 @@
 ##############################################
 
 # Path to directory of circuits to use
-circuits_dir=benchmarks/titan_other_blif
+circuits_dir=benchmarks/titan_blif/other_benchmarks/stratixiv
 
 # Path to directory of SDC files to use
-sdc_dir=benchmarks/titan_other_blif
+sdc_dir=benchmarks/titan_blif/other_benchmarks/stratixiv
 
 # Path to directory of architectures to use
 archs_dir=arch/titan
@@ -27,5 +27,6 @@ qor_parse_file=qor_vpr_titan.txt
 # Pass requirements
 pass_requirements_file=pass_requirements_vpr_titan.txt
 
-script_params=-starting_stage vpr -track_memory_usage --route_chan_width 300 --max_router_iterations 400 --router_lookahead map
-
+script_params_common=-starting_stage vpr -track_memory_usage --route_chan_width 300 --max_router_iterations 400 --router_lookahead map
+script_params_list_add =
+script_params_list_add = --pack --place --route --analysis

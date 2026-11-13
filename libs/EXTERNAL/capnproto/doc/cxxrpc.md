@@ -16,13 +16,13 @@ not yet implemented.
 
 ## Sample Code
 
-The [Calculator example](https://github.com/sandstorm-io/capnproto/tree/master/c++/samples) implements
+The [Calculator example](https://github.com/capnproto/capnproto/tree/master/c++/samples) implements
 a fully-functional Cap'n Proto client and server.
 
 ## KJ Concurrency Framework
 
 RPC naturally requires a notion of concurrency.  Unfortunately,
-[all concurrency models suck](https://plus.google.com/u/0/+KentonVarda/posts/D95XKtB5DhK).
+[all concurrency models suck](https://web.archive.org/web/20170718202612/https://plus.google.com/+KentonVarda/posts/D95XKtB5DhK).
 
 Cap'n Proto's RPC is based on the [KJ library](cxx.html#kj-library)'s event-driven concurrency
 framework.  The core of the KJ asynchronous framework (events, promises, callbacks) is defined in
@@ -35,8 +35,8 @@ must have its own event loop.  KJ discourages fine-grained interaction between t
 synchronization is expensive and error-prone.  Instead, threads are encouraged to communicate
 through Cap'n Proto RPC.
 
-KJ's event loop model bears a lot of similarity to the Javascript concurrency model.  Experienced
-Javascript hackers -- especially node.js hackers -- will feel right at home.
+KJ's event loop model bears a lot of similarity to the JavaScript concurrency model.  Experienced
+JavaScript hackers -- especially node.js hackers -- will feel right at home.
 
 _As of version 0.4, the only supported way to communicate between threads is over pipes or
 socketpairs.  This will be improved in future versions.  For now, just set up an RPC connection
@@ -64,7 +64,7 @@ kj::Promise<void> sendEmail(kj::StringPtr address,
 // the message has been successfully sent.
 {% endhighlight %}
 
-As you will see, KJ promises are very similar to the evolving Javascript promise standard, and
+As you will see, KJ promises are very similar to the evolving JavaScript promise standard, and
 much of the [wisdom around it](https://www.google.com/search?q=javascript+promises) can be directly
 applied to KJ promises.
 
@@ -394,7 +394,7 @@ addresses.  Additionally, a Unix domain socket can be specified as `unix:` follo
 and an abstract Unix domain socket can be specified as `unix-abstract:` followed by an identifier.
 
 For a more complete example, see the
-[calculator client sample](https://github.com/sandstorm-io/capnproto/tree/master/c++/samples/calculator-client.c++).
+[calculator client sample](https://github.com/capnproto/capnproto/tree/master/c++/samples/calculator-client.c++).
 
 ### Starting a server
 
@@ -434,7 +434,7 @@ path name, and an abstract Unix domain socket can be specified as `unix-abstract
 an identifier.
 
 For a more complete example, see the
-[calculator server sample](https://github.com/sandstorm-io/capnproto/tree/master/c++/samples/calculator-server.c++).
+[calculator server sample](https://github.com/capnproto/capnproto/tree/master/c++/samples/calculator-server.c++).
 
 ## Debugging
 

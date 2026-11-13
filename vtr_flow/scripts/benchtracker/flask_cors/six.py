@@ -687,7 +687,6 @@ if PY3:
             raise value.with_traceback(tb)
         raise value
 
-
 else:
 
     def exec_(_code_, _globs_=None, _locs_=None):
@@ -702,27 +701,21 @@ else:
             _locs_ = _globs_
         exec("""exec _code_ in _globs_, _locs_""")
 
-    exec_(
-        """def reraise(tp, value, tb=None):
+    exec_("""def reraise(tp, value, tb=None):
     raise tp, value, tb
-"""
-    )
+""")
 
 
 if sys.version_info[:2] == (3, 2):
-    exec_(
-        """def raise_from(value, from_value):
+    exec_("""def raise_from(value, from_value):
     if from_value is None:
         raise value
     raise value from from_value
-"""
-    )
+""")
 elif sys.version_info[:2] > (3, 2):
-    exec_(
-        """def raise_from(value, from_value):
+    exec_("""def raise_from(value, from_value):
     raise value from from_value
-"""
-    )
+""")
 else:
 
     def raise_from(value, from_value):
@@ -809,13 +802,13 @@ if sys.version_info[0:2] < (3, 4):
 
         return wrapper
 
-
 else:
     wraps = functools.wraps
 
 
 def with_metaclass(meta, *bases):
     """Create a base class with a metaclass."""
+
     # This requires a bit of explanation: the basic idea is to make a dummy
     # metaclass for one level of class instantiation that replaces itself with
     # the actual metaclass.

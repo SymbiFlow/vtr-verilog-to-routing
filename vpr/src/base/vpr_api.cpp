@@ -11,19 +11,24 @@
  * that doing so can break the correctness of VPR
  */
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <ctime>
-#include <chrono>
 #include <cmath>
-#include <sstream>
+#include <memory>
+#include <vector>
 
+#include "PreClusterTimingManager.h"
+#include "flat_placement_types.h"
+#include "cluster_util.h"
+#include "physical_types.h"
+#include "place_macro.h"
+#include "verify_placement.h"
+#include "vpr_context.h"
 #include "vtr_assert.h"
-#include "vtr_math.h"
 #include "vtr_log.h"
 #include "vtr_version.h"
 #include "vtr_time.h"
-#include "vtr_path.h"
 
 #include "vpr_types.h"
 #include "vpr_utils.h"
@@ -31,43 +36,49 @@
 #include "atom_netlist.h"
 #include "read_netlist.h"
 #include "check_netlist.h"
-#include "read_blif.h"
 #include "draw.h"
 #include "place_and_route.h"
 #include "pack.h"
 #include "place.h"
-#include "SetupGrid.h"
+#include "setup_grid.h"
+#include "setup_vib_grid.h"
 #include "setup_clocks.h"
+#include "setup_noc.h"
+#include "read_xml_noc_traffic_flows_file.h"
+#include "noc_routing_algorithm_creator.h"
 #include "stats.h"
 #include "read_options.h"
 #include "echo_files.h"
-#include "read_xml_arch_file.h"
-#include "SetupVPR.h"
-#include "ShowSetup.h"
+#include "setup_vpr.h"
+#include "show_setup.h"
 #include "CheckArch.h"
-#include "CheckSetup.h"
+#include "check_setup.h"
 #include "rr_graph.h"
 #include "pb_type_graph.h"
-#include "route_common.h"
-#include "timing_place_lookup.h"
+#include "route.h"
 #include "route_export.h"
+#include "route_common.h"
 #include "vpr_api.h"
 #include "read_sdc.h"
 #include "power.h"
 #include "pack_types.h"
-#include "lb_type_rr_graph.h"
 #include "read_activity.h"
 #include "net_delay.h"
-#include "AnalysisDelayCalculator.h"
-#include "timing_info.h"
+#include "concrete_timing_info.h"
 #include "netlist_writer.h"
-#include "net_delay.h"
-#include "RoutingDelayCalculator.h"
+#include "AnalysisDelayCalculator.h"
 #include "check_route.h"
 #include "constant_nets.h"
 #include "atom_netlist_utils.h"
-#include "cluster.h"
 #include "output_clustering.h"
+#include "vpr_constraints_reader.h"
+#include "place_util.h"
+#include "timing_fail_error.h"
+#include "analytical_placement_flow.h"
+#include "verify_clustering.h"
+#include "device_size_estimate.h"
+
+#include "vpr_constraints_writer.h"
 
 #include "pack_report.h"
 #include "overuse_report.h"
@@ -77,23 +88,29 @@
 #include "tatum/echo_writer.hpp"
 
 #include "read_route.h"
-#include "read_blif.h"
 #include "read_place.h"
 
 #include "arch_util.h"
 
 #include "post_routing_pb_pin_fixup.h"
+#include "sync_netlists_to_routing_flat.h"
 
-#include "log.h"
-#include "iostream"
+#include "load_flat_place.h"
 
 #ifdef VPR_USE_TBB
-#    include <tbb/task_scheduler_init.h>
-
-//We need to store the scheduler object so any concurrency
-//setting is persistent
-std::unique_ptr<tbb::task_scheduler_init> tbb_scheduler;
+#define TBB_PREVIEW_GLOBAL_CONTROL 1 /* Needed for compatibility with old TBB versions */
+#include <tbb/task_arena.h>
+#include <tbb/global_control.h>
 #endif
+
+#ifndef NO_SERVER
+#include "gateio.h"
+#include "serverupdate.h"
+#endif /* NO_SERVER */
+
+#ifndef NO_GRAPHICS
+#include "draw_global.h"
+#endif // NO_GRAPHICS
 
 /* Local subroutines */
 static void free_complex_block_types();
@@ -101,12 +118,15 @@ static void free_complex_block_types();
 static void free_device(const t_det_routing_arch& routing_arch);
 static void free_circuit();
 
-static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup,
-                                                    const t_arch& arch,
-                                                    const int wire_segment_length,
-                                                    int* opin_switch_fanin,
-                                                    int* wire_switch_fanin,
-                                                    int* ipin_switch_fanin);
+/** Set all port equivalences in the architecture to NONE. This is used in the 
+ * case of the flat router where port equivalence does not make sense.
+ * We could just keep it set and ignore it, but that prevents compatibility
+ * with OpenFPGA which takes it seriously. */
+static void unset_port_equivalences(DeviceContext& device_ctx);
+
+/* @brief Check if packer is the only stage to be performed */
+static bool is_pack_only(const t_vpr_setup& vpr_setup);
+
 /* Local subroutines end */
 
 ///@brief Display general VPR information
@@ -132,6 +152,49 @@ void vpr_print_args(int argc, const char** argv) {
             VTR_LOG(" ");
         }
         VTR_LOG("%s", argv[i]);
+    }
+    VTR_LOG("\n\n");
+}
+
+/**
+ * @brief Returns the argument quoted for a POSIX shell, if it needs to be.
+ */
+static std::string shell_quote(const std::string& arg) {
+    constexpr const char* safe_chars = "_-+=./:,@%";
+    bool is_safe = !arg.empty();
+    for (char c : arg) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && (c == '\0' || std::strchr(safe_chars, c) == nullptr)) {
+            is_safe = false;
+            break;
+        }
+    }
+    if (is_safe) {
+        return arg;
+    }
+
+    // Within single quotes nothing is special except the single quote itself, which is written as '\''.
+    std::string quoted = "'";
+    for (char c : arg) {
+        if (c == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "'";
+    return quoted;
+}
+
+void vpr_print_expanded_args(const char* prog, const t_options& options) {
+    if (options.options_file.provenance() != argparse::Provenance::SPECIFIED) {
+        return;
+    }
+
+    VTR_LOG("Options were read from %s (--options_file). The equivalent command-line, which can be re-run without the file, is:\n",
+            options.options_file.value().c_str());
+    VTR_LOG("%s", shell_quote(prog).c_str());
+    for (const std::string& arg : options.expanded_args) {
+        VTR_LOG(" %s", shell_quote(arg).c_str());
     }
     VTR_LOG("\n\n");
 }
@@ -175,6 +238,7 @@ void vpr_init(const int argc, const char** argv, t_options* options, t_vpr_setup
     //This provides a reference in the log file to exactly
     //how VPR was run, aiding in re-producibility
     vpr_print_args(argc, argv);
+    vpr_print_expanded_args(argv[0], *options);
 
     vpr_init_with_options(options, vpr_setup, arch);
 }
@@ -211,12 +275,11 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
 #ifdef VPR_USE_TBB
     //Using Thread Building Blocks
     if (num_workers == 0) {
-        //Use default concurrency (i.e. maximum conccurency)
-        num_workers = tbb::task_scheduler_init::default_num_threads();
+        //Use default concurrency (i.e. maximum concurrency)
+        num_workers = tbb::this_task_arena::max_concurrency();
     }
 
     VTR_LOG("Using up to %zu parallel worker(s)\n", num_workers);
-    tbb_scheduler = std::make_unique<tbb::task_scheduler_init>(num_workers);
 #else
     //No parallel execution support
     if (num_workers != 1) {
@@ -227,10 +290,12 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
 
     vpr_setup->TimingEnabled = options->timing_analysis;
     vpr_setup->device_layout = options->device_layout;
+    vpr_setup->device_width = options->device_width;
     vpr_setup->constant_net_method = options->constant_net_method;
     vpr_setup->clock_modeling = options->clock_modeling;
     vpr_setup->two_stage_clock_routing = options->two_stage_clock_routing;
     vpr_setup->exit_before_pack = options->exit_before_pack;
+    vpr_setup->num_workers = num_workers;
 
     VTR_LOG("\n");
     VTR_LOG("Architecture file: %s\n", options->ArchFile.value().c_str());
@@ -238,13 +303,13 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
     VTR_LOG("\n");
 
     /* Determine whether echo is on or off */
-    setEchoEnabled(options->CreateEchoFile);
+    init_echo_files_from_options(options->echo_file.value());
 
     /*
      * Initialize the functions names for which VPR_ERRORs
      * are demoted to VTR_LOG_WARNs
      */
-    for (std::string func_name : vtr::split(options->disable_errors, std::string(":"))) {
+    for (const std::string& func_name : vtr::StringToken(options->disable_errors.value()).split(":")) {
         map_error_activation_status(func_name);
     }
 
@@ -252,7 +317,7 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
      * Initialize the functions names for which
      * warnings are being suppressed
      */
-    std::vector<std::string> split_warning_option = vtr::split(options->suppress_warnings, std::string(","));
+    std::vector<std::string> split_warning_option = vtr::StringToken(options->suppress_warnings.value()).split(",");
     std::string warn_log_file;
     std::string warn_functions;
     // If no log file name is provided, the specified warning
@@ -265,7 +330,7 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
     }
 
     set_noisy_warn_log_file(warn_log_file);
-    for (std::string func_name : vtr::split(warn_functions, std::string(":"))) {
+    for (const std::string& func_name : vtr::StringToken(warn_functions).split(":")) {
         add_warnings_to_suppress(func_name);
     }
 
@@ -275,56 +340,44 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
              true,
              &vpr_setup->FileNameOpts,
              arch,
-             &vpr_setup->user_models,
-             &vpr_setup->library_models,
              &vpr_setup->NetlistOpts,
              &vpr_setup->PackerOpts,
              &vpr_setup->PlacerOpts,
-             &vpr_setup->AnnealSched,
+             &vpr_setup->APOpts,
              &vpr_setup->RouterOpts,
              &vpr_setup->AnalysisOpts,
-             &vpr_setup->RoutingArch,
-             &vpr_setup->PackerRRGraph,
+             &vpr_setup->CRROpts,
+             &vpr_setup->NocOpts,
+             &vpr_setup->ServerOpts,
+             vpr_setup->RoutingArch,
              vpr_setup->Segments,
              &vpr_setup->Timing,
              &vpr_setup->ShowGraphics,
              &vpr_setup->GraphPause,
              &vpr_setup->SaveGraphics,
              &vpr_setup->GraphicsCommands,
-             &vpr_setup->PowerOpts);
+             &vpr_setup->RendererType,
+             &vpr_setup->PowerOpts,
+             vpr_setup);
 
     /* Check inputs are reasonable */
     CheckArch(*arch);
 
-    /* Verify settings don't conflict or otherwise not make sense */
-    CheckSetup(vpr_setup->PackerOpts,
-               vpr_setup->PlacerOpts,
-               vpr_setup->RouterOpts,
-               vpr_setup->RoutingArch, vpr_setup->Segments, vpr_setup->Timing,
-               arch->Chans);
+    // Verify settings don't conflict or otherwise not make sense
+    check_setup(*vpr_setup, arch->Chans);
 
     /* flush any messages to user still in stdout that hasn't gotten displayed */
     fflush(stdout);
 
     /* Read blif file and sweep unused components */
     auto& atom_ctx = g_vpr_ctx.mutable_atom();
-    atom_ctx.nlist = read_and_process_circuit(options->circuit_format,
-                                              vpr_setup->PackerOpts.blif_file_name.c_str(),
-                                              vpr_setup->user_models,
-                                              vpr_setup->library_models,
-                                              vpr_setup->NetlistOpts.const_gen_inference,
-                                              vpr_setup->NetlistOpts.absorb_buffer_luts,
-                                              vpr_setup->NetlistOpts.sweep_dangling_primary_ios,
-                                              vpr_setup->NetlistOpts.sweep_dangling_nets,
-                                              vpr_setup->NetlistOpts.sweep_dangling_blocks,
-                                              vpr_setup->NetlistOpts.sweep_constant_primary_outputs,
-                                              vpr_setup->NetlistOpts.netlist_verbosity);
+    atom_ctx.mutable_netlist() = read_and_process_circuit(options->circuit_format, *vpr_setup, *arch);
 
     if (vpr_setup->PowerOpts.do_power) {
         //Load the net activity file for power estimation
         vtr::ScopedStartFinishTimer t("Load Activity File");
         auto& power_ctx = g_vpr_ctx.mutable_power();
-        power_ctx.atom_net_power = read_activity(atom_ctx.nlist, vpr_setup->FileNameOpts.ActFile.c_str());
+        power_ctx.atom_net_power = read_activity(atom_ctx.netlist(), vpr_setup->FileNameOpts.ActFile.c_str());
     }
 
     //Initialize timing graph and constraints
@@ -332,23 +385,96 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
         auto& timing_ctx = g_vpr_ctx.mutable_timing();
         {
             vtr::ScopedStartFinishTimer t("Build Timing Graph");
-            timing_ctx.graph = TimingGraphBuilder(atom_ctx.nlist, atom_ctx.lookup).timing_graph(options->allow_dangling_combinational_nodes);
+            timing_ctx.graph = TimingGraphBuilder(atom_ctx.netlist(), atom_ctx.mutable_lookup(), arch->models).timing_graph(options->allow_dangling_combinational_nodes);
             VTR_LOG("  Timing Graph Nodes: %zu\n", timing_ctx.graph->nodes().size());
             VTR_LOG("  Timing Graph Edges: %zu\n", timing_ctx.graph->edges().size());
             VTR_LOG("  Timing Graph Levels: %zu\n", timing_ctx.graph->levels().size());
         }
         {
-            print_netlist_clock_info(atom_ctx.nlist);
+            print_netlist_clock_info(atom_ctx.netlist(), arch->models);
         }
         {
             vtr::ScopedStartFinishTimer t("Load Timing Constraints");
-            timing_ctx.constraints = read_sdc(vpr_setup->Timing, atom_ctx.nlist, atom_ctx.lookup, *timing_ctx.graph);
+            timing_ctx.constraints = read_sdc(vpr_setup->Timing, atom_ctx.netlist(), atom_ctx.lookup(), arch->models, *timing_ctx.graph);
+        }
+        {
+            set_terminate_if_timing_fails(options->terminate_if_timing_fails);
+        }
+    }
+
+    //Initialize vpr floorplanning and routing constraints
+    auto& filename_opts = vpr_setup->FileNameOpts;
+    if (!filename_opts.read_vpr_constraints_file.empty()) {
+        load_vpr_constraints_file(filename_opts.read_vpr_constraints_file.c_str());
+
+        // Check if there are route constraints specified, and if the clock modeling setting is explicitly specified
+        // If both conditions are met, issue a warning that the route constraints will override the clock modeling setting.
+        if (g_vpr_ctx.routing().constraints.get_num_route_constraints() && options->clock_modeling.provenance() == argparse::Provenance::SPECIFIED) {
+            VTR_LOG_WARN("Route constraint(s) detected and will override clock modeling setting.\n");
         }
     }
 
     fflush(stdout);
 
-    ShowSetup(*vpr_setup);
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+    device_ctx.pad_loc_type = vpr_setup->PlacerOpts.pad_loc_type;
+}
+
+/** Port equivalence does not make sense during flat routing.
+ * Remove port equivalence from all ports in the architecture */
+static void unset_port_equivalences(DeviceContext& device_ctx) {
+    for (auto& physical_type : device_ctx.physical_tile_types) {
+        for (auto& sub_tile : physical_type.sub_tiles) {
+            for (auto& port : sub_tile.ports) {
+                port.equivalent = PortEquivalence::NONE;
+            }
+        }
+    }
+    for (auto& logical_type : device_ctx.logical_block_types) {
+        if (!logical_type.pb_type)
+            continue;
+        for (int i = 0; i < logical_type.pb_type->num_ports; i++) {
+            logical_type.pb_type->ports[i].equivalent = PortEquivalence::NONE;
+        }
+    }
+}
+
+void vpr_print_arch_resources(const t_vpr_setup& vpr_setup, const t_arch& Arch) {
+    vtr::ScopedStartFinishTimer timer("Build Device Grid");
+    /* Read in netlist file for placement and routing */
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+
+    device_ctx.arch = &Arch;
+
+    /*
+     *Load the device grid
+     */
+
+    //Record the resource requirement
+    std::map<t_logical_block_type_ptr, size_t> num_type_instances;
+
+    //Build the device
+    for (const t_grid_def& l : Arch.grid_layouts) {
+        float target_device_utilization = vpr_setup.PackerOpts.target_device_utilization;
+        device_ctx.grid = create_device_grid(l.name, Arch.grid_layouts, num_type_instances, target_device_utilization);
+
+        report_device_grid_stats(device_ctx.grid);
+
+        std::string title("\nResource usage for device layout " + l.name + "...\n");
+        VTR_LOG(title.c_str());
+        for (const t_logical_block_type& type : device_ctx.logical_block_types) {
+            if (is_empty_type(&type)) continue;
+
+            VTR_LOG("\tArchitecture\n");
+            for (const t_physical_tile_type_ptr equivalent_tile : type.equivalent_tiles) {
+                //get the number of equivalent tile across all layers
+                int num_instances = (int)device_ctx.grid.num_instances(equivalent_tile, -1);
+
+                VTR_LOG("\t\t%d\tblocks of type: %s\n",
+                        num_instances, equivalent_tile->name.c_str());
+            }
+        }
+    }
 }
 
 bool vpr_flow(t_vpr_setup& vpr_setup, t_arch& arch) {
@@ -356,6 +482,12 @@ bool vpr_flow(t_vpr_setup& vpr_setup, t_arch& arch) {
         VTR_LOG_WARN("Exiting before packing as requested.\n");
         return true;
     }
+
+#ifdef VPR_USE_TBB
+    /* Set this here, because tbb::global_control doesn't control anything once it's out of scope
+     * (contrary to the name). */
+    tbb::global_control c(tbb::global_control::max_allowed_parallelism, vpr_setup.num_workers);
+#endif
 
     { //Pack
         bool pack_success = vpr_pack_flow(vpr_setup, arch);
@@ -365,37 +497,138 @@ bool vpr_flow(t_vpr_setup& vpr_setup, t_arch& arch) {
         }
     }
 
-    vpr_create_device(vpr_setup, arch);
+    { // Analytical Place
+        if (vpr_setup.APOpts.doAP == e_stage_action::DO) {
+            // Passing flat placement input if provided and not loaded yet.
+            if (!vpr_setup.FileNameOpts.read_flat_place_file.empty() && !g_vpr_ctx.atom().flat_placement_info().valid) {
+                g_vpr_ctx.mutable_atom().mutable_flat_placement_info() = read_flat_placement(vpr_setup.FileNameOpts.read_flat_place_file,
+                                                                                             g_vpr_ctx.atom().netlist());
+            }
 
-    vpr_init_graphics(vpr_setup, arch);
+            // TODO: Make this return a bool if the placement was successful or not.
+            run_analytical_placement_flow(vpr_setup);
+
+            // If only global placement was requested, there is no clustering
+            // or placement for the rest of the flow to use; stop here.
+            if (vpr_setup.APOpts.stop_after_global_placement) {
+                vpr_close_graphics(vpr_setup);
+                return true;
+            }
+
+            // Write out a flat placement file at the end of Analytical Placement
+            // flow if the option is specified.
+            if (!vpr_setup.FileNameOpts.write_flat_place_file.empty()) {
+                write_flat_placement(vpr_setup.FileNameOpts.write_flat_place_file.c_str(),
+                                     g_vpr_ctx.clustering().clb_nlist,
+                                     g_vpr_ctx.placement().block_locs(),
+                                     g_vpr_ctx.clustering().atoms_lookup,
+                                     vpr_setup.FileNameOpts.flat_place_verbosity);
+            }
+
+            // Print the placement generated by AP to a .place file.
+            auto& filename_opts = vpr_setup.FileNameOpts;
+            auto& cluster_ctx = g_vpr_ctx.clustering();
+            const auto& block_locs = g_vpr_ctx.placement().block_locs();
+            auto& placement_id = g_vpr_ctx.mutable_placement().placement_id;
+            placement_id = print_place(filename_opts.NetFile.c_str(),
+                                       cluster_ctx.clb_nlist.netlist_id().c_str(),
+                                       filename_opts.PlaceFile.c_str(),
+                                       block_locs);
+
+            // Due to flow divergence, vpr_create_device is never called.
+            // We handle creating the device grid within run_analytical_placement_flow()
+            // (once the device size is known) and the RR graph within the AP
+            // flow itself (in FullLegalizer::recreate_device_if_needed) or,
+            // if timing analysis is enabled, even earlier while computing the
+            // placement delay model. The clock networks are set up inside
+            // run_analytical_placement_flow(), right after the device grid is
+            // created, since the RR graph (built later in that same function)
+            // depends on the clock networks already being set up.
+            // TODO: This flow-divergence needs to be cleaned up such that AP
+            //       and No-AP hit the same setup code to prevent issues.
+        }
+    }
+
+    // The AP flow creates the device internally. All other flows create the
+    // device here.
+    if (vpr_setup.APOpts.doAP != e_stage_action::DO) {
+        bool pack_only = is_pack_only(vpr_setup);
+        vpr_create_device(vpr_setup, arch, pack_only);
+    }
+
+    // If packing is not skipped, cluster netlist contain valid information, so
+    // we can print the resource usage and device utilization
+    if (vpr_setup.PackerOpts.doPacking != e_stage_action::SKIP) {
+        float target_device_utilization = vpr_setup.PackerOpts.target_device_utilization;
+        // Print the number of resources in netlist and number of resources available in architecture
+        print_resource_usage();
+        // Print the device utilization
+        print_device_utilization(target_device_utilization);
+    }
+
+    // TODO: Placer still assumes that cluster net list is used - graphics can not work with flat routing yet
+    bool is_flat = vpr_setup.RouterOpts.flat_routing;
+    // Initialize graphics now that the device context is valid (for both AP and non-AP paths).
+    // This call also reinitializes graphics state and re-sizes draw arrays in case the AP flow
+    // changed the device dimensions during full legalization. It also re-runs init_draw_coords():
+    // the call inside vpr_create_device() fired before the graphics flags were set, so it hit the
+    // early-return and left initial_world at zero.
+    init_graphics(vpr_setup, arch);
+
+    vpr_init_server(vpr_setup);
+
     { //Place
-        bool place_success = vpr_place_flow(vpr_setup, arch);
+        const auto& placement_net_list = (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
+        bool place_success = vpr_place_flow(placement_net_list, vpr_setup, arch);
 
         if (!place_success) {
-            std::cout << "failed placement" << std::endl;
             return false; //Unimplementable
         }
     }
+
+    const Netlist<>& router_net_list = is_flat ? (const Netlist<>&)g_vpr_ctx.atom().netlist() : (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
+    if (is_flat) {
+        VTR_LOG_WARN("Disabling port equivalence in the architecture since flat routing is enabled.\n");
+        unset_port_equivalences(g_vpr_ctx.mutable_device());
+    }
     RouteStatus route_status;
     { //Route
-        route_status = vpr_route_flow(vpr_setup, arch);
+        route_status = vpr_route_flow(router_net_list, vpr_setup, arch, is_flat);
     }
     { //Analysis
-        vpr_analysis_flow(vpr_setup, arch, route_status);
+        vpr_analysis_flow(router_net_list, vpr_setup, arch, route_status, is_flat);
     }
+
+    //close the graphics
     vpr_close_graphics(vpr_setup);
 
     return route_status.success();
 }
 
-void vpr_create_device(t_vpr_setup& vpr_setup, const t_arch& arch) {
+void vpr_create_device(t_vpr_setup& vpr_setup, const t_arch& arch, const bool pack_only) {
     vtr::ScopedStartFinishTimer timer("Create Device");
     vpr_create_device_grid(vpr_setup, arch);
 
     vpr_setup_clock_networks(vpr_setup, arch);
 
-    if (vpr_setup.PlacerOpts.place_chan_width != NO_FIXED_CHANNEL_WIDTH) {
-        vpr_create_rr_graph(vpr_setup, arch, vpr_setup.PlacerOpts.place_chan_width);
+    vpr_setup_noc(vpr_setup, arch);
+
+    // Do not create RR graph in AP flow with fixed device since it was already
+    // built on the correct device size.
+    // TODO: This check makes vpr_create_device flow-aware. Instead, we should
+    //       record the grid and channel width used when the RR graph was built,
+    //       and check if they have changed. If so, the RR graph should be rebuilt.
+    //       This would allow us to determine when to (re)build the RR graph in a
+    //       more generic and flow-independent way.
+    bool is_ap_and_fixed_device = (vpr_setup.APOpts.doAP == e_stage_action::DO)
+                                  && has_fixed_device_size(vpr_setup);
+
+    if (!is_ap_and_fixed_device
+        && vpr_setup.PlacerOpts.place_chan_width != NO_FIXED_CHANNEL_WIDTH
+        && !(pack_only && vpr_setup.RoutingArch.write_rr_graph_filename.empty())) {
+        // The RR graph built by this function should contain only the intra-cluster resources.
+        // If the flat router is used, additional resources are added when routing begins.
+        vpr_create_rr_graph(vpr_setup, arch, vpr_setup.PlacerOpts.place_chan_width, false);
     }
 }
 
@@ -410,8 +643,6 @@ void vpr_create_device_grid(const t_vpr_setup& vpr_setup, const t_arch& Arch) {
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& device_ctx = g_vpr_ctx.mutable_device();
 
-    device_ctx.arch = &Arch;
-
     /*
      *Load the device grid
      */
@@ -424,61 +655,14 @@ void vpr_create_device_grid(const t_vpr_setup& vpr_setup, const t_arch& Arch) {
 
     //Build the device
     float target_device_utilization = vpr_setup.PackerOpts.target_device_utilization;
-    device_ctx.grid = create_device_grid(vpr_setup.device_layout, Arch.grid_layouts, num_type_instances, target_device_utilization);
-
-    /*
-     *Report on the device
-     */
-    size_t num_grid_tiles = count_grid_tiles(device_ctx.grid);
-    VTR_LOG("FPGA sized to %zu x %zu: %zu grid tiles (%s)\n", device_ctx.grid.width(), device_ctx.grid.height(), num_grid_tiles, device_ctx.grid.name().c_str());
-
-    VTR_LOG("\n");
-    VTR_LOG("Resource usage...\n");
-    for (const auto& type : device_ctx.logical_block_types) {
-        if (is_empty_type(&type)) continue;
-
-        VTR_LOG("\tNetlist\n\t\t%d\tblocks of type: %s\n",
-                num_type_instances[&type], type.name);
-
-        VTR_LOG("\tArchitecture\n");
-        for (const auto equivalent_tile : type.equivalent_tiles) {
-            VTR_LOG("\t\t%d\tblocks of type: %s\n",
-                    device_ctx.grid.num_instances(equivalent_tile), equivalent_tile->name);
-        }
+    device_ctx.grid = create_device_grid(vpr_setup.device_layout, Arch.grid_layouts, num_type_instances, target_device_utilization, vpr_setup.device_width);
+    if (!Arch.vib_infs.empty()) {
+        device_ctx.vib_grid = create_vib_device_grid(vpr_setup.device_layout, Arch.vib_grid_layouts);
     }
-    VTR_LOG("\n");
 
-    float device_utilization = calculate_device_utilization(device_ctx.grid, num_type_instances);
-    VTR_LOG("Device Utilization: %.2f (target %.2f)\n", device_utilization, target_device_utilization);
-    for (const auto& type : device_ctx.physical_tile_types) {
-        if (is_empty_type(&type)) {
-            continue;
-        }
-
-        if (device_ctx.grid.num_instances(&type) != 0) {
-            VTR_LOG("\tPhysical Tile %s:\n", type.name);
-
-            auto equivalent_sites = get_equivalent_sites_set(&type);
-
-            for (auto logical_block : equivalent_sites) {
-                float util = 0.;
-                size_t num_inst = device_ctx.grid.num_instances(&type);
-                if (num_inst != 0) {
-                    util = float(num_type_instances[logical_block]) / num_inst;
-                }
-                VTR_LOG("\tBlock Utilization: %.2f Logical Block: %s\n", util, logical_block->name);
-            }
-        }
-    }
-    VTR_LOG("\n");
-
-    if (!device_ctx.grid.limiting_resources().empty()) {
-        std::vector<std::string> limiting_block_names;
-        for (auto blk_type : device_ctx.grid.limiting_resources()) {
-            limiting_block_names.push_back(blk_type->name);
-        }
-        VTR_LOG("FPGA size limited by block type(s): %s\n", vtr::join(limiting_block_names, " ").c_str());
-        VTR_LOG("\n");
+    report_device_grid_stats(device_ctx.grid);
+    if (isEchoFileEnabled(E_ECHO_DEVICE_GRID)) {
+        write_device_grid(getEchoFileName(E_ECHO_DEVICE_GRID), device_ctx.grid);
     }
 }
 
@@ -488,17 +672,68 @@ void vpr_setup_clock_networks(t_vpr_setup& vpr_setup, const t_arch& Arch) {
     }
 }
 
+/**
+ * @brief If the user provided the "--noc on" option then the noc is
+ *        setup by creating an internal model and storing the NoC
+ *        constraints. Additionally, the graphics state is updated
+ *        to include a NoC button to display it.
+ *
+ * @param vpr_setup A data structure that stores all the user provided option
+ *                  to vpr.
+ * @param arch Contains the parsed information from the architecture
+ *             description file.
+ */
+void vpr_setup_noc(const t_vpr_setup& vpr_setup, const t_arch& arch) {
+    // check if the user provided the option to model the noc
+    if (vpr_setup.NocOpts.noc) {
+        // create the NoC model based on the user description from the arch file
+        setup_noc(arch);
+        // read and store the noc traffic flow information
+        read_xml_noc_traffic_flows_file(vpr_setup.NocOpts.noc_flows_file.c_str());
+        // create the NoC routing algorithm based on the user input
+        vpr_setup_noc_routing_algorithm(vpr_setup.NocOpts.noc_routing_algorithm);
+
+#ifndef NO_GRAPHICS
+        // setup the graphics
+        // if the user turned on "noc" in the command line, then we also want them to have the option to display the noc, so set that option here to be able to display it.
+        // if the "noc" was not turned on, then we don't need to provide the user with the option to display it
+        t_draw_state* draw_state = get_draw_state_vars();
+        draw_state->show_noc_button = true;
+#endif
+    }
+}
+
+/**
+ * @brief Constructs a NoC routing algorithm that is identified by a user
+ * provided string. Then the newly created routing algorithm is stored
+ * inside the global NoC context.
+ *
+ * @param noc_routing_algorithm_name A user provided string that identifies a
+ * NoC routing algorithm
+ */
+void vpr_setup_noc_routing_algorithm(const std::string& noc_routing_algorithm_name) {
+    // Need to be able to modify the NoC context, since we will be adding the
+    // newly created routing algorithm to it
+    auto& noc_ctx = g_vpr_ctx.mutable_noc();
+
+    noc_ctx.noc_flows_router = NocRoutingAlgorithmCreator::create_routing_algorithm(noc_routing_algorithm_name,
+                                                                                    noc_ctx.noc_model);
+}
+
 bool vpr_pack_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
     auto& packer_opts = vpr_setup.PackerOpts;
 
     bool status = true;
 
-    if (packer_opts.doPacking == STAGE_SKIP) {
+    if (packer_opts.doPacking == e_stage_action::SKIP) {
         //pass
     } else {
-        if (packer_opts.doPacking == STAGE_DO) {
+        if (packer_opts.doPacking == e_stage_action::DO) {
             //Do the actual packing
             status = vpr_pack(vpr_setup, arch);
+            if (!status) {
+                return status;
+            }
 
             //TODO: to be consistent with placement/routing vpr_pack should really
             //      load the netlist data structures itself, instead of re-loading
@@ -507,20 +742,20 @@ bool vpr_pack_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
             //Load the result from the .net file
             vpr_load_packing(vpr_setup, arch);
         } else {
-            VTR_ASSERT(packer_opts.doPacking == STAGE_LOAD);
-            //Load a previous packing from the .net file
-            vpr_load_packing(vpr_setup, arch);
+            VTR_ASSERT(packer_opts.doPacking == e_stage_action::LOAD);
+
+            // generate a .net file by legalizing an input flat placement file
+            if (packer_opts.load_flat_placement) {
+                //Load and legalizer flat placement file
+                vpr_load_flat_placement(vpr_setup, arch);
+
+                //Load the result from the .net file
+                vpr_load_packing(vpr_setup, arch);
+            } else {
+                //Load a previous packing from the .net file
+                vpr_load_packing(vpr_setup, arch);
+            }
         }
-
-        /* Sanity check the resulting netlist */
-        check_netlist(packer_opts.pack_verbosity);
-
-        /* Output the netlist stats to console. */
-        printClusteredNetlistStats();
-
-        // print the total number of used physical blocks for each
-        // physical block type after finishing the packing stage
-        print_pb_type_count(g_vpr_ctx.clustering().clb_nlist);
     }
 
     return status;
@@ -529,68 +764,75 @@ bool vpr_pack_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
 bool vpr_pack(t_vpr_setup& vpr_setup, const t_arch& arch) {
     vtr::ScopedStartFinishTimer timer("Packing");
 
-    /* If needed, estimate inter-cluster delay. Assume the average routing hop goes out of
-     * a block through an opin switch to a length-4 wire, then through a wire switch to another
-     * length-4 wire, then through a wire-to-ipin-switch into another block. */
-    int wire_segment_length = 4;
-
-    float inter_cluster_delay = UNDEFINED;
-    if (vpr_setup.PackerOpts.timing_driven
-        && vpr_setup.PackerOpts.auto_compute_inter_cluster_net_delay) {
-        /* We want to determine a reasonable fan-in to the opin, wire, and ipin switches, based
-         * on which the intercluster delays can be estimated. The fan-in of a switch influences its
-         * delay.
-         *
-         * The fan-in of the switch depends on the architecture (unidirectional/bidirectional), as
-         * well as Fc_in/out and Fs */
-        int opin_switch_fanin, wire_switch_fanin, ipin_switch_fanin;
-        get_intercluster_switch_fanin_estimates(vpr_setup, arch, wire_segment_length, &opin_switch_fanin,
-                                                &wire_switch_fanin, &ipin_switch_fanin);
-
-        float Tdel_opin_switch, R_opin_switch, Cout_opin_switch;
-        float opin_switch_del = get_arch_switch_info(arch.Segments[0].arch_opin_switch, opin_switch_fanin,
-                                                     Tdel_opin_switch, R_opin_switch, Cout_opin_switch);
-
-        float Tdel_wire_switch, R_wire_switch, Cout_wire_switch;
-        float wire_switch_del = get_arch_switch_info(arch.Segments[0].arch_wire_switch, wire_switch_fanin,
-                                                     Tdel_wire_switch, R_wire_switch, Cout_wire_switch);
-
-        float Tdel_wtoi_switch, R_wtoi_switch, Cout_wtoi_switch;
-        float wtoi_switch_del = get_arch_switch_info(vpr_setup.RoutingArch.wire_to_arch_ipin_switch, ipin_switch_fanin,
-                                                     Tdel_wtoi_switch, R_wtoi_switch, Cout_wtoi_switch);
-
-        float Rmetal = arch.Segments[0].Rmetal;
-        float Cmetal = arch.Segments[0].Cmetal;
-
-        /* The delay of a wire with its driving switch is the switch delay plus the
-         * product of the equivalent resistance and capacitance experienced by the wire. */
-
-        float first_wire_seg_delay = opin_switch_del
-                                     + (R_opin_switch + Rmetal * (float)wire_segment_length / 2)
-                                           * (Cout_opin_switch + Cmetal * (float)wire_segment_length);
-        float second_wire_seg_delay = wire_switch_del
-                                      + (R_wire_switch + Rmetal * (float)wire_segment_length / 2)
-                                            * (Cout_wire_switch + Cmetal * (float)wire_segment_length);
-        inter_cluster_delay = 4
-                              * (first_wire_seg_delay + second_wire_seg_delay
-                                 + wtoi_switch_del); /* multiply by 4 to get a more conservative estimate */
+    // Read in the flat placement if a flat placement file is provided and it
+    // has not been loaded already.
+    if (!vpr_setup.FileNameOpts.read_flat_place_file.empty() && !g_vpr_ctx.atom().flat_placement_info().valid) {
+        g_vpr_ctx.mutable_atom().mutable_flat_placement_info() = read_flat_placement(vpr_setup.FileNameOpts.read_flat_place_file,
+                                                                                     g_vpr_ctx.atom().netlist());
     }
 
-    return try_pack(&vpr_setup.PackerOpts, &vpr_setup.AnalysisOpts,
-                    &arch, vpr_setup.user_models,
-                    vpr_setup.library_models, inter_cluster_delay,
-                    vpr_setup.PackerRRGraph);
+    // Group atoms into molecules. Keep the prepacker alive while its molecules are used.
+    const Prepacker prepacker(g_vpr_ctx.atom().netlist(),
+                              arch.models,
+                              g_vpr_ctx.device().logical_block_types,
+                              g_vpr_ctx.floorplanning().relative_macros);
+
+    // Setup pre-clustering timing analysis
+    PreClusterTimingManager pre_cluster_timing_manager(vpr_setup.PackerOpts.timing_driven,
+                                                       g_vpr_ctx.atom().netlist(),
+                                                       g_vpr_ctx.atom().lookup(),
+                                                       prepacker,
+                                                       vpr_setup.PackerOpts.timing_update_type,
+                                                       arch,
+                                                       vpr_setup.RoutingArch,
+                                                       vpr_setup.PackerOpts.device_layout,
+                                                       vpr_setup.AnalysisOpts);
+    pre_cluster_timing_manager.generate_setup_timing_report(g_vpr_ctx.atom().netlist(),
+                                                            g_vpr_ctx.atom().lookup(),
+                                                            arch,
+                                                            vpr_setup.AnalysisOpts);
+
+    // Estimate the device size before packing and build the RR graph if necessary.
+    // When auto-sizing is used, this sets the device grid to the estimated size so
+    // that downstream stages (e.g. RAM mapper) can query realistic device
+    // dimensions before packing. The packer may later grow or shrink the device
+    // size to match the actual resource requirements after packing completes.
+    DeviceSizeEstimator device_size_estimator(vpr_setup, arch, prepacker,
+                                              /*always_estimate_resource_requirement=*/g_vpr_ctx.atom().flat_placement_info().valid);
+
+    // Infer logical RAMs and assign to physical types to prioritize during packing.
+    // For the auto-device flow, reuse the groups already computed by the estimator.
+    RamMapper ram_mapper;
+    if (vpr_setup.PackerOpts.use_ram_mapper) {
+        ram_mapper = RamMapper(g_vpr_ctx.atom().netlist(),
+                               prepacker,
+                               pre_cluster_timing_manager,
+                               device_size_estimator.ram_groups(),
+                               vpr_setup.PackerOpts.pack_verbosity,
+                               has_fixed_device_size(vpr_setup) /*is_fixed_device*/);
+    }
+
+    return try_pack(vpr_setup.PackerOpts,
+                    vpr_setup.APOpts,
+                    arch,
+                    prepacker,
+                    pre_cluster_timing_manager,
+                    g_vpr_ctx.atom().flat_placement_info(),
+                    vpr_setup,
+                    ram_mapper,
+                    device_size_estimator.estimated_type_instance_counts());
 }
 
-void vpr_load_packing(t_vpr_setup& vpr_setup, const t_arch& arch) {
-    vtr::ScopedStartFinishTimer timer("Load Packing");
+void vpr_load_packing(const t_vpr_setup& vpr_setup, const t_arch& arch) {
+    vtr::ScopedStartFinishTimer timer("Load packing");
 
     VTR_ASSERT_MSG(!vpr_setup.FileNameOpts.NetFile.empty(),
                    "Must have valid .net filename to load packing");
 
     auto& cluster_ctx = g_vpr_ctx.mutable_clustering();
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
 
-    /* Ensure we have a clean start with void net remapping information */
+    // Ensure we have a clean start with void net remapping information
     cluster_ctx.post_routing_clb_pin_nets.clear();
     cluster_ctx.pre_routing_net_pin_mapping.clear();
 
@@ -599,127 +841,314 @@ void vpr_load_packing(t_vpr_setup& vpr_setup, const t_arch& arch) {
                                          vpr_setup.FileNameOpts.verify_file_digests,
                                          vpr_setup.PackerOpts.pack_verbosity);
 
-    process_constant_nets(cluster_ctx.clb_nlist, vpr_setup.constant_net_method, vpr_setup.PackerOpts.pack_verbosity);
+    // Load the mapping between clusters and their atoms
+    init_clb_atoms_lookup(cluster_ctx.atoms_lookup, atom_ctx, cluster_ctx.clb_nlist);
+
+    process_constant_nets(g_vpr_ctx.mutable_atom().mutable_netlist(),
+                          atom_ctx.lookup(),
+                          cluster_ctx.clb_nlist,
+                          vpr_setup.constant_net_method,
+                          vpr_setup.PackerOpts.pack_verbosity);
 
     {
         std::ofstream ofs("packing_pin_util.rpt");
         report_packing_pin_usage(ofs, g_vpr_ctx);
     }
+
+    // After the clustered netlist has been loaded, update the floorplanning
+    // constraints with the new information.
+    g_vpr_ctx.mutable_floorplanning().update_floorplanning_context_post_pack();
+
+    // Sanity check the resulting netlist
+    check_netlist(vpr_setup.PackerOpts.pack_verbosity, arch);
+
+    // Independently verify the clustering to ensure the clustering can be
+    // used for the rest of the VPR flow.
+    unsigned num_errors = verify_clustering(g_vpr_ctx);
+    if (num_errors == 0) {
+        VTR_LOG("Completed clustering consistency check successfully.\n");
+    } else {
+        VPR_ERROR(VPR_ERROR_PACK,
+                  "%u errors found while performing clustering consistency "
+                  "check. Aborting program.\n",
+                  num_errors);
+    }
+
+    // Output the netlist stats to console and optionally to file.
+    write_clustered_netlist_stats(vpr_setup.FileNameOpts.write_block_usage);
+
+    // print the total number of used physical blocks for each
+    // physical block type after finishing the packing stage
+    print_pb_type_count(g_vpr_ctx.clustering().clb_nlist);
 }
 
-bool vpr_place_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
+bool vpr_load_flat_placement(t_vpr_setup& vpr_setup, const t_arch& arch) {
+
+    // set up the device grid for the legalizer
+    auto& device_ctx = g_vpr_ctx.mutable_device();
+    if (vpr_setup.device_width > 0) {
+        size_t height = compute_auto_layout_height(arch.grid_layouts, vpr_setup.device_width);
+        device_ctx.grid = create_device_grid(vpr_setup.device_layout, arch.grid_layouts, vpr_setup.device_width, height);
+    } else {
+        device_ctx.grid = create_device_grid(vpr_setup.device_layout, arch.grid_layouts);
+    }
+    if (device_ctx.grid.get_num_layers() > 1) {
+        VPR_FATAL_ERROR(VPR_ERROR_PACK, "Legalizer currently only supports single layer devices.\n");
+    }
+
+    // load and legalize flat placement file, print .net and fix clusters files
+    bool status = load_flat_placement(vpr_setup, arch);
+    if (!status) {
+        return status;
+    }
+
+    // echo flat placement (orphan clusters will have -1 for X, Y, subtile coordinates)
+    if (getEchoEnabled() && isEchoFileEnabled(E_ECHO_FLAT_PLACE)) {
+        write_flat_placement(getEchoFileName(E_ECHO_FLAT_PLACE),
+                             g_vpr_ctx.clustering().clb_nlist,
+                             g_vpr_ctx.placement().block_locs(),
+                             g_vpr_ctx.clustering().atoms_lookup,
+                             vpr_setup.FileNameOpts.flat_place_verbosity);
+    }
+
+    // reset the device grid
+    device_ctx.grid.clear();
+
+    // if running placement, use the fix clusters file produced by the legalizer
+    if (vpr_setup.PlacerOpts.do_placement != e_stage_action::SKIP) {
+        vpr_setup.PlacerOpts.constraints_file = vpr_setup.FileNameOpts.write_constraints_file;
+    }
+    return true;
+}
+
+bool vpr_place_flow(const Netlist<>& net_list,
+                    t_vpr_setup& vpr_setup,
+                    const t_arch& arch) {
     VTR_LOG("\n");
-    const auto& placer_opts = vpr_setup.PlacerOpts;
-    if (placer_opts.doPlacement == STAGE_SKIP) {
+    const t_placer_opts& placer_opts = vpr_setup.PlacerOpts;
+    const t_file_name_opts& filename_opts = vpr_setup.FileNameOpts;
+    const t_router_opts& router_opts = vpr_setup.RouterOpts;
+
+    bool min_w_search_with_re_placement = false;
+    // If performing a min-width search with re-placement, we skip the placement here.
+    // The binary search function will manage its own placement.
+    if (router_opts.doRouting == e_stage_action::DO
+        && router_opts.fixed_channel_width < 0
+        && placer_opts.place_freq == e_place_freq::ALWAYS) {
+        min_w_search_with_re_placement = true;
+    }
+
+    if (placer_opts.do_placement == e_stage_action::SKIP || min_w_search_with_re_placement) {
         //pass
     } else {
-        if (placer_opts.doPlacement == STAGE_DO) {
+        if (placer_opts.do_placement == e_stage_action::DO) {
             //Do the actual placement
-            vpr_place(vpr_setup, arch);
+            vpr_place(net_list, vpr_setup, arch);
 
         } else {
-            VTR_ASSERT(placer_opts.doPlacement == STAGE_LOAD);
+            VTR_ASSERT(placer_opts.do_placement == e_stage_action::LOAD);
 
             //Load a previous placement
-            vpr_load_placement(vpr_setup, arch);
+            vpr_load_placement(vpr_setup, arch.directs);
         }
 
-        sync_grid_to_blocks();
         post_place_sync();
+    }
+
+    //Write out a vpr floorplanning constraints file if the option is specified
+    if (!filename_opts.write_vpr_constraints_file.empty()) {
+        write_vpr_floorplan_constraints(filename_opts.write_vpr_constraints_file.c_str(), placer_opts.place_constraint_expand, placer_opts.place_constraint_subtile,
+                                        placer_opts.floorplan_num_horizontal_partitions, placer_opts.floorplan_num_vertical_partitions);
+    }
+
+    // Write out a flat placement file if the option is specified
+    // A flat placement file includes cluster and intra-cluster placement coordinates for
+    // each primitive and can be used to reconstruct a clustering and placement solution.
+    if (!filename_opts.write_flat_place_file.empty()) {
+        write_flat_placement(filename_opts.write_flat_place_file.c_str(),
+                             g_vpr_ctx.clustering().clb_nlist,
+                             g_vpr_ctx.placement().block_locs(),
+                             g_vpr_ctx.clustering().atoms_lookup,
+                             filename_opts.flat_place_verbosity);
     }
 
     return true;
 }
 
-void vpr_place(t_vpr_setup& vpr_setup, const t_arch& arch) {
-    if (placer_needs_lookahead(vpr_setup)) {
+void vpr_place(const Netlist<>& net_list,
+               t_vpr_setup& vpr_setup,
+               const t_arch& arch) {
+    bool is_flat = false;
+    if (vpr_setup.PlacerOpts.place_algorithm.is_timing_driven()) {
         // Prime lookahead cache to avoid adding lookahead computation cost to
         // the placer timer.
+        // Flat_routing is disabled in placement
         get_cached_router_lookahead(
+            vpr_setup.RoutingArch,
             vpr_setup.RouterOpts.lookahead_type,
             vpr_setup.RouterOpts.write_router_lookahead,
             vpr_setup.RouterOpts.read_router_lookahead,
-            vpr_setup.Segments);
+            vpr_setup.Segments,
+            is_flat,
+            vpr_setup.RouterOpts.route_verbosity,
+            vpr_setup.RouterOpts.device_model_warnings,
+            vpr_setup.RouterOpts.router_lookahead_interposer_base_cut_multiplier);
     }
 
-    try_place(vpr_setup.PlacerOpts,
-              vpr_setup.AnnealSched,
+    // Read in the flat placement if a flat placement file is provided and it
+    // has not been loaded already.
+    if (!vpr_setup.FileNameOpts.read_flat_place_file.empty() && !g_vpr_ctx.atom().flat_placement_info().valid) {
+        g_vpr_ctx.mutable_atom().mutable_flat_placement_info() = read_flat_placement(vpr_setup.FileNameOpts.read_flat_place_file,
+                                                                                     g_vpr_ctx.atom().netlist());
+    }
+
+    try_place(net_list,
+              vpr_setup.PlacerOpts,
               vpr_setup.RouterOpts,
+              vpr_setup.CRROpts,
               vpr_setup.AnalysisOpts,
+              vpr_setup.NocOpts,
               arch.Chans,
-              &vpr_setup.RoutingArch,
+              vpr_setup.RoutingArch,
               vpr_setup.Segments,
-              arch.Directs,
-              arch.num_directs);
+              arch.directs,
+              g_vpr_ctx.atom().flat_placement_info(),
+              is_flat);
 
     auto& filename_opts = vpr_setup.FileNameOpts;
     auto& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& block_locs = g_vpr_ctx.placement().block_locs();
+    auto& placement_id = g_vpr_ctx.mutable_placement().placement_id;
 
-    print_place(filename_opts.NetFile.c_str(),
-                cluster_ctx.clb_nlist.netlist_id().c_str(),
-                filename_opts.PlaceFile.c_str());
+    placement_id = print_place(filename_opts.NetFile.c_str(),
+                               cluster_ctx.clb_nlist.netlist_id().c_str(),
+                               filename_opts.PlaceFile.c_str(),
+                               block_locs);
 }
 
-void vpr_load_placement(t_vpr_setup& vpr_setup, const t_arch& arch) {
+void vpr_load_placement(t_vpr_setup& vpr_setup,
+                        const std::vector<t_direct_inf>& directs) {
     vtr::ScopedStartFinishTimer timer("Load Placement");
 
     const auto& device_ctx = g_vpr_ctx.device();
     auto& place_ctx = g_vpr_ctx.mutable_placement();
+    auto& blk_loc_registry = place_ctx.mutable_blk_loc_registry();
     const auto& filename_opts = vpr_setup.FileNameOpts;
 
-    //Load an existing placement from a file
-    read_place(filename_opts.NetFile.c_str(), filename_opts.PlaceFile.c_str(), filename_opts.verify_file_digests, device_ctx.grid);
+    // Initialize the block location registry, which will be filled when loading placement
+    blk_loc_registry.init();
 
-    //Ensure placement macros are loaded so that they can be drawn after placement (e.g. during routing)
-    place_ctx.pl_macros = alloc_and_load_placement_macros(arch.Directs, arch.num_directs);
+    // Alloc and load the placement macros.
+    place_ctx.place_macros = std::make_unique<PlaceMacros>(directs,
+                                                           device_ctx.physical_tile_types,
+                                                           g_vpr_ctx.clustering().clb_nlist,
+                                                           g_vpr_ctx.atom().netlist(),
+                                                           g_vpr_ctx.atom().lookup());
+
+    // Load an existing placement from a file
+    place_ctx.placement_id = read_place(filename_opts.NetFile.c_str(), filename_opts.PlaceFile.c_str(),
+                                        blk_loc_registry,
+                                        filename_opts.verify_file_digests, device_ctx.grid);
+
+    // Verify that the placement invariants are met after reading the placement from a file.
+    unsigned num_errors = verify_placement(g_vpr_ctx);
+    if (num_errors == 0) {
+        VTR_LOG("Completed placement consistency check successfully.\n");
+    } else {
+        VPR_ERROR(VPR_ERROR_PLACE,
+                  "Completed placement consistency check, %d errors found.\n"
+                  "Aborting program.\n",
+                  num_errors);
+    }
+
+    // Mirror the post-place barrier emitted by placement_log_printer when the
+    // placer ran (DO mode): scripted `wait_for_stage placement_done` callers
+    // need the same checkpoint under --analysis / --route LOAD paths.
+    notify_stage_complete(e_pic_type::PLACEMENT);
+    update_screen(ScreenUpdatePriority::MAJOR, "Placement loaded",
+                  e_pic_type::PLACEMENT, nullptr);
 }
 
-RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
+RouteStatus vpr_route_flow(const Netlist<>& net_list,
+                           t_vpr_setup& vpr_setup,
+                           const t_arch& arch,
+                           bool is_flat) {
     VTR_LOG("\n");
 
     RouteStatus route_status;
 
     const auto& router_opts = vpr_setup.RouterOpts;
     const auto& filename_opts = vpr_setup.FileNameOpts;
+    const auto& device_ctx = g_vpr_ctx.device();
+    const auto& rr_graph = device_ctx.rr_graph;
 
-    if (router_opts.doRouting == STAGE_SKIP) {
+    if (router_opts.doRouting == e_stage_action::SKIP) {
         //Assume successful
         route_status = RouteStatus(true, -1);
     } else { //Do or load
+
+        // set the net_is_ignored flag for nets that have route_model set to ideal in route constraints
+        apply_route_constraints(g_vpr_ctx.routing().constraints);
+
         int chan_width = router_opts.fixed_channel_width;
 
-        auto& cluster_ctx = g_vpr_ctx.clustering();
+        NetPinsMatrix<float> net_delay;
 
-        ClbNetPinsMatrix<float> net_delay = make_net_pins_matrix<float>(cluster_ctx.clb_nlist);
+        net_delay = make_net_pins_matrix<float>(net_list);
 
         //Initialize the delay calculator
         std::shared_ptr<SetupHoldTimingInfo> timing_info = nullptr;
         std::shared_ptr<RoutingDelayCalculator> routing_delay_calc = nullptr;
         if (vpr_setup.Timing.timing_analysis_enabled) {
             auto& atom_ctx = g_vpr_ctx.atom();
-
-            routing_delay_calc = std::make_shared<RoutingDelayCalculator>(atom_ctx.nlist, atom_ctx.lookup, net_delay);
-
+            // The router only computes the max net delays (the min delays are computed after
+            // routing, in the analysis stage), so they are also used as the min delays here.
+            // TODO: For hold-aware routing (RCV), the router's timing analysis should use the
+            //       min net delays. This requires the router to also compute the min delays.
+            routing_delay_calc = std::make_shared<RoutingDelayCalculator>(atom_ctx.netlist(), atom_ctx.lookup(), net_delay, net_delay, is_flat);
             timing_info = make_setup_hold_timing_info(routing_delay_calc, router_opts.timing_update_type);
+#ifndef NO_SERVER
+            if (g_vpr_ctx.server().gate_io.is_running()) {
+                g_vpr_ctx.mutable_server().timing_info = timing_info;
+                g_vpr_ctx.mutable_server().routing_delay_calc = routing_delay_calc;
+            }
+#endif /* NO_SERVER */
+        } else {
+            /* No delay calculator (segfault if the code calls into it) and wirelength driven routing */
+            timing_info = make_constant_timing_info(0);
         }
 
-        if (router_opts.doRouting == STAGE_DO) {
+        if (router_opts.doRouting == e_stage_action::DO) {
             //Do the actual routing
             if (NO_FIXED_CHANNEL_WIDTH == chan_width) {
                 //Find minimum channel width
-                route_status = vpr_route_min_W(vpr_setup, arch, timing_info, routing_delay_calc, net_delay);
+                route_status = vpr_route_min_W(net_list, vpr_setup, arch, timing_info, routing_delay_calc, net_delay, is_flat);
             } else {
                 //Route at specified channel width
-                route_status = vpr_route_fixed_W(vpr_setup, arch, chan_width, timing_info, routing_delay_calc, net_delay);
+                route_status = vpr_route_fixed_W(net_list, vpr_setup, arch, chan_width, timing_info, routing_delay_calc, net_delay, is_flat);
             }
 
             //Save the routing in the .route file
-            print_route(filename_opts.PlaceFile.c_str(), filename_opts.RouteFile.c_str());
+            print_route(net_list,
+                        filename_opts.PlaceFile.c_str(),
+                        filename_opts.RouteFile.c_str(),
+                        is_flat);
         } else {
-            VTR_ASSERT(router_opts.doRouting == STAGE_LOAD);
-
+            VTR_ASSERT(router_opts.doRouting == e_stage_action::LOAD);
             //Load a previous routing
-            route_status = vpr_load_routing(vpr_setup, arch, chan_width, timing_info, net_delay);
+            //if the previous load file is generated using flat routing,
+            //we need to create rr_graph with is_flat flag to add additional
+            //internal nodes/edges.
+            if (is_flat) {
+                vpr_create_rr_graph(vpr_setup, arch, chan_width, is_flat);
+            }
+
+            route_status = vpr_load_routing(vpr_setup,
+                                            arch,
+                                            chan_width,
+                                            timing_info,
+                                            net_delay,
+                                            is_flat);
         }
 
         //Post-implementation
@@ -727,12 +1156,15 @@ RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
         std::string graphics_msg;
         if (route_status.success()) {
             //Sanity check the routing
-            check_route(router_opts.route_type, router_opts.check_route);
-            get_serial_num();
+            check_route(net_list,
+                        router_opts.route_type,
+                        router_opts.check_route,
+                        is_flat);
+            get_serial_num(net_list);
 
             //Update status
             VTR_LOG("Circuit successfully routed with a channel width factor of %d.\n", route_status.chan_width());
-            graphics_msg = vtr::string_fmt("Routing succeeded with a channel width factor of %d.\n", route_status.chan_width());
+            graphics_msg = vtr::string_fmt("Routing succeeded with a channel width factor of %d.", route_status.chan_width());
         } else {
             //Update status
             VTR_LOG("Circuit is unroutable with a channel width factor of %d.\n", route_status.chan_width());
@@ -742,7 +1174,10 @@ RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
             //Otherwise, remind the user of this possible report option
             if (router_opts.generate_rr_node_overuse_report) {
                 VTR_LOG("See report_overused_nodes.rpt for a detailed report on the RR node overuse information.\n");
-                report_overused_nodes();
+                report_overused_nodes(net_list,
+                                      rr_graph,
+                                      is_flat);
+
             } else {
                 VTR_LOG("For a detailed report on the RR node overuse information (report_overused_nodes.rpt), specify --generate_rr_node_overuse_report on.\n");
             }
@@ -765,74 +1200,91 @@ RouteStatus vpr_route_flow(t_vpr_setup& vpr_setup, const t_arch& arch) {
             print_switch_usage();
         }
 
-        //Update interactive graphics
-        update_screen(ScreenUpdatePriority::MAJOR, graphics_msg.c_str(), ROUTING, timing_info);
+        // Update interactive graphics. Mark routing as complete first so that
+        // scripted graphics_commands using `wait_for_stage routing_done` will
+        // resume at this fully-settled checkpoint rather than per-iteration
+        // routing-stage updates where route_ctx is mid-flight.
+        notify_stage_complete(e_pic_type::ROUTING);
+        update_screen(ScreenUpdatePriority::MAJOR, graphics_msg.c_str(), e_pic_type::ROUTING, timing_info);
     }
 
     return route_status;
 }
 
-RouteStatus vpr_route_fixed_W(t_vpr_setup& vpr_setup,
+RouteStatus vpr_route_fixed_W(const Netlist<>& net_list,
+                              t_vpr_setup& vpr_setup,
                               const t_arch& arch,
                               int fixed_channel_width,
                               std::shared_ptr<SetupHoldTimingInfo> timing_info,
                               std::shared_ptr<RoutingDelayCalculator> delay_calc,
-                              ClbNetPinsMatrix<float>& net_delay) {
-    if (router_needs_lookahead(vpr_setup.RouterOpts.router_algorithm)) {
-        // Prime lookahead cache to avoid adding lookahead computation cost to
-        // the routing timer.
-        get_cached_router_lookahead(
-            vpr_setup.RouterOpts.lookahead_type,
-            vpr_setup.RouterOpts.write_router_lookahead,
-            vpr_setup.RouterOpts.read_router_lookahead,
-            vpr_setup.Segments);
-    }
+                              NetPinsMatrix<float>& net_delay,
+                              bool is_flat) {
+    get_cached_router_lookahead(
+        vpr_setup.RoutingArch,
+        vpr_setup.RouterOpts.lookahead_type,
+        vpr_setup.RouterOpts.write_router_lookahead,
+        vpr_setup.RouterOpts.read_router_lookahead,
+        vpr_setup.Segments,
+        is_flat,
+        vpr_setup.RouterOpts.route_verbosity,
+        vpr_setup.RouterOpts.device_model_warnings,
+        vpr_setup.RouterOpts.router_lookahead_interposer_base_cut_multiplier);
 
     vtr::ScopedStartFinishTimer timer("Routing");
 
     if (NO_FIXED_CHANNEL_WIDTH == fixed_channel_width || fixed_channel_width <= 0) {
         VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "Fixed channel width must be specified when routing at fixed channel width (was %d)", fixed_channel_width);
     }
-
-    bool status = try_route(fixed_channel_width,
-                            vpr_setup.RouterOpts,
-                            vpr_setup.AnalysisOpts,
-                            &vpr_setup.RoutingArch,
-                            vpr_setup.Segments,
-                            net_delay,
-                            timing_info,
-                            delay_calc,
-                            arch.Chans,
-                            arch.Directs, arch.num_directs,
-                            ScreenUpdatePriority::MAJOR);
+    bool status = false;
+    status = route(net_list,
+                   fixed_channel_width,
+                   vpr_setup.RouterOpts,
+                   vpr_setup.CRROpts,
+                   vpr_setup.AnalysisOpts,
+                   vpr_setup.RoutingArch,
+                   vpr_setup.Segments,
+                   net_delay,
+                   timing_info,
+                   delay_calc,
+                   arch.Chans,
+                   arch.directs,
+                   ScreenUpdatePriority::MAJOR,
+                   is_flat);
 
     return RouteStatus(status, fixed_channel_width);
 }
 
-RouteStatus vpr_route_min_W(t_vpr_setup& vpr_setup,
+RouteStatus vpr_route_min_W(const Netlist<>& net_list,
+                            t_vpr_setup& vpr_setup,
                             const t_arch& arch,
                             std::shared_ptr<SetupHoldTimingInfo> timing_info,
                             std::shared_ptr<RoutingDelayCalculator> delay_calc,
-                            ClbNetPinsMatrix<float>& net_delay) {
+                            NetPinsMatrix<float>& net_delay,
+                            bool is_flat) {
     // Note that lookahead cache is not primed here because
     // binary_search_place_and_route will change the channel width, and result
     // in the lookahead cache being recomputed.
     vtr::ScopedStartFinishTimer timer("Routing");
 
     auto& router_opts = vpr_setup.RouterOpts;
-    int min_W = binary_search_place_and_route(vpr_setup.PlacerOpts,
-                                              vpr_setup.AnnealSched,
+    // Placement does not use atom_net list regardless of the status of flat_routing.
+    int min_W = binary_search_place_and_route((const Netlist<>&)g_vpr_ctx.clustering().clb_nlist,
+                                              net_list,
+                                              vpr_setup.PlacerOpts,
                                               router_opts,
+                                              vpr_setup.CRROpts,
                                               vpr_setup.AnalysisOpts,
+                                              vpr_setup.NocOpts,
                                               vpr_setup.FileNameOpts,
                                               &arch,
                                               router_opts.verify_binary_search,
                                               router_opts.min_channel_width_hint,
-                                              &vpr_setup.RoutingArch,
+                                              vpr_setup.RoutingArch,
                                               vpr_setup.Segments,
                                               net_delay,
                                               timing_info,
-                                              delay_calc);
+                                              delay_calc,
+                                              is_flat);
 
     bool status = (min_W > 0);
     return RouteStatus(status, min_W);
@@ -842,7 +1294,8 @@ RouteStatus vpr_load_routing(t_vpr_setup& vpr_setup,
                              const t_arch& /*arch*/,
                              int fixed_channel_width,
                              std::shared_ptr<SetupHoldTimingInfo> timing_info,
-                             ClbNetPinsMatrix<float>& net_delay) {
+                             NetPinsMatrix<float>& net_delay,
+                             bool is_flat) {
     vtr::ScopedStartFinishTimer timer("Load Routing");
     if (NO_FIXED_CHANNEL_WIDTH == fixed_channel_width) {
         VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "Fixed channel width must be specified when loading routing (was %d)", fixed_channel_width);
@@ -851,32 +1304,41 @@ RouteStatus vpr_load_routing(t_vpr_setup& vpr_setup,
     auto& filename_opts = vpr_setup.FileNameOpts;
 
     //Load the routing from a file
-    bool is_legal = read_route(filename_opts.RouteFile.c_str(), vpr_setup.RouterOpts, filename_opts.verify_file_digests);
-
+    bool is_legal = read_route(filename_opts.RouteFile.c_str(),
+                               vpr_setup.RouterOpts,
+                               filename_opts.verify_file_digests,
+                               is_flat);
+    const Netlist<>& router_net_list = is_flat ? (const Netlist<>&)g_vpr_ctx.atom().netlist() : (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
     if (vpr_setup.Timing.timing_analysis_enabled) {
         //Update timing info
-        load_net_delay_from_routing(net_delay);
-
+        load_net_delay_from_routing(router_net_list,
+                                    net_delay);
         timing_info->update();
     }
-    init_draw_coords(fixed_channel_width);
+    init_draw_coords(fixed_channel_width, g_vpr_ctx.placement().blk_loc_registry());
 
     return RouteStatus(is_legal, fixed_channel_width);
 }
 
-void vpr_create_rr_graph(t_vpr_setup& vpr_setup, const t_arch& arch, int chan_width_fac) {
+void vpr_create_rr_graph(t_vpr_setup& vpr_setup, const t_arch& arch, int chan_width_fac, bool is_flat) {
     auto& device_ctx = g_vpr_ctx.mutable_device();
-    auto det_routing_arch = &vpr_setup.RoutingArch;
+    t_det_routing_arch& det_routing_arch = vpr_setup.RoutingArch;
     auto& router_opts = vpr_setup.RouterOpts;
 
-    t_chan_width chan_width = init_chan(chan_width_fac, arch.Chans);
-
-    t_graph_type graph_type;
-    if (router_opts.route_type == GLOBAL) {
-        graph_type = GRAPH_GLOBAL;
+    e_graph_type graph_type;
+    e_graph_type graph_directionality;
+    if (router_opts.route_type == e_route_type::GLOBAL) {
+        graph_type = e_graph_type::GLOBAL;
+        graph_directionality = e_graph_type::BIDIR;
     } else {
-        graph_type = (det_routing_arch->directionality == BI_DIRECTIONAL ? GRAPH_BIDIR : GRAPH_UNIDIR);
+        graph_type = (det_routing_arch.directionality == BI_DIRECTIONAL ? e_graph_type::BIDIR : e_graph_type::UNIDIR);
+        if (det_routing_arch.directionality == UNI_DIRECTIONAL && det_routing_arch.tileable) {
+            graph_type = e_graph_type::UNIDIR_TILEABLE;
+        }
+        graph_directionality = (det_routing_arch.directionality == BI_DIRECTIONAL ? e_graph_type::BIDIR : e_graph_type::UNIDIR);
     }
+
+    t_chan_width chan_width = init_chan(chan_width_fac, arch.Chans, graph_directionality);
 
     int warnings = 0;
 
@@ -888,23 +1350,29 @@ void vpr_create_rr_graph(t_vpr_setup& vpr_setup, const t_arch& arch, int chan_wi
                     device_ctx.physical_tile_types,
                     device_ctx.grid,
                     chan_width,
-                    device_ctx.num_arch_switches,
                     det_routing_arch,
                     vpr_setup.Segments,
                     router_opts,
-                    arch.Directs, arch.num_directs,
-                    &warnings);
+                    vpr_setup.CRROpts,
+                    arch.directs,
+                    &warnings,
+                    is_flat);
     //Initialize drawing, now that we have an RR graph
-    init_draw_coords(chan_width_fac);
+    init_draw_coords(chan_width_fac, g_vpr_ctx.placement().blk_loc_registry());
 }
 
-void vpr_init_graphics(const t_vpr_setup& vpr_setup, const t_arch& arch) {
-    /* Startup X graphics */
-    init_graphics_state(vpr_setup.ShowGraphics, vpr_setup.GraphPause,
-                        vpr_setup.RouterOpts.route_type, vpr_setup.SaveGraphics,
-                        vpr_setup.GraphicsCommands);
-    if (vpr_setup.ShowGraphics || vpr_setup.SaveGraphics || !vpr_setup.GraphicsCommands.empty())
-        alloc_draw_structs(&arch);
+void vpr_init_server(const t_vpr_setup& vpr_setup) {
+#ifndef NO_SERVER
+    if (vpr_setup.ServerOpts.is_server_mode_enabled) {
+        /* Set up a server and its callback to be triggered at 100ms intervals by the timer's timeout event. */
+        server::GateIO& gate_io = g_vpr_ctx.mutable_server().gate_io;
+        if (!gate_io.is_running()) {
+            gate_io.start(vpr_setup.ServerOpts.port_num);
+        }
+    }
+#else
+    (void)(vpr_setup);
+#endif /* NO_SERVER */
 }
 
 void vpr_close_graphics(const t_vpr_setup& /*vpr_setup*/) {
@@ -912,119 +1380,20 @@ void vpr_close_graphics(const t_vpr_setup& /*vpr_setup*/) {
     free_draw_structs();
 }
 
-/**
- * Since the parameters of a switch may change as a function of its fanin,
- * to get an estimation of inter-cluster delays we need a reasonable estimation
- * of the fan-ins of switches that connect clusters together. These switches are
- * 1) opin to wire switch
- * 2) wire to wire switch
- * 3) wire to ipin switch
- * We can estimate the fan-in of these switches based on the Fc_in/Fc_out of
- * a logic block, and the switch block Fs value
- */
-static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup,
-                                                    const t_arch& arch,
-                                                    const int wire_segment_length,
-                                                    int* opin_switch_fanin,
-                                                    int* wire_switch_fanin,
-                                                    int* ipin_switch_fanin) {
-    e_directionality directionality;
-    int Fs;
-    float Fc_in, Fc_out;
-    int W = 100; //W is unknown pre-packing, so *if* we need W here, we will assume a value of 100
-
-    directionality = vpr_setup.RoutingArch.directionality;
-    Fs = vpr_setup.RoutingArch.Fs;
-    Fc_in = 0, Fc_out = 0;
-
-    //Build a dummy 10x10 device to determine the 'best' block type to use
-    auto grid = create_device_grid(vpr_setup.device_layout, arch.grid_layouts, 10, 10);
-
-    auto type = find_most_common_tile_type(grid);
-    /* get Fc_in/out for most common block (e.g. logic blocks) */
-    VTR_ASSERT(type->fc_specs.size() > 0);
-
-    //Estimate the maximum Fc_in/Fc_out
-
-    for (const t_fc_specification& fc_spec : type->fc_specs) {
-        float Fc = fc_spec.fc_value;
-
-        if (fc_spec.fc_value_type == e_fc_value_type::ABSOLUTE) {
-            //Convert to estimated fractional
-            Fc /= W;
-        }
-        VTR_ASSERT_MSG(Fc >= 0 && Fc <= 1., "Fc should be fractional");
-
-        for (int ipin : fc_spec.pins) {
-            int iclass = type->pin_class[ipin];
-            e_pin_type pin_type = type->class_inf[iclass].type;
-
-            if (pin_type == DRIVER) {
-                Fc_out = std::max(Fc, Fc_out);
-            } else {
-                VTR_ASSERT(pin_type == RECEIVER);
-                Fc_in = std::max(Fc, Fc_in);
-            }
-        }
-    }
-
-    /* Estimates of switch fan-in are done as follows:
-     * 1) opin to wire switch:
-     * 2 CLBs connect to a channel, each with #opins/4 pins. Each pin has Fc_out*W
-     * switches, and then we assume the switches are distributed evenly over the W wires.
-     * In the unidirectional case, all these switches are then crammed down to W/wire_segment_length wires.
-     *
-     * Unidirectional: 2 * #opins_per_side * Fc_out * wire_segment_length
-     * Bidirectional:  2 * #opins_per_side * Fc_out
-     *
-     * 2) wire to wire switch
-     * A wire segment in a switchblock connects to Fs other wires. Assuming these connections are evenly
-     * distributed, each target wire receives Fs connections as well. In the unidirectional case,
-     * source wires can only connect to W/wire_segment_length wires.
-     *
-     * Unidirectional: Fs * wire_segment_length
-     * Bidirectional:  Fs
-     *
-     * 3) wire to ipin switch
-     * An input pin of a CLB simply receives Fc_in connections.
-     *
-     * Unidirectional: Fc_in
-     * Bidirectional:  Fc_in
-     */
-
-    /* Fan-in to opin/ipin/wire switches depends on whether the architecture is unidirectional/bidirectional */
-    (*opin_switch_fanin) = 2 * type->num_drivers / 4 * Fc_out;
-    (*wire_switch_fanin) = Fs;
-    (*ipin_switch_fanin) = Fc_in;
-    if (directionality == UNI_DIRECTIONAL) {
-        /* adjustments to opin-to-wire and wire-to-wire switch fan-ins */
-        (*opin_switch_fanin) *= wire_segment_length;
-        (*wire_switch_fanin) *= wire_segment_length;
-    } else if (directionality == BI_DIRECTIONAL) {
-        /* no adjustments need to be made here */
-    } else {
-        VPR_FATAL_ERROR(VPR_ERROR_PACK, "Unrecognized directionality: %d\n", (int)directionality);
-    }
-}
-
 ///@brief Free architecture data structures
-void free_device(const t_det_routing_arch& routing_arch) {
+void free_device(const t_det_routing_arch& /*routing_arch*/) {
     auto& device_ctx = g_vpr_ctx.mutable_device();
 
     device_ctx.chan_width.x_list.clear();
     device_ctx.chan_width.y_list.clear();
     device_ctx.chan_width.max = device_ctx.chan_width.x_max = device_ctx.chan_width.y_max = device_ctx.chan_width.x_min = device_ctx.chan_width.y_min = 0;
+    device_ctx.requested_chan_width = t_chan_width();
 
-    for (int iswitch : {routing_arch.delayless_switch, routing_arch.global_route_switch}) {
-        if (device_ctx.arch_switch_inf != nullptr && device_ctx.arch_switch_inf[iswitch].name) {
-            vtr::free(device_ctx.arch_switch_inf[iswitch].name);
-            device_ctx.arch_switch_inf[iswitch].name = nullptr;
-        }
-    }
-    delete[] device_ctx.arch_switch_inf;
-    device_ctx.arch_switch_inf = nullptr;
+    device_ctx.arch_switch_inf.clear();
+
+    device_ctx.all_sw_inf.clear();
+
     free_complex_block_types();
-    free_chunk_memory_trace();
 }
 
 static void free_complex_block_types() {
@@ -1032,33 +1401,33 @@ static void free_complex_block_types() {
 
     free_type_descriptors(device_ctx.logical_block_types);
     free_type_descriptors(device_ctx.physical_tile_types);
-    free_pb_graph_edges();
 }
 
 void free_circuit() {
     //Free new net structures
     auto& cluster_ctx = g_vpr_ctx.mutable_clustering();
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks())
+    for (ClusterBlockId blk_id : cluster_ctx.clb_nlist.blocks()) {
         cluster_ctx.clb_nlist.remove_block(blk_id);
+    }
 
     cluster_ctx.clb_nlist = ClusteredNetlist();
 }
 
 static void free_atoms() {
     auto& atom_ctx = g_vpr_ctx.mutable_atom();
-    atom_ctx.nlist = AtomNetlist();
-    atom_ctx.lookup = AtomLookup();
+    atom_ctx.mutable_netlist() = AtomNetlist();
+    atom_ctx.mutable_lookup() = AtomLookup();
 }
 
 static void free_placement() {
     auto& place_ctx = g_vpr_ctx.mutable_placement();
-    place_ctx.block_locs.clear();
-    place_ctx.grid_blocks.clear();
+    place_ctx.mutable_block_locs().clear();
+    place_ctx.mutable_grid_blocks().clear();
 }
 
 static void free_routing() {
     auto& routing_ctx = g_vpr_ctx.mutable_routing();
-    routing_ctx.trace.clear();
+    routing_ctx.route_trees.clear();
     routing_ctx.trace_nodes.clear();
     routing_ctx.net_rr_terminals.clear();
     routing_ctx.rr_blk_source.clear();
@@ -1068,9 +1437,21 @@ static void free_routing() {
     routing_ctx.route_bb.clear();
 }
 
+/**
+ * @brief handles the deletion of NoC related data structures.
+ */
+static void free_noc() {}
+
+static bool is_pack_only(const t_vpr_setup& vpr_setup) {
+    return vpr_setup.PackerOpts.doPacking != e_stage_action::SKIP
+           && vpr_setup.PlacerOpts.do_placement == e_stage_action::SKIP
+           && vpr_setup.APOpts.doAP == e_stage_action::SKIP
+           && vpr_setup.RouterOpts.doRouting == e_stage_action::SKIP
+           && vpr_setup.AnalysisOpts.doAnalysis == e_stage_action::SKIP;
+}
+
 void vpr_free_vpr_data_structures(t_arch& Arch,
                                   t_vpr_setup& vpr_setup) {
-    free_all_lb_type_rr_graph(vpr_setup.PackerRRGraph);
     free_circuit();
     free_arch(&Arch);
     free_device(vpr_setup.RoutingArch);
@@ -1078,15 +1459,15 @@ void vpr_free_vpr_data_structures(t_arch& Arch,
     free_placement();
     free_routing();
     free_atoms();
+    free_noc();
 }
 
 void vpr_free_all(t_arch& Arch,
                   t_vpr_setup& vpr_setup) {
     free_rr_graph();
-    if (vpr_setup.RouterOpts.doRouting) {
+    if (vpr_setup.RouterOpts.doRouting != e_stage_action::SKIP) {
         free_route_structs();
     }
-    free_trace_structs();
     vpr_free_vpr_data_structures(Arch, vpr_setup);
 }
 
@@ -1106,77 +1487,73 @@ void vpr_setup_vpr(t_options* Options,
                    const bool readArchFile,
                    t_file_name_opts* FileNameOpts,
                    t_arch* Arch,
-                   t_model** user_models,
-                   t_model** library_models,
                    t_netlist_opts* NetlistOpts,
                    t_packer_opts* PackerOpts,
                    t_placer_opts* PlacerOpts,
-                   t_annealing_sched* AnnealSched,
+                   t_ap_opts* APOpts,
                    t_router_opts* RouterOpts,
                    t_analysis_opts* AnalysisOpts,
-                   t_det_routing_arch* RoutingArch,
-                   std::vector<t_lb_type_rr_node>** PackerRRGraph,
+                   t_crr_opts* CRROpts,
+                   t_noc_opts* NocOpts,
+                   t_server_opts* ServerOpts,
+                   t_det_routing_arch& RoutingArch,
                    std::vector<t_segment_inf>& Segments,
                    t_timing_inf* Timing,
                    bool* ShowGraphics,
-                   int* GraphPause,
+                   e_graphics_pause* GraphPause,
                    bool* SaveGraphics,
                    std::string* GraphicsCommands,
-                   t_power_opts* PowerOpts) {
+                   std::string* RendererType,
+                   t_power_opts* PowerOpts,
+                   t_vpr_setup* vpr_setup) {
     SetupVPR(Options,
              TimingEnabled,
              readArchFile,
              FileNameOpts,
              Arch,
-             user_models,
-             library_models,
              NetlistOpts,
              PackerOpts,
              PlacerOpts,
-             AnnealSched,
+             APOpts,
              RouterOpts,
              AnalysisOpts,
+             CRROpts,
+             NocOpts,
+             ServerOpts,
              RoutingArch,
-             PackerRRGraph,
              Segments,
              Timing,
              ShowGraphics,
              GraphPause,
              SaveGraphics,
              GraphicsCommands,
-             PowerOpts);
+             RendererType,
+             PowerOpts,
+             vpr_setup);
 }
 
 void vpr_check_arch(const t_arch& Arch) {
     CheckArch(Arch);
 }
 
-///@brief Verify settings don't conflict or otherwise not make sense
-void vpr_check_setup(const t_packer_opts& PackerOpts,
-                     const t_placer_opts& PlacerOpts,
-                     const t_router_opts& RouterOpts,
-                     const t_det_routing_arch& RoutingArch,
-                     const std::vector<t_segment_inf>& Segments,
-                     const t_timing_inf& Timing,
-                     const t_chan_width_dist& Chans) {
-    CheckSetup(PackerOpts, PlacerOpts, RouterOpts, RoutingArch,
-               Segments, Timing, Chans);
-}
-
 ///@brief Show current setup
 void vpr_show_setup(const t_vpr_setup& vpr_setup) {
-    ShowSetup(vpr_setup);
+    show_setup(vpr_setup);
 }
 
-bool vpr_analysis_flow(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus& route_status) {
+bool vpr_analysis_flow(const Netlist<>& net_list,
+                       t_vpr_setup& vpr_setup,
+                       const t_arch& Arch,
+                       const RouteStatus& route_status,
+                       bool is_flat) {
     auto& analysis_opts = vpr_setup.AnalysisOpts;
 
-    if (analysis_opts.doAnalysis == STAGE_SKIP) return true; //Skipped
+    if (analysis_opts.doAnalysis == e_stage_action::SKIP) return true; //Skipped
 
-    if (analysis_opts.doAnalysis == STAGE_AUTO && !route_status.success()) return false; //Not run
+    if (analysis_opts.doAnalysis == e_stage_action::SKIP_IF_PRIOR_FAIL && !route_status.success()) return false; //Not run
 
-    VTR_ASSERT_MSG(analysis_opts.doAnalysis == STAGE_DO
-                       || (analysis_opts.doAnalysis == STAGE_AUTO && route_status.success()),
+    VTR_ASSERT_MSG(analysis_opts.doAnalysis == e_stage_action::DO
+                       || (analysis_opts.doAnalysis == e_stage_action::SKIP_IF_PRIOR_FAIL && route_status.success()),
                    "Analysis should run only if forced, or implementation legal");
 
     if (!route_status.success()) {
@@ -1186,62 +1563,79 @@ bool vpr_analysis_flow(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteSt
         VTR_LOG("*****************************************************************************************\n");
     }
 
-    /* If routing is successful, apply post-routing annotations
+    /* If routing is successful and users do not force to skip the sync-up, 
+     * - apply post-routing annotations
      * - apply logic block pin fix-up
      *
-     * Note: 
+     * Note:
      *   - Turn on verbose output when users require verbose output
      *     for packer (default verbosity is set to 2 for compact logs)
      */
     if (route_status.success()) {
-        sync_netlists_to_routing(g_vpr_ctx.device(),
-                                 g_vpr_ctx.mutable_atom(),
-                                 g_vpr_ctx.mutable_clustering(),
-                                 g_vpr_ctx.placement(),
-                                 g_vpr_ctx.routing(),
-                                 vpr_setup.PackerOpts.pack_verbosity > 2);
+        if (!analysis_opts.skip_sync_clustering_and_routing_results) {
+            if (is_flat) {
+                sync_netlists_to_routing_flat();
+            } else {
+                sync_netlists_to_routing(net_list,
+                                         g_vpr_ctx.device(),
+                                         g_vpr_ctx.mutable_atom(),
+                                         g_vpr_ctx.mutable_clustering(),
+                                         g_vpr_ctx.placement(),
+                                         vpr_setup.PackerOpts.pack_verbosity > 2);
+            }
+        } else {
+            VTR_LOG_WARN("Synchronization between packing and routing results was not applied due to skip_sync_clustering_and_routing_results being set to true\n");
+        }
 
         std::string post_routing_packing_output_file_name = vpr_setup.PackerOpts.output_file + ".post_routing";
-        write_packing_results_to_xml(vpr_setup.PackerOpts.global_clocks,
-                                     Arch.architecture_id,
+        write_packing_results_to_xml(Arch.architecture_id,
                                      post_routing_packing_output_file_name.c_str());
     } else {
-        VTR_LOG_WARN("Sychronization between packing and routing results is not applied due to illegal circuit implementation\n");
+        VTR_LOG_WARN("Synchronization between packing and routing results was not applied due to illegal circuit implementation\n");
     }
     VTR_LOG("\n");
 
-    vpr_analysis(vpr_setup, Arch, route_status);
+    vpr_analysis(net_list,
+                 vpr_setup,
+                 Arch,
+                 route_status,
+                 is_flat);
 
     return true;
 }
 
-void vpr_analysis(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus& route_status) {
+void vpr_analysis(const Netlist<>& net_list,
+                  t_vpr_setup& vpr_setup,
+                  const t_arch& Arch,
+                  const RouteStatus& route_status,
+                  bool is_flat) {
     auto& route_ctx = g_vpr_ctx.routing();
     auto& atom_ctx = g_vpr_ctx.atom();
+    const auto& blk_loc_registry = g_vpr_ctx.placement().blk_loc_registry();
 
-    //Check the first index to see if a pointer exists
-    //TODO: Implement a better error check
-    if (route_ctx.trace.empty()) {
+    if (route_ctx.route_trees.empty()) {
         VPR_FATAL_ERROR(VPR_ERROR_ANALYSIS, "No routing loaded -- can not perform post-routing analysis");
     }
 
-    routing_stats(vpr_setup.RouterOpts.full_stats, vpr_setup.RouterOpts.route_type,
+    routing_stats(net_list,
+                  vpr_setup.RouterOpts.full_stats,
+                  vpr_setup.RouterOpts.route_type,
                   vpr_setup.Segments,
                   vpr_setup.RoutingArch.R_minW_nmos,
                   vpr_setup.RoutingArch.R_minW_pmos,
                   Arch.grid_logic_tile_area,
                   vpr_setup.RoutingArch.directionality,
-                  vpr_setup.RoutingArch.wire_to_rr_ipin_switch);
+                  is_flat);
 
     if (vpr_setup.TimingEnabled) {
         //Load the net delays
-        auto& cluster_ctx = g_vpr_ctx.clustering();
 
-        ClbNetPinsMatrix<float> net_delay = make_net_pins_matrix<float>(cluster_ctx.clb_nlist);
-        load_net_delay_from_routing(net_delay);
+        NetPinsMatrix<float> net_delay_min = make_net_pins_matrix<float>(net_list);
+        NetPinsMatrix<float> net_delay_max = make_net_pins_matrix<float>(net_list);
+        load_net_delay_from_routing(net_list, net_delay_min, net_delay_max);
 
         //Do final timing analysis
-        auto analysis_delay_calc = std::make_shared<AnalysisDelayCalculator>(atom_ctx.nlist, atom_ctx.lookup, net_delay);
+        auto analysis_delay_calc = std::make_shared<AnalysisDelayCalculator>(atom_ctx.netlist(), atom_ctx.lookup(), net_delay_min, net_delay_max, vpr_setup.RouterOpts.flat_routing);
         auto timing_info = make_setup_hold_timing_info(analysis_delay_calc, vpr_setup.AnalysisOpts.timing_update_type);
         timing_info->update();
 
@@ -1253,17 +1647,31 @@ void vpr_analysis(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus&
 
         //Timing stats
         VTR_LOG("\n");
-        generate_hold_timing_stats(/*prefix=*/"", *timing_info,
-                                   *analysis_delay_calc, vpr_setup.AnalysisOpts);
-        generate_setup_timing_stats(/*prefix=*/"", *timing_info,
-                                    *analysis_delay_calc, vpr_setup.AnalysisOpts);
+        generate_hold_timing_stats(/*prefix=*/"", *timing_info, *analysis_delay_calc,
+                                   vpr_setup.AnalysisOpts, vpr_setup.RouterOpts.flat_routing, blk_loc_registry);
+        generate_setup_timing_stats(/*prefix=*/"", *timing_info, *analysis_delay_calc,
+                                    vpr_setup.AnalysisOpts, vpr_setup.RouterOpts.flat_routing, blk_loc_registry);
 
-        //Write the post-syntesis netlist
+        //Write the post-synthesis netlist
         if (vpr_setup.AnalysisOpts.gen_post_synthesis_netlist) {
-            netlist_writer(atom_ctx.nlist.netlist_name().c_str(), analysis_delay_calc);
+            netlist_writer(atom_ctx.netlist().netlist_name(),
+                           analysis_delay_calc,
+                           Arch.models,
+                           vpr_setup.Timing,
+                           vpr_setup.AnalysisOpts);
+        }
+
+        //Write the post-implementation merged netlist
+        if (vpr_setup.AnalysisOpts.gen_post_implementation_merged_netlist) {
+            merged_netlist_writer(atom_ctx.netlist().netlist_name(), analysis_delay_calc, Arch.models, vpr_setup.AnalysisOpts);
+        }
+
+        if (vpr_setup.AnalysisOpts.generate_net_timing_report) {
+            generate_net_timing_report(/*prefix=*/"", *timing_info, *analysis_delay_calc);
         }
 
         //Do power analysis
+        // TODO: Still assumes that cluster net list is used
         if (vpr_setup.PowerOpts.do_power) {
             vpr_power_estimation(vpr_setup, Arch, *timing_info, route_status);
         }
@@ -1305,7 +1713,7 @@ void vpr_power_estimation(const t_vpr_setup& vpr_setup,
 
     /* Initialize the power module */
     bool power_error = power_init(vpr_setup.FileNameOpts.PowerFile.c_str(),
-                                  vpr_setup.FileNameOpts.CmosTechFile.c_str(), &Arch, &vpr_setup.RoutingArch);
+                                  vpr_setup.FileNameOpts.CmosTechFile.c_str(), &Arch, vpr_setup.RoutingArch);
     if (power_error) {
         VTR_LOG_ERROR("Power initialization failed.\n");
     }
@@ -1316,8 +1724,7 @@ void vpr_power_estimation(const t_vpr_setup& vpr_setup,
         VTR_LOG("Running power estimation\n");
 
         /* Run power estimation */
-        e_power_ret_code power_ret_code = power_total(&power_runtime_s, vpr_setup,
-                                                      &Arch, &vpr_setup.RoutingArch);
+        e_power_ret_code power_ret_code = power_total(&power_runtime_s, vpr_setup, &Arch, vpr_setup.RoutingArch);
 
         /* Check for errors/warnings */
         if (power_ret_code == POWER_RET_CODE_ERRORS) {
@@ -1358,6 +1765,9 @@ void vpr_print_error(const VprError& vpr_error) {
                 break;
             case VPR_ERROR_PLACE:
                 error_type = "Placement";
+                break;
+            case VPR_ERROR_AP:
+                error_type = "Analytical Placement";
                 break;
             case VPR_ERROR_ROUTE:
                 error_type = "Routing";

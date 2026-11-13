@@ -60,6 +60,39 @@ For example::
 will run the VTR flow to map the circuit ``my_circuit.v`` onto the architecture ``my_arch.xml``; the arguments ``--pack`` and ``--place`` will be passed to VPR (since they are unrecognized arguments to ``run_vtr_flow.py``).
 They will cause VPR to perform only :ref:`packing and placement <general_options>`.
 
+.. code-block:: bash
+
+    # Using the Yosys conventional Verilog parser
+    ./run_vtr_flow <path/to/Verilog/File> <path/to/arch/file>
+
+Running the VTR flow with the default configuration using the Yosys standalone front-end.
+The parser for these runs is considered the Yosys conventional Verilog/SystemVerilog parser (i.e., ``read_verilog -sv``), as the parser is not explicitly specified.
+
+.. code-block:: bash
+
+    # Using the Yosys-Slang plugin for Yosys, otherwise the Yosys conventional Verilog parser
+    ./run_vtr_flow <path/to/SystemVerilog/File> <path/to/arch/file> -parser slang
+
+Will run the VTR flow (default configuration) with Yosys-Slang plugin for Yosys frontend using Parmys plugin as partial mapper.
+The Yosys-Slang SystemVerilog parser supports the (i.e., ``read_slang``) command. Yosys-Slang builds on top of the slang library to provide comprehensive SystemVerilog support.
+Enable the Yosys-Slang plugin with the ``-DSLANG_SYSTEMVERILOG=ON`` compile flag while building the VTR project with yosys as a frontend.
+
+.. note:: Yosys-Slang is currently **experimental**.
+
+.. code-block:: bash
+
+    # Using the Parmys (Partial Mapper for Yosys) plugin as partial mapper
+    ./run_vtr_flow <path/to/Verilog/File> <path/to/arch/file>
+
+Will run the VTR flow (default configuration) with Yosys frontend using Parmys plugin as partial mapper. To utilize the Parmys plugin, the ``-DYOSYS_PARMYS_PLUGIN=ON`` compile flag should be passed while building the VTR project with Yosys as a frontend.
+
+.. code-block:: bash
+
+    # Using the Parmys (Partial Mapper for Yosys) plugin as partial mapper with include files
+    ./run_vtr_flow <path/to/Verilog/File> <path/to/arch/file> -include <path/to/include/directory>/*.v*
+
+Will run the VTR flow (default configuration) with Yosys frontend using Parmys plugin as partial mapper. In addition to the main circuit passed in with the architecture, it will also pass in every HDL file with the specified file type within the include directory.
+
 Detailed Command-line Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -72,11 +105,13 @@ Detailed Command-line Options
     Accepted values:
 
       * ``odin``
+      * ``parmys``
+      * ``mosaic``
       * ``abc``
       * ``scripts``
       * ``vpr``
 
-    **Default:** ``odin``
+    **Default:** ``parmys``
 
 .. option:: -ending_stage <stage>
 
@@ -86,11 +121,22 @@ Detailed Command-line Options
     Accepted values:
 
       * ``odin``
+      * ``parmys``
+      * ``mosaic``
       * ``abc``
       * ``scripts``
       * ``vpr``
 
     **Default:** ``vpr``
+    
+.. option:: -include <path_to_file(s)>/*.<file_type(s)>
+
+    List of include files to a benchmark circuit 
+    (pass to VTR frontends as a benchmark design set).
+    
+    Include files can be any file supported by yosys+parmys (normally .v or .vh files).
+    
+    The include directory should not contain the circuit passed in with the architecture.
 
 .. option:: -power
 
@@ -154,22 +200,87 @@ Detailed Command-line Options
 
 .. option:: -min_hard_mult_size <int>
 
-    Tells ODIN II the minimum multiplier size that should be implemented
-    using hard multiplier (if available). Smaller multipliers will be
-    implemented using soft logic.
+    Tells Parmys/ODIN II the minimum multiplier size (in bits) that should be 
+    implemented using a hard multiplier (if available). Smaller multipliers will 
+    be implemented using soft logic.
 
     **Default:** 3
 
 .. option:: -min_hard_adder_size <int>
 
-    Tells ODIN II the minimum adder size that should be implemented
-    using hard adders (if available). Smaller adders will be
+    Tells Parmys/ODIN II the minimum adder size (in bits) that should be 
+    implemented using hard adders (if available). Smaller adders will be
     implemented using soft logic.
 
     **Default:** 1
 
 .. option:: -adder_cin_global
 
-    Tells ODIN II to connect the first cin in an adder/subtractor chain
+    Tells Parmys/ODIN II to connect the first cin in an adder/subtractor chain
     to a global gnd/vdd net. Instead of creating a dummy adder to generate
     the input signal of the first cin port of the chain.
+
+.. option:: -odin_xml <path_to_custom_xml>
+
+    Tells VTR flow to use a custom ODIN II configuration value. The default
+    behavior is to use the vtr_flow/misc/basic_odin_config_split.xml. 
+    Instead, an alternative config file might be supplied; compare the 
+    default and vtr_flow/misc/custom_odin_config_no_mults.xml for usage 
+    scenarios. This option is needed for running the entire VTR flow with 
+    additional parameters for ODIN II that are provided from within the 
+    .xml file.
+
+.. option:: -use_odin_simulation 
+    
+    Tells ODIN II to run simulation.
+
+.. option:: -top_module <TOP_MODULE>
+    
+    Specifies the name of the module in the design that should be considered as top
+
+.. option:: -yosys_script <YOSYS_SCRIPT>
+    
+    Supplies Parmys(Yosys) with a .ys script file (similar to Tcl script), including the synthesis steps.
+    
+    **Default:** None
+
+.. option:: -parser <PARSER>
+
+    Specify a parser for the Yosys synthesizer [default (Verilog-2005), slang (SystemVerilog)].
+    The script uses the default conventional Verilog parser if this argument is not used.
+    
+    **Default:** default
+
+.. option:: -synthesis_params <SYNTHESIS_PARAMS>
+
+    Specify additional synthesis parameters that are directly appended to the ``parmys`` command in the **default** synthesis flow. (e.g., ``-mults_ratio 0.5``, ``-exact_mults 0``).
+    For users using a **custom** Yosys script with ``-yosys_script``, this option acts as a dynamic substitute for the ``YYY`` placeholder (if present).
+
+    **Default:** "" (empty string)
+
+.. option:: -mosaic_script <MOSAIC_SCRIPT>
+
+    Supplies Mosaic with a custom yosys template script, including the synthesis steps.
+
+    **Default:** vtr_flow/misc/mosaic/template/synthesis.tcl
+
+.. note::
+
+    Yosys-Slang is a Yosys plugin that is built on top of the slang library to provide comprehensive SystemVerilog support.
+    It supports the ``read_slang`` command, used with the ``-C`` command-line option to read include-files from a text file containing include-file names.
+    It is used to read SystemVerilog files directly in Yosys.
+    For more information on Yosys-Slang, see `[Yosys-Slang] <https://github.com/povik/yosys-slang.git>`_
+
+.. note::
+
+    Parmys is a Yosys plugin which provides intelligent partial mapping features (inference, binding, and hard/soft logic trade-offs) from Odin-II for Yosys. For more information on available parameters see the `Parmys <https://github.com/CAS-Atlantic/parmys-plugin.git>`_ plugin page.
+
+.. note::
+
+    Mosaic is an alternative synthesis frontend. Select it with ``-start mosaic`` in the VTR flow.
+
+.. Universal Hardware Data Model (UHDM) is a complete modeling of the IEEE SystemVerilog Object Model with VPI Interface, Elaborator, Serialization, Visitor and Listener.
+..     UHDM is used as a compiled interchange format in between SystemVerilog tools. Typical inputs to the UHDM flow are files with ``.v`` or ``.sv`` extensions.
+..     The ``system-verilog`` parser, which represents the ``read_systemverilog`` command, reads SystemVerilog files directly in Yosys.
+..     It executes Surelog with provided filenames and converts them (in memory) into UHDM file. Then, this UHDM file is converted into Yosys AST. `[Yosys-SystemVerilog] <https://github.com/antmicro/yosys-systemverilog#usage>`_
+..     On the other hand, the ``surelog`` parser, which uses the ``read_uhdm`` Yosys command, walks the design tree and converts its nodes into Yosys AST nodes using Surelog. `[UHDM-Yosys <https://github.com/chipsalliance/UHDM-integration-tests#uhdm-yosys>`_, `Surelog] <https://github.com/chipsalliance/Surelog#surelog>`_

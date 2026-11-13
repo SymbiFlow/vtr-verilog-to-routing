@@ -1,15 +1,15 @@
 #include "vtr_expr_eval.h"
 #include "vtr_error.h"
 #include "vtr_util.h"
-#include "vtr_math.h"
 
+#include <numeric>
 #include <string>
 #include <sstream>
-#include <iostream>
 
 /** global variables **/
 
-/** bp_state_globals is a variable that holds a member of type BreakpointState. This member is altered by the breakpoint class, the placer, and router and holds the most updated values for variables that can trigger breakpoints (e.g move_num, temp_num etc.) **/
+/// Holds a member of type BreakpointState.
+/// This member is altered by the breakpoint class, the placer, and router and holds the most updated values for variables that can trigger breakpoints (e.g move_num, temp_num etc.) **/
 BreakpointStateGlobals bp_state_globals;
 
 namespace vtr {
@@ -58,13 +58,13 @@ static bool is_char_number(const char ch);
 static bool is_operator(const char ch);
 
 // returns true if the specified name is a known function operator
-static bool is_function(std::string name);
+static bool is_function(const std::string& name);
 
 // returns true if the specified name is a known compound operator
 t_compound_operator is_compound_op(const char* ch);
 
 // returns true if the specified name is a known variable
-static bool is_variable(std::string var);
+static bool is_variable(const std::string& var);
 
 // returns the length of any identifier (e.g. name, function) starting at the beginning of str
 static int identifier_length(const char* str);
@@ -76,14 +76,14 @@ static bool goto_next_char(int* str_ind, const string& pw_formula, char ch);
 bool same_string(std::string str1, std::string str2);
 
 //checks if the block indicated by the user was one of the moved blocks in the last perturbation
-int in_blocks_affected(std::string expression_left);
+int in_blocks_affected(const std::string& expression_left);
 
 //the function of += operator
 bool additional_assignment_op(int arg1, int arg2);
 
 /**** Function Implementations ****/
 /* returns integer result according to specified non-piece-wise formula and data */
-int FormulaParser::parse_formula(std::string formula, const t_formula_data& mydata, bool is_breakpoint) {
+int FormulaParser::parse_formula(const std::string& formula, const t_formula_data& mydata, bool is_breakpoint) {
     int result = -1;
 
     /* output in reverse-polish notation */
@@ -150,7 +150,7 @@ int FormulaParser::parse_piecewise_formula(const char* formula, const t_formula_
         }
         tmp_ind_count = str_ind - tmp_ind_start; /* range start is between { and : */
         substr = pw_formula.substr(tmp_ind_start, tmp_ind_count);
-        range_start = parse_formula(substr.c_str(), mydata);
+        range_start = parse_formula(substr, mydata);
 
         /* get the end of the range */
         tmp_ind_start = str_ind + 1;
@@ -160,7 +160,7 @@ int FormulaParser::parse_piecewise_formula(const char* formula, const t_formula_
         }
         tmp_ind_count = str_ind - tmp_ind_start; /* range end is between : and } */
         substr = pw_formula.substr(tmp_ind_start, tmp_ind_count);
-        range_end = parse_formula(substr.c_str(), mydata);
+        range_end = parse_formula(substr, mydata);
 
         if (range_start > range_end) {
             throw vtr::VtrError(vtr::string_fmt("parse_piecewise_formula: range_start, %d, is bigger than range end, %d\n", range_start, range_end), __FILE__, __LINE__);
@@ -287,8 +287,6 @@ static void formula_to_rpn(const char* formula, const t_formula_data& mydata, ve
         rpn_output.push_back(fobj_dummy);
         op_stack.pop();
     }
-
-    return;
 }
 
 /* Fills the formula object fobj according to specified character and mydata,
@@ -318,12 +316,9 @@ static void get_formula_object(const char* ch, int& ichar, const t_formula_data&
             }
 
         } else if (!is_breakpoint) {
-            //A number
+            // A number
             fobj->type = E_FML_NUMBER;
-            fobj->data.num = mydata.get_var_value(
-                vtr::string_view(
-                    var_name.data(),
-                    var_name.size()));
+            fobj->data.num = mydata.get_var_value(var_name);
         } else if (is_variable(var_name)) {
             fobj->type = E_FML_VARIABLE;
             if (same_string(var_name, "temp_count"))
@@ -352,7 +347,7 @@ static void get_formula_object(const char* ch, int& ichar, const t_formula_data&
         }
         ichar--;
         fobj->type = E_FML_NUMBER;
-        fobj->data.num = vtr::atoi(ss.str().c_str());
+        fobj->data.num = vtr::atoi(ss.str());
     } else if (is_compound_op(ch) != E_COM_OP_UNDEFINED) {
         fobj->type = E_FML_OPERATOR;
         t_compound_operator comp_op_code = is_compound_op(ch);
@@ -415,8 +410,6 @@ static void get_formula_object(const char* ch, int& ichar, const t_formula_data&
                 break;
         }
     }
-
-    return;
 }
 
 /* returns integer specifying precedence of passed-in operator. higher integer
@@ -562,7 +555,6 @@ static void handle_bracket(const Formula_Object& fobj, vector<Formula_Object>& r
             }
         } while (keep_going);
     }
-    return;
 }
 
 /* used by the shunting-yard formula parser to deal with commas, ie ','. These occur in function calls*/
@@ -694,10 +686,10 @@ static int apply_rpn_op(const Formula_Object& arg1, const Formula_Object& arg2, 
             result = std::min(arg1.data.num, arg2.data.num);
             break;
         case E_OP_GCD:
-            result = vtr::gcd(arg1.data.num, arg2.data.num);
+            result = std::gcd(arg1.data.num, arg2.data.num);
             break;
         case E_OP_LCM:
-            result = vtr::lcm(arg1.data.num, arg2.data.num);
+            result = std::lcm(arg1.data.num, arg2.data.num);
             break;
         case E_OP_AND:
             result = arg1.data.num && arg2.data.num;
@@ -770,7 +762,7 @@ static bool is_operator(const char ch) {
 }
 
 //returns true if string signifies a function e.g max, min
-static bool is_function(std::string name) {
+static bool is_function(const std::string& name) {
     if (name == "min"
         || name == "max"
         || name == "gcd"
@@ -801,14 +793,14 @@ t_compound_operator is_compound_op(const char* ch) {
 }
 
 //checks if the entered string is a known variable name
-static bool is_variable(std::string var_name) {
+static bool is_variable(const std::string& var_name) {
     if (same_string(var_name, "from_block") || same_string(var_name, "temp_count") || same_string(var_name, "move_num") || same_string(var_name, "route_net_id") || same_string(var_name, "in_blocks_affected") || same_string(var_name, "router_iter")) {
         return true;
     }
     return false;
 }
 
-//returns the length of the substring consisting of valid vairable characters from
+//returns the length of the substring consisting of valid variable characters from
 //the start of the string
 static int identifier_length(const char* str) {
     int ichar = 0;
@@ -849,11 +841,11 @@ bool same_string(std::string str1, std::string str2) {
     str1.erase(remove(str1.begin(), str1.end(), ' '), str1.end());
     str2.erase(remove(str2.begin(), str2.end(), ' '), str2.end());
 
-    //converting both strings to lower case to eliminate case sensivity
+    //converting both strings to lower case to eliminate case sensitivity
     std::transform(str1.begin(), str1.end(), str1.begin(), ::tolower);
     std::transform(str2.begin(), str2.end(), str2.begin(), ::tolower);
 
-    return (str1.compare(str2) == 0);
+    return (str1 == str2);
 }
 
 //the += operator
@@ -870,7 +862,7 @@ bool additional_assignment_op(int arg1, int arg2) {
 //recognizes the block_id to look for (entered by the user)
 //then looks for that block_id in all the blocks moved in the last perturbation.
 //returns the block id if found, else just -1
-int in_blocks_affected(std::string expression_left) {
+int in_blocks_affected(const std::string& expression_left) {
     int wanted_block = -1;
     int found_block;
     std::stringstream ss;

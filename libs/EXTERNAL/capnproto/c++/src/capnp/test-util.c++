@@ -19,9 +19,15 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "test-util.h"
 #include <kj/debug.h>
 #include <kj/compat/gtest.h>
+#include <kj/io.h>
+#include <kj/miniposix.h>
 
 namespace capnp {
 namespace _ {  // private
@@ -975,6 +981,14 @@ kj::Promise<void> TestPipelineImpl::getAnyCap(GetAnyCapContext context) {
       });
 }
 
+kj::Promise<void> TestPipelineImpl::getCapPipelineOnly(GetCapPipelineOnlyContext context) {
+  ++callCount;
+  PipelineBuilder<GetCapPipelineOnlyResults> pb;
+  pb.initOutBox().setCap(kj::heap<TestExtendsImpl>(callCount));
+  context.setPipeline(pb.build());
+  return kj::NEVER_DONE;
+}
+
 kj::Promise<void> TestCallOrderImpl::getCallSequence(GetCallSequenceContext context) {
   auto result = context.getResults();
   result.setN(count++);
@@ -1062,7 +1076,6 @@ kj::Promise<void> TestMoreStuffImpl::neverReturn(NeverReturnContext context) {
   // Also attach `cap` to the result struct to make sure that is released.
   context.getResults().setCapCopy(context.getParams().getCap());
 
-  context.allowCancellation();
   return kj::mv(promise);
 }
 
@@ -1105,7 +1118,6 @@ kj::Promise<void> TestMoreStuffImpl::echo(EchoContext context) {
 
 kj::Promise<void> TestMoreStuffImpl::expectCancel(ExpectCancelContext context) {
   auto cap = context.getParams().getCap();
-  context.allowCancellation();
   return loop(0, cap, context);
 }
 
@@ -1115,7 +1127,7 @@ kj::Promise<void> TestMoreStuffImpl::loop(uint depth, test::TestInterface::Clien
     ADD_FAILURE() << "Looped too long, giving up.";
     return kj::READY_NOW;
   } else {
-    return kj::evalLater([this,depth,KJ_CPCAP(cap),KJ_CPCAP(context)]() mutable {
+    return kj::evalLast([this,depth,KJ_CPCAP(cap),KJ_CPCAP(context)]() mutable {
       return loop(depth + 1, cap, context);
     });
   }
@@ -1142,6 +1154,42 @@ kj::Promise<void> TestMoreStuffImpl::getNull(GetNullContext context) {
 kj::Promise<void> TestMoreStuffImpl::getEnormousString(GetEnormousStringContext context) {
   context.getResults().initStr(100000000);  // 100MB
   return kj::READY_NOW;
+}
+
+kj::Promise<void> TestMoreStuffImpl::writeToFd(WriteToFdContext context) {
+  auto params = context.getParams();
+
+  auto promises = kj::heapArrayBuilder<kj::Promise<void>>(2);
+
+  promises.add(params.getFdCap1().getFd()
+      .then([](kj::Maybe<int> fd) {
+    kj::FdOutputStream(KJ_ASSERT_NONNULL(fd)).write("foo", 3);
+  }));
+  promises.add(params.getFdCap2().getFd()
+      .then([context](kj::Maybe<int> fd) mutable {
+    context.getResults().setSecondFdPresent(fd != nullptr);
+    KJ_IF_MAYBE(f, fd) {
+      kj::FdOutputStream(*f).write("bar", 3);
+    }
+  }));
+
+  int pair[2];
+  KJ_SYSCALL(kj::miniposix::pipe(pair));
+  kj::AutoCloseFd in(pair[0]);
+  kj::AutoCloseFd out(pair[1]);
+
+  kj::FdOutputStream(kj::mv(out)).write("baz", 3);
+  context.getResults().setFdCap3(kj::heap<TestFdCap>(kj::mv(in)));
+
+  return kj::joinPromises(promises.finish());
+}
+
+kj::Promise<void> TestMoreStuffImpl::throwException(ThrowExceptionContext context) {
+  return KJ_EXCEPTION(FAILED, "test exception");
+}
+
+kj::Promise<void> TestMoreStuffImpl::throwRemoteException(ThrowRemoteExceptionContext context) {
+  return KJ_EXCEPTION(FAILED, "remote exception: test exception");
 }
 
 #endif  // !CAPNP_LITE

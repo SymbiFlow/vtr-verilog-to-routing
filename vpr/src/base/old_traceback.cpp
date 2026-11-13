@@ -1,0 +1,235 @@
+#include "old_traceback.h"
+
+#include "clustered_netlist_fwd.h"
+#include "globals.h"
+#include "vtr_assert.h"
+#include "route_common.h"
+
+#include <vector>
+#include <stack>
+
+std::pair<t_trace*, t_trace*> traceback_from_route_tree_recurr(t_trace* head, t_trace* tail, const RouteTreeNode& node);
+void free_trace_data(t_trace* tptr);
+
+/** Build a route tree from a traceback */
+vtr::optional<RouteTree> TracebackCompat::traceback_to_route_tree(t_trace* head) {
+    if (head == nullptr)
+        return vtr::nullopt;
+
+    RouteTree tree(RRNodeId(head->index));
+
+    if (head->next)
+        traceback_to_route_tree_x(head->next, tree, tree._root, RRSwitchId(head->iswitch));
+
+    tree.reload_timing();
+    return tree;
+}
+
+/* Add the path indicated by the trace to parent */
+void TracebackCompat::traceback_to_route_tree_x(t_trace* trace, RouteTree& tree, RouteTreeNode* parent, RRSwitchId parent_switch) {
+    auto& device_ctx = g_vpr_ctx.device();
+    const auto& rr_graph = device_ctx.rr_graph;
+
+    while (trace != nullptr) {
+        RRNodeId inode = RRNodeId(trace->index);
+
+        // Every node below the root is reached through a switch. Without one, the
+        // traceback was mis-read, and reload_timing() would index rr_switch_inf with
+        // an invalid switch.
+        VTR_ASSERT_MSG(parent_switch.is_valid(), "Route tree node has no parent switch");
+
+        RouteTreeNode* new_node = new RouteTreeNode(inode, parent_switch, parent);
+        tree.add_node(parent, new_node);
+        new_node->net_pin_index = trace->net_pin_index;
+        new_node->R_upstream = std::numeric_limits<float>::quiet_NaN();
+        new_node->C_downstream = std::numeric_limits<float>::quiet_NaN();
+        new_node->Tdel = std::numeric_limits<float>::quiet_NaN();
+        e_rr_type node_type = rr_graph.node_type(inode);
+        if (node_type == e_rr_type::IPIN || node_type == e_rr_type::SINK)
+            new_node->re_expand = false;
+        else
+            new_node->re_expand = true;
+
+        // A branch ends at a SINK, or at any node with no switch to a next node: a
+        // branch of non-configurable nodes can end at a wire that reaches no SINK.
+        if (node_type == e_rr_type::SINK || trace->iswitch == UNDEFINED) {
+            // The traceback returns to the previous branch point if there is another branch, otherwise this is the last branch end
+            if (trace->next) {
+                RRNodeId next_rr_node = RRNodeId(trace->next->index);
+                RouteTreeNode* branch = tree._rr_node_to_rt_node.at(next_rr_node);
+                VTR_ASSERT(trace->next->next);
+                parent = branch;
+                parent_switch = RRSwitchId(trace->next->iswitch);
+                trace = trace->next->next;
+            } else {
+                break;
+            }
+        } else {
+            parent = new_node;
+            parent_switch = RRSwitchId(trace->iswitch);
+            trace = trace->next;
+        }
+    }
+}
+
+std::pair<t_trace*, t_trace*> traceback_from_route_tree_recurr(t_trace* head, t_trace* tail, const RouteTreeNode& node) {
+    if (!node.is_leaf()) {
+        //Recursively add children
+        for (auto& child : node.child_nodes()) {
+            t_trace* curr = alloc_trace_data();
+            curr->index = size_t(node.inode);
+            curr->net_pin_index = node.net_pin_index;
+            curr->iswitch = size_t(child.parent_switch);
+            curr->next = nullptr;
+
+            if (tail) {
+                VTR_ASSERT(tail->next == nullptr);
+                tail->next = curr;
+            }
+
+            tail = curr;
+
+            if (!head) {
+                head = tail;
+            }
+
+            std::tie(head, tail) = traceback_from_route_tree_recurr(head, tail, child);
+        }
+    } else {
+        //Leaf
+        t_trace* curr = alloc_trace_data();
+        curr->index = size_t(node.inode);
+        curr->net_pin_index = node.net_pin_index;
+        curr->iswitch = UNDEFINED;
+        curr->next = nullptr;
+
+        if (tail) {
+            VTR_ASSERT(tail->next == nullptr);
+            tail->next = curr;
+        }
+
+        tail = curr;
+
+        if (!head) {
+            head = tail;
+        }
+    }
+
+    return {head, tail};
+}
+
+/* Creates a traceback from the route tree */
+t_trace* TracebackCompat::traceback_from_route_tree(const RouteTree& tree) {
+    t_trace* head;
+    t_trace* tail;
+
+    std::tie(head, tail) = traceback_from_route_tree_recurr(nullptr, nullptr, tree.root());
+
+    // Intentionally inside VTR_ASSERT: this is a pure validation check with no
+    // side effects, and it is expensive enough to matter on hot paths. Stripping
+    // it at lower assert levels is acceptable.
+    VTR_ASSERT(validate_and_update_traceback(head));
+
+    return head;
+}
+
+void print_traceback(const t_trace* trace) {
+    auto& device_ctx = g_vpr_ctx.device();
+    const auto& rr_graph = device_ctx.rr_graph;
+    auto& route_ctx = g_vpr_ctx.routing();
+    const t_trace* prev = nullptr;
+    while (trace) {
+        RRNodeId inode(trace->index);
+        VTR_LOG("%d (%s)", inode, rr_node_typename[rr_graph.node_type(inode)]);
+
+        if (trace->iswitch == UNDEFINED) {
+            VTR_LOG(" !"); //End of branch
+        }
+
+        if (prev && prev->iswitch != UNDEFINED && !rr_graph.rr_switch_inf(RRSwitchId(prev->iswitch)).configurable()) {
+            VTR_LOG("*"); //Reached non-configurably
+        }
+
+        if (route_ctx.rr_node_route_inf[inode].occ() > rr_graph.node_capacity(inode)) {
+            VTR_LOG(" x"); //Overused
+        }
+        VTR_LOG("\n");
+        prev = trace;
+        trace = trace->next;
+    }
+    VTR_LOG("\n");
+}
+
+bool validate_and_update_traceback(t_trace* trace, bool verify_switch_id /* = true */) {
+    if (!trace) {
+        return true;
+    }
+
+    std::set<int> seen_rr_nodes;
+    std::stack<t_trace*> trace_stack;
+    trace_stack.push(trace);
+
+    while (!trace_stack.empty()) {
+        trace = trace_stack.top();
+        trace_stack.pop();
+        seen_rr_nodes.insert(trace->index);
+        t_trace* next = trace->next;
+
+        if (next == nullptr) {
+            continue;
+        }
+
+        if (trace->iswitch == UNDEFINED) { // End of a branch
+            // Verify that the next element (branch point) has been already seen in the traceback so far
+            if (!seen_rr_nodes.count(next->index)) {
+                VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "Traceback branch point %d not found", next->index);
+            }
+        } else { // Midway along branch
+            // Check there is an edge connecting trace and next
+            const auto& rr_graph = g_vpr_ctx.device().rr_graph;
+            bool found = false;
+            for (t_edge_size iedge = 0; iedge < rr_graph.num_edges(RRNodeId(trace->index)); ++iedge) {
+                int to_node = size_t(rr_graph.edge_sink_node(RRNodeId(trace->index), iedge));
+                if (to_node == next->index) {
+                    found = true;
+                    int rr_iswitch = rr_graph.edge_switch(RRNodeId(trace->index), iedge);
+                    if (verify_switch_id) {
+                        // Verify that the switch matches
+                        if (trace->iswitch != rr_iswitch) {
+                            VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "Traceback mismatched switch type: traceback %d rr_graph %d (RR nodes %d -> %d)\n",
+                                            trace->iswitch, rr_iswitch,
+                                            trace->index, to_node);
+                        }
+                    } else {
+                        // Update the switch ID in the traceback to match the RR Graph
+                        trace->iswitch = rr_iswitch;
+                    }
+                    break;
+                }
+            }
+            if (!found) {
+                VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "Traceback no RR edge between RR nodes %d -> %d\n", trace->index, next->index);
+            }
+        }
+        // Recurse
+        trace_stack.push(next);
+    }
+
+    return true;
+}
+
+t_trace* alloc_trace_data() {
+    return (t_trace*)malloc(sizeof(t_trace));
+}
+
+void free_trace_data(t_trace* tptr) {
+    free(tptr);
+}
+
+void free_traceback(t_trace* tptr) {
+    while (tptr != nullptr) {
+        t_trace* tempptr = tptr->next;
+        free_trace_data(tptr);
+        tptr = tempptr;
+    }
+}

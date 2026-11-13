@@ -1,69 +1,80 @@
 /********************************************************************
  * This file includes functions that are used to annotate routing results
- * from VPR to OpenFPGA
+ * from VPR to OpenFPGA. (i.e. create a mapping from RRNodeIds to ClusterNetIds)
  *******************************************************************/
-/* Headers from vtrutil library */
-#include "vtr_assert.h"
+
+#include "describe_rr_node.h"
+#include "vpr_error.h"
 #include "vtr_time.h"
 #include "vtr_log.h"
 
-#include "vpr_error.h"
-#include "rr_graph.h"
+#include "route_utils.h"
+
 #include "annotate_routing.h"
 
-/********************************************************************
- * Create a mapping between each rr_node and its mapped nets 
- * based on VPR routing results
- * - Store the net ids mapped to each routing resource nodes
- * - Mapped nodes should have valid net ids (except SOURCE and SINK nodes)
- * - Unmapped rr_node will use invalid ids 
- *******************************************************************/
-vtr::vector<RRNodeId, ClusterNetId> annotate_rr_node_nets(const DeviceContext& device_ctx,
-                                                          const ClusteringContext& clustering_ctx,
-                                                          const RoutingContext& routing_ctx,
+vtr::vector<RRNodeId, ClusterNetId> annotate_rr_node_nets(const ClusteringContext& cluster_ctx,
+                                                          const DeviceContext& device_ctx,
+                                                          const AtomContext& atom_ctx,
                                                           const bool& verbose) {
     size_t counter = 0;
     vtr::ScopedStartFinishTimer timer("Annotating rr_node with routed nets");
 
+    const auto& rr_graph = device_ctx.rr_graph;
+    auto& atom_lookup = atom_ctx.lookup();
+
+    auto& netlist = cluster_ctx.clb_nlist;
     vtr::vector<RRNodeId, ClusterNetId> rr_node_nets;
-    rr_node_nets.resize(device_ctx.rr_nodes.size(), ClusterNetId::INVALID());
+    rr_node_nets.resize(rr_graph.num_nodes(), ClusterNetId::INVALID());
 
-    for (auto net_id : clustering_ctx.clb_nlist.nets()) {
-        if (clustering_ctx.clb_nlist.net_is_ignored(net_id)) {
+    for (auto net_id : netlist.nets()) {
+        if (netlist.net_is_ignored(net_id)) {
             continue;
         }
-
         /* Ignore used in local cluster only, reserved one CLB pin */
-        if (clustering_ctx.clb_nlist.net_sinks(net_id).empty()) {
+        if (netlist.net_sinks(net_id).empty()) {
             continue;
         }
-        t_trace* tptr = routing_ctx.trace[net_id].head;
-        while (tptr != nullptr) {
-            const RRNodeId& rr_node = RRNodeId(tptr->index);
+
+        auto& tree = get_route_tree_from_cluster_net_id(net_id);
+        if (!tree)
+            continue;
+
+        for (auto& rt_node : tree->all_nodes()) {
+            const RRNodeId rr_node = rt_node.inode;
             /* Ignore source and sink nodes, they are the common node multiple starting and ending points */
-            if ((SOURCE != device_ctx.rr_nodes.node_type(rr_node))
-                && (SINK != device_ctx.rr_nodes.node_type(rr_node))) {
+            if ((e_rr_type::SOURCE != rr_graph.node_type(rr_node))
+                && (e_rr_type::SINK != rr_graph.node_type(rr_node))) {
                 /* Sanity check: ensure we do not revoke any net mapping
                  * In some routing architectures, node capacity is more than 1
                  * which allows a node to be mapped by multiple nets
-                 * Therefore, the sanity check should focus on the nodes 
-                 * whose capacity is 1 
-                 */
+                 * Therefore, the sanity check should focus on the nodes
+                 * whose capacity is 1.
+                 * Flat routing may create two clustered nets from a single
+                 * atom net if the atom net ended up exiting the block through
+                 * different pins. Those clustered nets will point to the same
+                 * atom net routing. Ignore clashes if that is the case. */
+                AtomNetId my_atom = atom_lookup.atom_net(net_id);
+                AtomNetId existing_atom = atom_lookup.atom_net(rr_node_nets[rr_node]);
                 if ((rr_node_nets[rr_node])
-                    && (1 == device_ctx.rr_nodes.node_capacity(rr_node))
-                    && (net_id != rr_node_nets[rr_node])) {
+                    && (1 == rr_graph.node_capacity(rr_node))
+                    && (net_id != rr_node_nets[rr_node])
+                    && (my_atom != existing_atom)) {
                     VPR_FATAL_ERROR(VPR_ERROR_ANALYSIS,
                                     "Detect two nets '%s' and '%s' that are mapped to the same rr_node '%ld'!\n%s\n",
-                                    clustering_ctx.clb_nlist.net_name(net_id).c_str(),
-                                    clustering_ctx.clb_nlist.net_name(rr_node_nets[rr_node]).c_str(),
+                                    netlist.net_name(net_id).c_str(),
+                                    netlist.net_name(rr_node_nets[rr_node]).c_str(),
                                     size_t(rr_node),
-                                    describe_rr_node((int)size_t(rr_node)).c_str());
+                                    describe_rr_node(rr_graph,
+                                                     device_ctx.grid,
+                                                     device_ctx.rr_indexed_data,
+                                                     rr_node,
+                                                     false)
+                                        .c_str());
                 } else {
                     rr_node_nets[rr_node] = net_id;
                 }
                 counter++;
             }
-            tptr = tptr->next;
         }
     }
 

@@ -14,22 +14,23 @@ project's documentation for details.
 ##### Serialization + RPC
 
 * [C++](cxx.html) by [@kentonv](https://github.com/kentonv)
+* [C#](https://github.com/c80k/capnproto-dotnetcore) by [@c80k](https://github.com/c80k)
 * [Erlang](http://ecapnp.astekk.se/) by [@kaos](https://github.com/kaos)
-* [Go](https://github.com/zombiezen/go-capnproto2) by [@zombiezen](https://github.com/zombiezen) (forked from [@glycerine](https://github.com/glycerine)'s serialization-only version, below)
-* [Javascript (Node.js only)](https://github.com/capnproto/node-capnp) by [@kentonv](https://github.com/kentonv)
+* [Go](https://github.com/capnproto/go-capnp) currently maintained by [@zenhack](https://github.com/zenhack) and [@lthibault](https://github.com/lthibault)
+* [Haskell](https://github.com/zenhack/haskell-capnp) by [@zenhack](https://github.com/zenhack)
+* [JavaScript (Node.js only)](https://github.com/capnproto/node-capnp) by [@kentonv](https://github.com/kentonv)
 * [OCaml](https://github.com/capnproto/capnp-ocaml) by [@pelzlpj](https://github.com/pelzlpj) with [RPC](https://github.com/mirage/capnp-rpc) by [@talex5](https://github.com/talex5)
 * [Python](http://capnproto.github.io/pycapnp/) by [@jparyani](https://github.com/jparyani)
 * [Rust](https://github.com/dwrensha/capnproto-rust) by [@dwrensha](https://github.com/dwrensha)
 
 ##### Serialization only
 
-* [C](https://github.com/opensourcerouting/c-capnproto) by [OpenSourceRouting](https://www.opensourcerouting.org/) / [@eqvinox](https://github.com/eqvinox) (originally by [@jmckaskill](https://github.com/jmckaskill))
+* [C](https://github.com/opensourcerouting/c-capnproto) by [OpenSourceRouting](https://www.opensourcerouting.org/) / [@eqvinox](https://github.com/eqvinox) (originally by [@jmckaskill](https://github.com/jmckaskill)) (no longer maintained)
+    * [Forked and maintained](https://gitlab.com/dkml/ext/c-capnproto) by [@jonahbeckford](https://github.com/jonahbeckford)
 * [D](https://github.com/capnproto/capnproto-dlang) by [@ThomasBrixLarsen](https://github.com/ThomasBrixLarsen)
-* [Go](https://github.com/glycerine/go-capnproto) by [@glycerine](https://github.com/glycerine) (originally by [@jmckaskill](https://github.com/jmckaskill))
-* [Haskell](https://github.com/zenhack/haskell-capnp) by [@zenhack](https://github.com/zenhack)
 * [Java](https://github.com/capnproto/capnproto-java/) by [@dwrensha](https://github.com/dwrensha)
-* [Javascript](https://github.com/capnp-js/capnp-js-base) by [@popham](https://github.com/popham)
-* [Javascript](https://github.com/jscheid/capnproto-js) (older, abandoned) by [@jscheid](https://github.com/jscheid)
+* [JavaScript](https://github.com/capnp-js/plugin/) by [@popham](https://github.com/popham)
+* [JavaScript](https://github.com/jscheid/capnproto-js) (older, abandoned) by [@jscheid](https://github.com/jscheid)
 * [Lua](https://github.com/cloudflare/lua-capnproto) by [CloudFlare](http://www.cloudflare.com/) / [@calio](https://github.com/calio)
 * [Nim](https://github.com/zielmicha/capnp.nim) by [@zielmicha](https://github.com/zielmicha)
 * [Ruby](https://github.com/cstrahan/capnp-ruby) by [@cstrahan](https://github.com/cstrahan)
@@ -43,8 +44,7 @@ new languages.
 * [Common Test Framework](https://github.com/kaos/capnp_test) by [@kaos](https://github.com/kaos)
 * [Sublime Syntax Highlighting](https://github.com/joshuawarner32/capnproto-sublime) by
   [@joshuawarner32](https://github.com/joshuawarner32)
-* [Vim Syntax Highlighting](https://github.com/peter-edge/vim-capnp) by [@peter-edge](https://github.com/peter-edge)
-  (originally by [@cstrahan](https://github.com/cstrahan))
+* [Vim Syntax Highlighting](https://github.com/cstrahan/vim-capnp) by [@cstrahan](https://github.com/cstrahan)
 * [Wireshark Dissector Plugin](https://github.com/kaos/wireshark-plugins) by [@kaos](https://github.com/kaos)
 * [VS Code Syntax Highlighter](https://marketplace.visualstudio.com/items?itemName=xmonader.vscode-capnp) by [@xmonader](https://github.com/xmonader)
 * [IntelliJ Syntax Highlighter](https://github.com/xmonader/sercapnp) by [@xmonader](https://github.com/xmonader)
@@ -72,7 +72,7 @@ then hands the parse tree off to another binary -- known as a "plugin" -- which 
 Plugins are independent executables (written in any language) which read a description of the
 schema from standard input and then generate the necessary code.  The description is itself a
 Cap'n Proto message, defined by
-[schema.capnp](https://github.com/sandstorm-io/capnproto/blob/master/c%2B%2B/src/capnp/schema.capnp).
+[schema.capnp](https://github.com/capnproto/capnproto/blob/master/c%2B%2B/src/capnp/schema.capnp).
 Specifically, the plugin receives a `CodeGeneratorRequest`, using
 [standard serialization](encoding.html#serialization-over-a-stream)
 (not packed).  (Note that installing the C++ runtime causes schema.capnp to be placed in
@@ -100,8 +100,8 @@ If the user specifies an output directory, the compiler will run the plugin with
 as the working directory, so you do not need to worry about this.
 
 For examples of plugins, take a look at
-[capnpc-capnp](https://github.com/sandstorm-io/capnproto/blob/master/c%2B%2B/src/capnp/compiler/capnpc-capnp.c%2B%2B)
-or [capnpc-c++](https://github.com/sandstorm-io/capnproto/blob/master/c%2B%2B/src/capnp/compiler/capnpc-c%2B%2B.c%2B%2B).
+[capnpc-capnp](https://github.com/capnproto/capnproto/blob/master/c%2B%2B/src/capnp/compiler/capnpc-capnp.c%2B%2B)
+or [capnpc-c++](https://github.com/capnproto/capnproto/blob/master/c%2B%2B/src/capnp/compiler/capnpc-c%2B%2B.c%2B%2B).
 
 ### Supporting Dynamic Languages
 

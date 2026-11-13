@@ -23,10 +23,6 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #include "raw-schema.h"
 #include "layout.h"
 #include "list.h"
@@ -36,6 +32,8 @@
 #include <kj/string.h>
 #include <kj/string-tree.h>
 #include <kj/hash.h>
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
@@ -139,7 +137,7 @@ struct BrandBindingFor_<List<T>, Kind::LIST> {
 template <typename T>
 struct BrandBindingFor_<T, Kind::ENUM> {
   static constexpr RawBrandedSchema::Binding get(uint16_t listDepth) {
-    return { 15, listDepth, nullptr };
+    return { 15, listDepth, &rawSchema<T>().defaultBrand };
   }
 };
 
@@ -211,7 +209,7 @@ template <typename T>
 class ConstStruct {
 public:
   ConstStruct() = delete;
-  KJ_DISALLOW_COPY(ConstStruct);
+  KJ_DISALLOW_COPY_AND_MOVE(ConstStruct);
   inline explicit constexpr ConstStruct(const word* ptr): ptr(ptr) {}
 
   inline typename T::Reader get() const {
@@ -230,7 +228,7 @@ template <typename T>
 class ConstList {
 public:
   ConstList() = delete;
-  KJ_DISALLOW_COPY(ConstList);
+  KJ_DISALLOW_COPY_AND_MOVE(ConstList);
   inline explicit constexpr ConstList(const word* ptr): ptr(ptr) {}
 
   inline typename List<T>::Reader get() const {
@@ -249,7 +247,7 @@ template <size_t size>
 class ConstText {
 public:
   ConstText() = delete;
-  KJ_DISALLOW_COPY(ConstText);
+  KJ_DISALLOW_COPY_AND_MOVE(ConstText);
   inline explicit constexpr ConstText(const word* ptr): ptr(ptr) {}
 
   inline Text::Reader get() const {
@@ -277,7 +275,7 @@ template <size_t size>
 class ConstData {
 public:
   ConstData() = delete;
-  KJ_DISALLOW_COPY(ConstData);
+  KJ_DISALLOW_COPY_AND_MOVE(ConstData);
   inline explicit constexpr ConstData(const word* ptr): ptr(ptr) {}
 
   inline Data::Reader get() const {
@@ -317,7 +315,7 @@ inline constexpr uint sizeInWords() {
 
 }  // namespace capnp
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 // MSVC doesn't understand floating-point constexpr yet.
 //
 // TODO(msvc): Remove this hack when MSVC is fixed.
@@ -328,12 +326,19 @@ inline constexpr uint sizeInWords() {
 #define CAPNP_NON_INT_CONSTEXPR_DEF_INIT(value)
 #endif
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 // TODO(msvc): A little hack to allow MSVC to use C++14 return type deduction in cases where the
 // explicit type exposes bugs in the compiler.
 #define CAPNP_AUTO_IF_MSVC(...) auto
 #else
 #define CAPNP_AUTO_IF_MSVC(...) __VA_ARGS__
+#endif
+
+// TODO(msvc): MSVC does not even expect constexprs to have definitions below C++17.
+#if (KJ_CPP_STD < 201703L) && !(defined(_MSC_VER) && !defined(__clang__))
+#define CAPNP_NEED_REDUNDANT_CONSTEXPR_DECL 1
+#else
+#define CAPNP_NEED_REDUNDANT_CONSTEXPR_DECL 0
 #endif
 
 #if CAPNP_LITE
@@ -351,12 +356,11 @@ inline constexpr uint sizeInWords() {
       static inline ::capnp::word const* encodedSchema() { return bp_##id; } \
     }
 
-#if _MSC_VER
-// TODO(msvc): MSVC dosen't expect constexprs to have definitions.
-#define CAPNP_DEFINE_ENUM(type, id)
-#else
+#if CAPNP_NEED_REDUNDANT_CONSTEXPR_DECL
 #define CAPNP_DEFINE_ENUM(type, id) \
     constexpr uint64_t EnumInfo<type>::typeId
+#else
+#define CAPNP_DEFINE_ENUM(type, id)
 #endif
 
 #define CAPNP_DECLARE_STRUCT_HEADER(id, dataWordSize_, pointerCount_) \
@@ -382,9 +386,14 @@ inline constexpr uint sizeInWords() {
       static inline ::capnp::word const* encodedSchema() { return bp_##id; } \
       static constexpr ::capnp::_::RawSchema const* schema = &s_##id; \
     }
+
+#if CAPNP_NEED_REDUNDANT_CONSTEXPR_DECL
 #define CAPNP_DEFINE_ENUM(type, id) \
     constexpr uint64_t EnumInfo<type>::typeId; \
     constexpr ::capnp::_::RawSchema const* EnumInfo<type>::schema
+#else
+#define CAPNP_DEFINE_ENUM(type, id)
+#endif
 
 #define CAPNP_DECLARE_STRUCT_HEADER(id, dataWordSize_, pointerCount_) \
       struct IsStruct; \
@@ -403,3 +412,13 @@ inline constexpr uint sizeInWords() {
       static constexpr ::capnp::_::RawSchema const* schema = &::capnp::schemas::s_##id;
 
 #endif  // CAPNP_LITE, else
+
+namespace capnp {
+namespace schemas {
+CAPNP_DECLARE_SCHEMA(995f9a3377c0b16e);
+// HACK: Forward-declare the RawSchema for StreamResult, from stream.capnp. This allows capnp
+//   files which declare streaming methods to avoid including stream.capnp.h.
+}
+}
+
+CAPNP_END_HEADER

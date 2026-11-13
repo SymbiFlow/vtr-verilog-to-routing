@@ -1,40 +1,62 @@
 #include "read_circuit.h"
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "logic_types.h"
 #include "read_blif.h"
+#include "read_interchange_netlist.h"
 #include "atom_netlist.h"
 #include "atom_netlist_utils.h"
 #include "echo_files.h"
-
 #include "vtr_assert.h"
 #include "vtr_log.h"
-#include "vtr_util.h"
 #include "vtr_path.h"
 #include "vtr_time.h"
+#include "vtr_util.h"
+#include "vpr_error.h"
 
 static void process_circuit(AtomNetlist& netlist,
                             e_const_gen_inference const_gen_inference_method,
                             bool should_absorb_buffers,
+                            bool should_merge_constant_generators,
                             bool should_sweep_dangling_primary_ios,
                             bool should_sweep_dangling_nets,
                             bool should_sweep_dangling_blocks,
                             bool should_sweep_constant_primary_outputs,
+                            const LogicalModels& models,
                             int verbosity);
 
-static void show_circuit_stats(const AtomNetlist& netlist);
+static void show_circuit_stats(const AtomNetlist& netlist, const LogicalModels& models);
 
-AtomNetlist read_and_process_circuit(e_circuit_format circuit_format,
-                                     const char* circuit_file,
-                                     const t_model* user_models,
-                                     const t_model* library_models,
-                                     e_const_gen_inference const_gen_inference,
-                                     bool should_absorb_buffers,
-                                     bool should_sweep_dangling_primary_ios,
-                                     bool should_sweep_dangling_nets,
-                                     bool should_sweep_dangling_blocks,
-                                     bool should_sweep_constant_primary_outputs,
-                                     int verbosity) {
+/**
+ * @brief Errors out if the netlist contains nets which have sinks but no driver.
+ *
+ * Undriven nets are normally removed by --sweep_dangling_nets. When that sweep
+ * is turned off they would be kept, but the rest of VPR (packing, placement,
+ * routing and timing analysis) requires every net to have a driver. They also
+ * point to a problem upstream (in the design or in synthesis), so we report
+ * them clearly instead of silently implementing logic with floating inputs.
+ */
+static void check_no_undriven_nets(const AtomNetlist& netlist, int verbosity);
+
+AtomNetlist read_and_process_circuit(e_circuit_format circuit_format, t_vpr_setup& vpr_setup, t_arch& arch) {
+    // Options
+    const char* circuit_file = vpr_setup.PackerOpts.circuit_file_name.c_str();
+    e_const_gen_inference const_gen_inference = vpr_setup.NetlistOpts.const_gen_inference;
+    bool should_absorb_buffers = vpr_setup.NetlistOpts.absorb_buffer_luts;
+    bool should_merge_constant_generators = vpr_setup.NetlistOpts.merge_constant_generators;
+    bool should_sweep_dangling_primary_ios = vpr_setup.NetlistOpts.sweep_dangling_primary_ios;
+    bool should_sweep_dangling_nets = vpr_setup.NetlistOpts.sweep_dangling_nets;
+    bool should_sweep_dangling_blocks = vpr_setup.NetlistOpts.sweep_dangling_blocks;
+    bool should_sweep_constant_primary_outputs = vpr_setup.NetlistOpts.sweep_constant_primary_outputs;
+    int verbosity = vpr_setup.NetlistOpts.netlist_verbosity;
+
     if (circuit_format == e_circuit_format::AUTO) {
         auto name_ext = vtr::split_ext(circuit_file);
 
+        VTR_LOGV(verbosity, "Circuit file: %s\n", circuit_file);
         if (name_ext[1] == ".blif") {
             circuit_format = e_circuit_format::BLIF;
         } else if (name_ext[1] == ".eblif") {
@@ -49,30 +71,42 @@ AtomNetlist read_and_process_circuit(e_circuit_format circuit_format,
     {
         vtr::ScopedStartFinishTimer t("Load circuit");
 
-        VTR_ASSERT(circuit_format == e_circuit_format::BLIF
-                   || circuit_format == e_circuit_format::EBLIF);
-
-        netlist = read_blif(circuit_format, circuit_file, user_models, library_models);
+        switch (circuit_format) {
+            case e_circuit_format::BLIF:
+            case e_circuit_format::EBLIF:
+                netlist = read_blif(circuit_format, circuit_file, arch.models, verbosity);
+                break;
+            case e_circuit_format::FPGA_INTERCHANGE:
+                netlist = read_interchange_netlist(circuit_file, arch, verbosity);
+                break;
+            default:
+                VPR_FATAL_ERROR(VPR_ERROR_ATOM_NETLIST,
+                                "Unable to identify circuit file format for '%s'. Expect [blif|eblif|fpga-interchange]!\n",
+                                circuit_file);
+                break;
+        }
     }
 
     if (isEchoFileEnabled(E_ECHO_ATOM_NETLIST_ORIG)) {
-        print_netlist_as_blif(getEchoFileName(E_ECHO_ATOM_NETLIST_ORIG), netlist);
+        print_netlist_as_blif(getEchoFileName(E_ECHO_ATOM_NETLIST_ORIG), netlist, arch.models);
     }
 
     process_circuit(netlist,
                     const_gen_inference,
                     should_absorb_buffers,
+                    should_merge_constant_generators,
                     should_sweep_dangling_primary_ios,
                     should_sweep_dangling_nets,
                     should_sweep_dangling_blocks,
                     should_sweep_constant_primary_outputs,
+                    arch.models,
                     verbosity);
 
     if (isEchoFileEnabled(E_ECHO_ATOM_NETLIST_CLEANED)) {
-        print_netlist_as_blif(getEchoFileName(E_ECHO_ATOM_NETLIST_CLEANED), netlist);
+        print_netlist_as_blif(getEchoFileName(E_ECHO_ATOM_NETLIST_CLEANED), netlist, arch.models);
     }
 
-    show_circuit_stats(netlist);
+    show_circuit_stats(netlist, arch.models);
 
     return netlist;
 }
@@ -80,47 +114,62 @@ AtomNetlist read_and_process_circuit(e_circuit_format circuit_format,
 static void process_circuit(AtomNetlist& netlist,
                             e_const_gen_inference const_gen_inference_method,
                             bool should_absorb_buffers,
+                            bool should_merge_constant_generators,
                             bool should_sweep_dangling_primary_ios,
                             bool should_sweep_dangling_nets,
                             bool should_sweep_dangling_blocks,
                             bool should_sweep_constant_primary_outputs,
+                            const LogicalModels& models,
                             int verbosity) {
     {
         vtr::ScopedStartFinishTimer t("Clean circuit");
 
-        //Clean-up lut buffers
+        // Clean-up lut buffers
         if (should_absorb_buffers) {
-            absorb_buffer_luts(netlist, verbosity);
+            absorb_buffer_luts(netlist, models, verbosity);
         }
 
-        //Remove the special 'unconn' net
+        // Remove the special 'unconn' net
         AtomNetId unconn_net_id = netlist.find_net("unconn");
         if (unconn_net_id) {
             VTR_LOGV_WARN(verbosity > 1, "Removing special net 'unconn' (assumed it represented explicitly unconnected pins)\n");
             netlist.remove_net(unconn_net_id);
         }
 
-        //Also remove the 'unconn' block driver, if it exists
+        // Also remove the 'unconn' block driver, if it exists
         AtomBlockId unconn_blk_id = netlist.find_block("unconn");
         if (unconn_blk_id) {
             VTR_LOGV_WARN(verbosity > 1, "Removing special block 'unconn' (assumed it represented explicitly unconnected pins)\n");
             netlist.remove_block(unconn_blk_id);
         }
 
-        //Sweep unused logic/nets/inputs/outputs
+        // Merge redundant constant generators
+        //  Note that this must occur after the 'unconn' block is removed, since
+        //  the 'unconn' block looks like a constant-zero generator.
+        if (should_merge_constant_generators) {
+            merge_constant_generators(netlist, verbosity);
+        }
+
+        // Sweep unused logic/nets/inputs/outputs
         sweep_iterative(netlist,
                         should_sweep_dangling_primary_ios,
                         should_sweep_dangling_nets,
                         should_sweep_dangling_blocks,
                         should_sweep_constant_primary_outputs,
                         const_gen_inference_method,
+                        models,
                         verbosity);
+
+        // Undriven nets are only left in the netlist if they were not swept
+        if (!should_sweep_dangling_nets) {
+            check_no_undriven_nets(netlist, verbosity);
+        }
     }
 
     {
         vtr::ScopedStartFinishTimer t("Compress circuit");
 
-        //Compress the netlist to clean-out invalid entries
+        // Compress the netlist to clean-out invalid entries
         netlist.remove_and_compress();
     }
     {
@@ -130,35 +179,79 @@ static void process_circuit(AtomNetlist& netlist,
     }
 }
 
-static void show_circuit_stats(const AtomNetlist& netlist) {
-    std::map<std::string, size_t> block_type_counts;
+static void check_no_undriven_nets(const AtomNetlist& netlist, int verbosity) {
+    // Number of undriven nets named in the error, unless the verbosity asks for all of them
+    constexpr size_t max_nets_listed = 10;
 
-    //Count the block statistics
-    for (auto blk_id : netlist.blocks()) {
-        const t_model* blk_model = netlist.block_model(blk_id);
-        if (blk_model->name == std::string(MODEL_NAMES)) {
-            //LUT
-            size_t lut_size = 0;
-            auto in_ports = netlist.block_input_ports(blk_id);
+    std::vector<AtomNetId> undriven_nets;
+    for (AtomNetId net_id : netlist.nets()) {
+        // The netlist has not been compressed yet, so it may hold invalid (swept) ids
+        if (!net_id) continue;
 
-            //May have zero (no input LUT) or one input port
-            if (in_ports.size() == 1) {
-                auto port_id = *in_ports.begin();
-
-                //Figure out the LUT size
-                lut_size = netlist.port_width(port_id);
-
-            } else {
-                VTR_ASSERT(in_ports.size() == 0);
-            }
-
-            ++block_type_counts[std::to_string(lut_size) + "-LUT"];
-        } else {
-            //Other types
-            ++block_type_counts[blk_model->name];
+        // A net with neither a driver nor sinks is harmless; it is removed when the netlist is compressed
+        if (!netlist.net_driver(net_id) && !netlist.net_sinks(net_id).empty()) {
+            undriven_nets.push_back(net_id);
         }
     }
-    //Count the net statistics
+
+    if (undriven_nets.empty()) return;
+
+    size_t num_nets_listed = (verbosity > 1) ? undriven_nets.size() : std::min(undriven_nets.size(), max_nets_listed);
+    std::string net_list;
+    for (size_t i = 0; i < num_nets_listed; i++) {
+        AtomNetId net_id = undriven_nets[i];
+        AtomPinId first_sink = *netlist.net_sinks(net_id).begin();
+        net_list += vtr::string_fmt("  '%s' (%zu sink(s), e.g. block '%s' port '%s')\n",
+                                    netlist.net_name(net_id).c_str(),
+                                    netlist.net_sinks(net_id).size(),
+                                    netlist.block_name(netlist.pin_block(first_sink)).c_str(),
+                                    netlist.port_name(netlist.pin_port(first_sink)).c_str());
+    }
+    if (num_nets_listed < undriven_nets.size()) {
+        net_list += vtr::string_fmt("  ... and %zu more (run with --netlist_verbosity 2 to list all)\n",
+                                    undriven_nets.size() - num_nets_listed);
+    }
+
+    VPR_FATAL_ERROR(VPR_ERROR_ATOM_NETLIST,
+                    "The netlist contains %zu undriven net(s) (nets with sinks but no driver):\n"
+                    "%s"
+                    "Undriven nets usually indicate a problem in the design or in synthesis, which should be fixed upstream. "
+                    "Their sinks have no defined value, and on an FPGA would be driven by whatever happens to be on the "
+                    "unused routing they connect to.\n"
+                    "VPR keeps undriven nets in the netlist because --sweep_dangling_nets is off, but cannot implement them. "
+                    "To proceed anyway, re-run with '--sweep_dangling_nets on' to remove them; their sinks will be left "
+                    "unconnected.\n",
+                    undriven_nets.size(), net_list.c_str());
+}
+
+static void show_circuit_stats(const AtomNetlist& netlist, const LogicalModels& models) {
+    // Count the block statistics
+    std::map<std::string, size_t> block_type_counts;
+    std::map<std::string, size_t> lut_size_counts;
+    LogicalModelId names_model_id = LogicalModels::MODEL_NAMES_ID;
+    for (auto blk_id : netlist.blocks()) {
+        // For each model, count the number of occurrences in the netlist.
+        LogicalModelId blk_model_id = netlist.block_model(blk_id);
+        std::string blk_model_name = models.get_model(blk_model_id).name;
+        ++block_type_counts[blk_model_name];
+        // If this block is a LUT, also count the occurrences of this size of LUT
+        // for more logging information.
+        if (blk_model_id == names_model_id) {
+            // May have zero (no input LUT) or one input port
+            auto in_ports = netlist.block_input_ports(blk_id);
+            VTR_ASSERT(in_ports.size() <= 1 && "Expected number of input ports for LUT to be 0 or 1");
+            size_t lut_size = 0;
+            if (in_ports.size() == 1) {
+                // Use the number of pins in the input port to determine the
+                // size of the LUT.
+                auto port_id = *in_ports.begin();
+                lut_size = netlist.port_pins(port_id).size();
+            }
+            ++lut_size_counts[std::to_string(lut_size) + "-LUT"];
+        }
+    }
+
+    // Count the net statistics
     std::map<std::string, double> net_stats;
     for (auto net_id : netlist.nets()) {
         double fanout = netlist.net_sinks(net_id).size();
@@ -175,27 +268,38 @@ static void show_circuit_stats(const AtomNetlist& netlist) {
     }
     net_stats["Avg Fanout"] /= netlist.nets().size();
 
-    //Determine the maximum length of a type name for nice formatting
+    // Determine the maximum length of a type name for nice formatting
     size_t max_block_type_len = 0;
-    for (auto kv : block_type_counts) {
+    for (const auto& kv : block_type_counts) {
         max_block_type_len = std::max(max_block_type_len, kv.first.size());
     }
+    size_t max_lut_size_len = 0;
+    for (const auto& kv : lut_size_counts) {
+        max_lut_size_len = std::max(max_lut_size_len, kv.first.size());
+    }
     size_t max_net_type_len = 0;
-    for (auto kv : net_stats) {
+    for (const auto& kv : net_stats) {
         max_net_type_len = std::max(max_net_type_len, kv.first.size());
     }
 
-    //Print the statistics
+    // Print the statistics
     VTR_LOG("Circuit Statistics:\n");
     VTR_LOG("  Blocks: %zu\n", netlist.blocks().size());
-    for (auto kv : block_type_counts) {
+    for (const auto& kv : block_type_counts) {
         VTR_LOG("    %-*s: %7zu\n", max_block_type_len, kv.first.c_str(), kv.second);
+        // If this block is a LUT, print the different sizes of LUTs in the
+        // design.
+        if (kv.first == LogicalModels::MODEL_NAMES) {
+            for (const auto& lut_kv : lut_size_counts) {
+                VTR_LOG("        %-*s: %7zu\n", max_lut_size_len, lut_kv.first.c_str(), lut_kv.second);
+            }
+        }
     }
     VTR_LOG("  Nets  : %zu\n", netlist.nets().size());
-    for (auto kv : net_stats) {
+    for (const auto& kv : net_stats) {
         VTR_LOG("    %-*s: %7.1f\n", max_net_type_len, kv.first.c_str(), kv.second);
     }
-    VTR_LOG("  Netlist Clocks: %zu\n", find_netlist_logical_clock_drivers(netlist).size());
+    VTR_LOG("  Netlist Clocks: %zu\n", find_netlist_logical_clock_drivers(netlist, models).size());
 
     if (netlist.blocks().empty()) {
         VTR_LOG_WARN("Netlist contains no blocks\n");

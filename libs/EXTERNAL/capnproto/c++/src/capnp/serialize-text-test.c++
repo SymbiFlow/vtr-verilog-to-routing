@@ -32,7 +32,7 @@ namespace capnp {
 namespace _ {  // private
 namespace {
 
-KJ_TEST("TestAllTypes") {
+KJ_TEST("TextCodec TestAllTypes") {
   MallocMessageBuilder builder;
   initTestMessage(builder.initRoot<TestAllTypes>());
 
@@ -66,7 +66,7 @@ KJ_TEST("TestAllTypes") {
   }
 }
 
-KJ_TEST("TestDefaults") {
+KJ_TEST("TextCodec TestDefaults") {
   MallocMessageBuilder builder;
   initTestMessage(builder.initRoot<TestDefaults>());
 
@@ -79,7 +79,7 @@ KJ_TEST("TestDefaults") {
   checkTestMessage(structReader);
 }
 
-KJ_TEST("TestListDefaults") {
+KJ_TEST("TextCodec TestListDefaults") {
   MallocMessageBuilder builder;
   initTestMessage(builder.initRoot<TestListDefaults>());
 
@@ -92,7 +92,7 @@ KJ_TEST("TestListDefaults") {
   checkTestMessage(structReader);
 }
 
-KJ_TEST("raw text") {
+KJ_TEST("TextCodec raw text") {
   using TestType = capnproto_test::capnp::test::TestLateUnion;
 
   kj::String message =
@@ -124,6 +124,66 @@ KJ_TEST("raw text") {
   KJ_EXPECT(reader.getAnotherUnion().getCorge()[0] == 7);
   KJ_EXPECT(reader.getAnotherUnion().getCorge()[1] == 8);
   KJ_EXPECT(reader.getAnotherUnion().getCorge()[2] == 9);
+}
+
+KJ_TEST("TextCodec parse error") {
+  auto message = "\n  (,)"_kj;
+
+  MallocMessageBuilder builder;
+  auto root = builder.initRoot<TestAllTypes>();
+
+  TextCodec codec;
+  auto exception = KJ_ASSERT_NONNULL(kj::runCatchingExceptions(
+      [&]() { codec.decode(message, root); }));
+
+  KJ_EXPECT(exception.getFile() == "(capnp text input)"_kj);
+  KJ_EXPECT(exception.getLine() == 2);
+  KJ_EXPECT(exception.getDescription() == "3-6: Parse error: Empty list item.",
+            exception.getDescription());
+}
+
+KJ_TEST("text format implicitly coerces struct value from first field type") {
+  // We don't actually use TextCodec here, but rather check how the compiler handled some constants
+  // defined in test.capnp. It's the same parser code either way but this is easier.
+
+  {
+    auto s = test::TestImpliedFirstField::Reader().getTextStruct();
+    KJ_EXPECT(s.getText() == "foo");
+    KJ_EXPECT(s.getI() == 321);
+  }
+
+  {
+    auto s = test::TEST_IMPLIED_FIRST_FIELD->getTextStruct();
+    KJ_EXPECT(s.getText() == "bar");
+    KJ_EXPECT(s.getI() == 321);
+  }
+
+#if __GNUC__ && !__clang__
+// GCC generates a spurious warning here...
+#pragma GCC diagnostic ignored "-Wmisleading-indentation"
+#endif
+
+  {
+    auto l = test::TEST_IMPLIED_FIRST_FIELD->getTextStructList();
+    KJ_ASSERT(l.size() == 2);
+
+    {
+      auto s = l[0];
+      KJ_EXPECT(s.getText() == "baz");
+      KJ_EXPECT(s.getI() == 321);
+    }
+    {
+      auto s = l[1];
+      KJ_EXPECT(s.getText() == "qux");
+      KJ_EXPECT(s.getI() == 123);
+    }
+  }
+
+  {
+    auto s = test::TEST_IMPLIED_FIRST_FIELD->getIntGroup();
+    KJ_EXPECT(s.getI() == 123);
+    KJ_EXPECT(s.getStr() == "corge");
+  }
 }
 
 }  // namespace

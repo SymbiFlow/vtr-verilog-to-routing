@@ -1,6 +1,5 @@
-#ifndef CHECK_NETLIST_H
-#define CHECK_NETLIST_H
+#pragma once
 
-void check_netlist(int verbosity);
+struct t_arch;
 
-#endif
+void check_netlist(int verbosity, const t_arch& arch);

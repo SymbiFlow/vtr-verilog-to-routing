@@ -27,7 +27,7 @@ If VTR does not support your use case, consider [filling an enhancement](#fillin
 
 ### I have a bug-fix/feature I'd like to include in VTR
 Great! Submitting bug-fixes and features is a great way to improve VTR.
-See the guidlines for [submitting code](#submitting-code-to-vtr).
+See the guidelines for [submitting code](#submitting-code-to-vtr).
 
 ## The Details
 
@@ -41,6 +41,9 @@ If you are considering larger changes its best to discuss them first (e.g. file 
 
 Once you've made your enhancements [open a pull request](#making-pull-requests) to get your changes considered for inclusion in the documentation.
 
+### How do I build the documentation?
+The documentation can be built by using the command `make html` in the `$VTR_ROOT/doc` directory and you can view it in a web browser by loading the file at `$VTR_ROOT/_build/html/index.html`. More information on building
+the documentation can be found on the [README on GitHub](https://github.com/verilog-to-routing/vtr-verilog-to-routing/tree/master/doc).
 
 ### Filling Bug Reports
 First, search for [existing issues](https://github.com/verilog-to-routing/vtr-verilog-to-routing/issues?&=) to see if the bug has already been reported.
@@ -74,7 +77,7 @@ This information helps us to quickly reproduce (and hopefully fix) the issue:
 
     Tell us what version of VTR you are using (e.g. the output of `vpr --version`), which Operating System and compiler you are using, or any other relevant information about where or how you are building/running VTR.
 
-Once you've gathered all the information [open an Issue](https://github.com/verilog-to-routing/vtr-verilog-to-routing/issues/new?template=bug_report.md) on our issue tracker.
+Once you've gathered all the information [open an Issue](https://github.com/verilog-to-routing/vtr-verilog-to-routing/issues/new?template=bug_report.md) on our issue tracker. Issues that do not have any activity for a year will be automatically marked as stale and will be closed after 15 days of being marked as stale.
 
 If you know how to fix the issue, or already have it coded-up, please also consider [submitting the fix](#submitting-code-to-vtr).
 This is likely the fastest way to get bugs fixed!
@@ -154,7 +157,7 @@ The following are general tips for making your pull requests easy to review (and
 * Keep changes small
 
     Large change sets are difficult and time-consuming to review.
-    If a change set is becoming too large, consider splitting it into smaller pieces; you'll probably want to [file an issue](#filling-feature-requests) to discuss things first.
+    If a change set is becoming too large, consider splitting it into smaller pieces; you'll probably want to [file an issue](#filling-enhancement-requests) to discuss things first.
 
 * Do one thing only
 
@@ -166,3 +169,21 @@ The following are general tips for making your pull requests easy to review (and
 * Match existing code style
     When modifying existing code, try match the existing coding style.
     This helps to keep the code consistent and reduces noise in the pull request (e.g. by avoiding re-formatting changes), which makes it easier to review and more likely to be merged.
+
+### AI-Assisted Contributions
+
+VTR permits the use of AI coding assistants (e.g. GitHub Copilot, Claude, ChatGPT) as development aids, subject to the following policy:
+
+* **Humans author commits and pull requests — not AI tools.**
+    Every commit must be authored and signed off by the human developer who is responsible for it.
+    Do not use AI-generated author/co-author lines (e.g. `Co-Authored-By: Claude`) in commit messages.
+
+* **You must genuinely understand every line you submit.**
+    AI tools can produce plausible-looking but incorrect, inefficient, or insecure code.
+    Passing AI output directly into a pull request without thoroughly understanding it shifts the review burden onto VTR maintainers, which is not acceptable.
+    Maintainers may ask you to explain specific implementation decisions; inability to do so is grounds to close the pull request.
+
+* **AI-generated code is subject to the same standards as hand-written code.**
+    It must pass all regression tests, meet QoR expectations, follow the code style, and be accompanied by appropriate tests and documentation.
+
+The intent of this policy is to ensure clear human accountability for every change in the VTR codebase, while not restricting the tools developers use to produce that work.

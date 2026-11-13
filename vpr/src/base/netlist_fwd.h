@@ -1,5 +1,5 @@
-#ifndef NETLIST_FWD_H
-#define NETLIST_FWD_H
+#pragma once
+
 #include "vtr_strong_id.h"
 
 /*
@@ -9,6 +9,23 @@
  * To avoid type-conversion errors (e.g. passing a PinId where a NetId was expected),
  * we use vtr::StrongId's to disallow such conversions. See vtr_strong_id.h for details.
  */
+struct general_blk_id_tag {};
+struct general_port_id_tag {};
+struct general_pin_id_tag {};
+struct general_net_id_tag {};
+
+//A unique identifier for a block/primitive in the atom netlist
+typedef vtr::StrongId<struct general_blk_id_tag> ParentBlockId;
+
+//A unique identifier for a net in the atom netlist
+typedef vtr::StrongId<struct general_port_id_tag> ParentPortId;
+
+//A unique identifier for a port in the atom netlist
+typedef vtr::StrongId<struct general_pin_id_tag> ParentPinId;
+
+//A unique identifier for a pin in the atom netlist
+typedef vtr::StrongId<struct general_net_id_tag> ParentNetId;
+
 template<typename BlockId, typename PortId, typename PinId, typename NetId>
 class Netlist;
 
@@ -27,5 +44,3 @@ enum class PinType : char {
     SINK,   ///<The pin is a net sink
     OPEN    ///<The pin is an open connection (undecided)
 };
-
-#endif

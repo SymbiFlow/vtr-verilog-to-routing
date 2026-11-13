@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.9)
+cmake_minimum_required(VERSION 3.16)
 
 project("vpr")
 
@@ -12,24 +12,45 @@ set_property(CACHE VPR_PGO_CONFIG PROPERTY STRINGS prof_gen prof_use none)
 
 set(VPR_PGO_DATA_DIR "." CACHE PATH "Where to store and retrieve PGO data")
 
+set(VPR_ENABLE_OPEN_MP "on" CACHE STRING "Enable OpenMP when compiling VPR")
+
 #Handle graphics setup
 set(GRAPHICS_DEFINES "")
 
 if (VPR_USE_EZGL STREQUAL "on")
     message(STATUS "EZGL: graphics enabled")
-    set(
-        RESOURCE_LIST
-        # Strip all the whitespace characters from ui file
-        STRIPBLANKS main.ui
-    )
 
-    list(APPEND CMAKE_MODULE_PATH
-         ${CMAKE_CURRENT_SOURCE_DIR}/../libs/EXTERNAL/libezgl/gcr-cmake/macros)
-
-    include(GlibCompileResourcesSupport)
+    # Qt flow: enable CMAKE_AUTORCC so any .qrc added as a target source
+    # is compiled automatically by rcc (same mechanism as libezgl).
+    # Version floor matches the root discovery (older Qt6 has QRhi bugs).
+    # QRhi is available since Qt 6.7, but even Qt 6.8 has bugs, so the floor
+    # is set higher. VTR_QT_MIN_VERSION is set in the top-level CMakeLists.
+    find_package(Qt6 ${VTR_QT_MIN_VERSION} REQUIRED COMPONENTS Core)
+    set(CMAKE_AUTORCC ON)
+    # Prevent Qt's 'emit' macro from conflicting with TBB headers
+    add_definitions(-DQT_NO_EMIT)
 else()
     list(APPEND GRAPHICS_DEFINES "-DNO_GRAPHICS")
     message(STATUS "EZGL: graphics disabled")
+endif()
+
+
+#Handle server setup
+set(SERVER_DEFINES "")
+
+set(SERVER_DISABILED_REASON "")
+if (VPR_USE_SERVER)
+    if (VPR_USE_EZGL STREQUAL "off")
+        set(SERVER_DISABILED_REASON ", due to EZGL being disabled")
+        set(VPR_USE_SERVER OFF)
+    endif()
+endif()
+
+if (VPR_USE_SERVER)
+    message(STATUS "Server mode is enabled")
+else()
+    list(APPEND SERVER_DEFINES "-DNO_SERVER")
+    message(STATUS "Server mode is disabled${SERVER_DISABILED_REASON}")
 endif()
 
 #
@@ -43,8 +64,9 @@ file(GLOB_RECURSE LIB_SOURCES src/*/*.cpp)
 file(GLOB_RECURSE LIB_HEADERS src/*/*.h)
 files_to_dirs(LIB_HEADERS LIB_INCLUDE_DIRS)
 
-if(${VTR_ENABLE_CAPNPROTO})
-    add_definitions("-DVTR_ENABLE_CAPNPROTO")
+if(${VPR_DEBUG_PARTITION_TREE})
+    message(STATUS "VPR: Partition tree debug logs: enabled")
+    add_definitions("-DVPR_DEBUG_PARTITION_TREE")
 endif()
 
 #Create the library
@@ -53,91 +75,71 @@ add_library(libvpr STATIC
              ${LIB_SOURCES}
 )
 
-
 target_include_directories(libvpr PUBLIC ${LIB_INCLUDE_DIRS})
 
-#VPR_ANALYTIC_PLACE is inisitalized in the root CMakeLists
-#Check Eigen dependency
-if(${VPR_ANALYTIC_PLACE})
-	message(STATUS "VPR Analytic Placement: Requested")
-	find_package(Eigen3 3.3 NO_MODULE)
-	if (TARGET Eigen3::Eigen)
-		message(STATUS "VPR Analytic Placement dependency (Eigen3): Found")
-		message(STATUS "VPR Analytic Placement: Enabled")
-		target_link_libraries (libvpr Eigen3::Eigen)
-		target_compile_definitions(libvpr PUBLIC -DENABLE_ANALYTIC_PLACE)
-	else ()
-		message(STATUS "VPR Analytic Placement dependency (Eigen3): Not Found (Download manually with sudo apt install libeigen3-dev, and rebuild)")
-		message(STATUS "VPR Analytic Placement: Disabled")
-	endif(TARGET Eigen3::Eigen)
-endif()
+
+# Use the bundled Eigen headers for the analytical placement solvers.
+target_link_libraries(libvpr Eigen3::Eigen)
+target_compile_definitions(libvpr PUBLIC -DEIGEN_INSTALLED)
+
+if (${VPR_ENABLE_NOC_SAT_ROUTING})
+    message(STATUS "VPR NoC SAT Routing: Requested")
+    find_package(ortools CONFIG REQUIRED)
+    if (TARGET ortools::ortools)
+        message(STATUS "VPR NoC SAT Routing dependency (or-tools): Found")
+        message(STATUS "VPR NoC SAT Routing: Enabled")
+        target_link_libraries(libvpr ortools::ortools)
+        target_compile_definitions(libvpr PUBLIC -DENABLE_NOC_SAT_ROUTING)
+    else ()
+        message(STATUS "VPR NoC SAT Routing dependency (or-tools): Not Found (You may need to set CMAKE_PREFIX_PATH in order for CMake to find your OR-Tools installation)")
+        message(STATUS "VPR NoC SAT Routing: Disabled")
+    endif (TARGET ortools::ortools)
+endif ()
 
 set_target_properties(libvpr PROPERTIES PREFIX "") #Avoid extra 'lib' prefix
 
-#Specify link-time dependancies
+#Specify link-time dependencies
+find_package(ZLIB)
 target_link_libraries(libvpr
-                        libvtrutil
-                        libarchfpga
-                        libsdcparse
-                        libblifparse
-                        libtatum
-                        libargparse
-                        libpugixml
+                      libvtrutil
+                      libarchfpga
+                      libsdcparse
+                      libblifparse
+                      libtatum
+                      libargparse
+                      libpugixml
+                      librrgraph
+                      ZLIB::ZLIB
+                      yaml-cpp::yaml-cpp
 )
+
+if(VPR_USE_SERVER)
+    target_link_libraries(libvpr
+                          sockpp-static
+    )
+endif()
 
 #link graphics library only when graphics set to on
 if (VPR_USE_EZGL STREQUAL "on")
     target_link_libraries(libvpr
 			     ezgl)
 
-    compile_gresources(
-      # input: the name of our resources
-      RESOURCE_FILE
-      # output: the filename of the generated XML file
-      XML_OUT
-      # generate C code to be compiled with our program
-      TYPE
-        EMBED_C
-      # specify the name of the C file that is generated
-      TARGET
-        resources.C
-      # specify the resource prefix (used in the code)
-      PREFIX
-        /ezgl
-      # input: specify the list of files to compile into resources
-      RESOURCES
-        ${RESOURCE_LIST}
-    )
-
-
-    add_custom_target(
-      resource ALL
-      DEPENDS
-        ${RESOURCE_FILE}
-    )
-
-    #Create the executable with resources
-    list(APPEND EXEC_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/resources.C)
+    # Qt: add vpr.qrc to the initial source list so CMAKE_AUTORCC processes it.
+    # Must be in add_executable's source list, not added via target_sources later.
+    list(APPEND EXEC_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/vpr.qrc)
 
 endif()
 
-target_compile_definitions(libvpr PUBLIC ${GRAPHICS_DEFINES})
+target_compile_definitions(libvpr PUBLIC ${GRAPHICS_DEFINES} ${SERVER_DEFINES})
 
 if(${VTR_ENABLE_CAPNPROTO})
     target_link_libraries(libvpr libvtrcapnproto)
+    target_compile_definitions(libvpr PRIVATE VTR_ENABLE_CAPNPROTO)
 endif()
 
 add_executable(vpr ${EXEC_SOURCES})
 
 target_link_libraries(vpr libvpr)
-
-
-#Supress IPO link warnings if IPO is enabled
-get_target_property(VPR_USES_IPO vpr INTERPROCEDURAL_OPTIMIZATION)
-if (VPR_USES_IPO)
-    set_target_properties(vpr PROPERTIES LINK_FLAGS ${IPO_LINK_WARN_SUPRESS_FLAGS})
-endif()
-
 
 
 #
@@ -184,22 +186,6 @@ else()
     message(ERROR "Unsupported VPR_PGO_CONFIG '${VPR_PGO_CONFIG}'")
 endif()
 
-if (VTR_ENABLE_STRICT_COMPILE)
-    message(STATUS "VPR: building with strict flags")
-
-    set(VPR_STRICT_COMPILE_FLAGS_TO_CHECK
-        #GCC-like
-        "-Werror"
-        )
-
-    foreach(flag ${VPR_STRICT_COMPILE_FLAGS_TO_CHECK})
-        message(STATUS "\tAdding CXX flag: ${flag}")
-        target_compile_options(libvpr PRIVATE ${flag})
-        target_compile_options(vpr PRIVATE ${flag})
-        target_link_libraries(vpr ${flag})
-    endforeach()
-endif()
-
 #
 # Execution Engine Configuration
 #
@@ -228,8 +214,8 @@ endif()
 #Configure the build to use the selected engine
 if (VPR_USE_EXECUTION_ENGINE STREQUAL "tbb")
     target_compile_definitions(libvpr PRIVATE VPR_USE_TBB)
-    target_link_libraries(libvpr tbb)
-    target_link_libraries(libvpr tbbmalloc_proxy) #Use the scalable memory allocator
+    target_link_libraries(libvpr TBB::tbb)
+    target_link_libraries(libvpr TBB::tbbmalloc_proxy) #Use the scalable memory allocator
     message(STATUS "VPR: will support parallel execution using '${VPR_USE_EXECUTION_ENGINE}'")
 elseif(VPR_USE_EXECUTION_ENGINE STREQUAL "serial")
     message(STATUS "VPR: will only support serial execution")
@@ -238,10 +224,25 @@ else()
 endif()
 
 #
+# OpenMP configuration
+#
+if (VPR_ENABLE_OPEN_MP STREQUAL "on")
+    find_package(OpenMP)
+    if (OpenMP_CXX_FOUND)
+        target_link_libraries(libvpr OpenMP::OpenMP_CXX)
+        message(STATUS "OpenMP: Enabled")
+    else()
+        message(STATUS "OpenMP: Disabled (requested but not found)")
+    endif()
+else()
+    message(STATUS "OpenMP: Disabled")
+endif()
+
+#
 # Signal handler configuration
 #
 if (VPR_USE_SIGNAL_HANDLER)
-    #Check wheter VPR can use sigaction to handle signals (only supported by POSIX)
+    #Check whether VPR can use sigaction to handle signals (only supported by POSIX)
     CHECK_CXX_SYMBOL_EXISTS(sigaction csignal HAVE_SIGACTION)
     if(HAVE_SIGACTION)
         target_compile_definitions(libvpr PRIVATE VPR_USE_SIGACTION)
@@ -249,46 +250,30 @@ if (VPR_USE_SIGNAL_HANDLER)
 endif()
 
 install(TARGETS vpr libvpr DESTINATION bin)
+install(FILES ${LIB_HEADERS} DESTINATION include/libvpr)
 
 
 #
 # Unit Tests
 #
 file(GLOB_RECURSE TEST_SOURCES test/*.cpp)
+# Exclude GUI tests — they require Qt and are built separately via
+# add_subdirectory(test/gui) only when VPR_USE_EZGL is "on".
+list(FILTER TEST_SOURCES EXCLUDE REGEX ".*/test/gui/.*")
 add_executable(test_vpr ${TEST_SOURCES})
 target_link_libraries(test_vpr
-                        libcatch
+                        Catch2::Catch2WithMain
                         libvpr)
 
-#Supress IPO link warnings if IPO is enabled
-get_target_property(TEST_VPR_USES_IPO vpr INTERPROCEDURAL_OPTIMIZATION)
-if (TEST_VPR_USES_IPO)
-    set_target_properties(test_vpr PROPERTIES LINK_FLAGS ${IPO_LINK_WARN_SUPRESS_FLAGS})
-endif()
-
 add_test(NAME test_vpr
-    COMMAND test_vpr --use-colour=yes
+    COMMAND test_vpr --colour-mode ansi
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/test
     )
 
-add_custom_target(
-    generate_rr_graph_serializers
-    COMMAND ${CMAKE_COMMAND} -E remove_directory rr_graph_generate
-    COMMAND ${CMAKE_COMMAND} -E make_directory rr_graph_generate
-    COMMAND ${CMAKE_COMMAND} -E chdir rr_graph_generate git clone https://github.com/duck2/uxsdcxx
-    COMMAND python3 -mpip install --user -r rr_graph_generate/uxsdcxx/requirements.txt
-    COMMAND ${CMAKE_COMMAND} -E chdir rr_graph_generate python3 uxsdcxx/uxsdcxx.py ${CMAKE_CURRENT_SOURCE_DIR}/src/route/rr_graph.xsd
-    COMMAND ${CMAKE_COMMAND} -E chdir rr_graph_generate python3 uxsdcxx/uxsdcap.py ${CMAKE_CURRENT_SOURCE_DIR}/src/route/rr_graph.xsd
-    COMMAND ${CMAKE_COMMAND} -E copy
-        rr_graph_generate/rr_graph_uxsdcxx.h
-        rr_graph_generate/rr_graph_uxsdcxx_capnp.h
-        rr_graph_generate/rr_graph_uxsdcxx_interface.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/route/gen
-    COMMAND ${CMAKE_COMMAND} -E copy
-        rr_graph_generate/rr_graph_uxsdcxx.capnp
-        ${CMAKE_CURRENT_SOURCE_DIR}/../libs/libvtrcapnproto/gen
-    DEPENDS
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/route/rr_graph.xsd
-    WORKING_DIRECTORY
-        ${CMAKE_CURRENT_BINARY_DIR}
-        )
+#
+# GUI Tests — Qt-based GUI flow verification (separate from legacy tests)
+#
+if (VPR_USE_EZGL STREQUAL "on")
+    add_subdirectory(test/gui)
+endif()
+

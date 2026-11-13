@@ -1,0 +1,18 @@
+#pragma once
+
+#ifndef NO_SERVER
+
+namespace server {
+
+/**
+ * @brief Main server update callback.
+ * 
+ * This function is a periodic callback invoked at a fixed interval to manage and handle incoming client requests.
+ * It acts as the central control point for processing client interactions and orchestrating server-side operations 
+ * within the specified time intervals.
+ */
+bool update(void*);
+
+} // namespace server
+
+#endif /* NO_SERVER */

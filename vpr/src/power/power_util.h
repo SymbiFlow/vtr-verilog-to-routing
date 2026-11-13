@@ -1,3 +1,4 @@
+#pragma once
 /*********************************************************************
  *  The following code is part of the power modelling feature of VTR.
  *
@@ -19,14 +20,10 @@
  * This file provides utility functions used by power estimation.
  */
 
-#ifndef __POWER_UTIL_H__
-#define __POWER_UTIL_H__
-
 /************************* INCLUDES *********************************/
+#include <string>
 #include "power.h"
-#include "power_components.h"
 #include "atom_netlist.h"
-#include "clustered_netlist.h"
 
 /************************* FUNCTION DECLARATIONS ********************/
 
@@ -63,8 +60,8 @@ bool power_method_is_transistor_level(e_power_estimation_method estimation_metho
 bool power_method_is_recursive(e_power_estimation_method method);
 
 const char* transistor_type_name(e_tx_type type);
-char* alloc_SRAM_values_from_truth_table(int LUT_size,
-                                         const AtomNetlist::TruthTable& truth_table);
+std::string alloc_SRAM_values_from_truth_table(int LUT_size,
+                                               const AtomNetlist::TruthTable& truth_table);
 float clb_net_density(ClusterNetId net_idx);
 const char* interconnect_type_name(enum e_interconnect type);
 float clb_net_prob(ClusterNetId net_idx);
@@ -74,5 +71,3 @@ void output_log(t_log* log_ptr, FILE* fp);
 void output_logs(FILE* fp, t_log* logs, int num_logs);
 
 void power_print_title(FILE* fp, const char* title);
-
-#endif

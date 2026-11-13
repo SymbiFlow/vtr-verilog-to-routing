@@ -1,8 +1,8 @@
 #VPR Netlist statistics
 num_primary_inputs;vpr.out;\s+\.input\s*:\s+(\d+)
 num_primary_outputs;vpr.out;\s+\.output\s*:\s+(\d+)
-num_pre_packed_nets;vpr.out;\s+Nets\s*:\s*(\d+)
-num_pre_packed_blocks;vpr.out;\s+Blocks\s*:\s*(\d+)
+num_pre_packed_nets;vpr.out;^\s+Nets\s*:\s*(\d+)
+num_pre_packed_blocks;vpr.out;^\s+Blocks\s*:\s*(\d+)
 num_netlist_clocks;vpr.out;\s+Netlist Clocks\s*:\s+(\d+)
 
 #VPR Packing Metrics
@@ -17,4 +17,5 @@ device_limiting_resources;vpr.out;FPGA size limited by block type\(s\): (.*)
 device_name;vpr.out;FPGA sized to \d+ x \d+: \d+ grid tiles \((\S+)\)
 
 #VPR Run-time Metrics
+pack_mem;vpr.out;.*Packing took.*\(max_rss (.*), .*\)
 pack_time;vpr.out;\s*Packing took (.*) seconds

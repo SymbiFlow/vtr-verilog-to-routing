@@ -21,12 +21,16 @@ Typical usage is::
 
 where:
 
-  * ``<parse_path>`` is the directory path that contains the files to be parsed (e.g. ``vpr.out``, ``odin.out``, etc).
+  * ``<parse_path>`` is the directory path that contains the files to be parsed (e.g. ``vpr.out``, ``parmys.out``, etc).
   * ``<parse_config_file>`` is the path to the :ref:`vtr_parse_config` file.
 
 Output
 ~~~~~~
-The script will produce no standard output.
-A single file named ``parse_results.txt`` will be produced in the ``<parse_path>`` folder.
-The file is tab delimited and contains two lines.
+The script prints its results to standard output.
+No output file is created.
+The output is tab-delimited and contains two lines.
 The first line is a list of field names that were searched for, and the second line contains the associated values.
+
+To save the output to a file, redirect stdout::
+
+    parse_vtr_flow.py <parse_path> <parse_config_file> > parse_results.txt

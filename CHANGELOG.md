@@ -1,13 +1,13 @@
 # VTR Change Log
 <!-- 
 This file documents user-facing changes between releases of the VTR
-project. The goal is to concicely communicate to end users what is new
+project. The goal is to concisely communicate to end users what is new
 or has changed in a particular release. It should *NOT* just be a dump
 of the commit log, as that is far too detailed. Most code re-factoring
 does not warrant a change log entry unless it has a significant impact
 on the end users (e.g. substantial performance improvements).
 
-Each release's change log should include headings (where releveant) with
+Each release's change log should include headings (where relevant) with
 bullet points listing what was: 
   - added           (new feature)
   - changed         (change to existing feature behaviour)
@@ -16,7 +16,7 @@ bullet points listing what was:
   - removed         (previous features which have been removed)
 
 Changes which have landed in the master/trunk but not been released
-should be included in the 'Unreleased' section and moved to the releveant
+should be included in the 'Unreleased' section and moved to the relevant
 releases' section when released.
 
 In the case of release candidates (e.g. v8.0.0-rc1) the current
@@ -46,6 +46,64 @@ _The following are changes which have been implemented in the VTR master branch 
 ### Deprecated
 
 ### Removed
+
+
+## v9.0.0 - 2024-12-23
+
+### Added
+  * Support for Advanced Architectures:
+    * 3D FPGA and RAD architectures.
+    * Architectures with hard Networks-on-Chip (NoCs).
+    * Distinct horizontal and vertical channel widths and types.
+    * Diagonal routing wires and other complex wire shapes (L-shaped, T-shaped, ....).
+  
+  * New Benchmark Suites:
+    * Koios: A deep-learning-focused benchmark suite with various design sizes.
+    * Hermes: Benchmarks utilizing hard NoCs.
+    * TitanNew: Large benchmarks targeting the Stratix 10 architecture.
+
+  * Commercial FPGAs Architecture Captures:
+    * Intel’s Stratix 10 FPGA architecture.
+    * AMD’s 7-series FPGA architecture.
+
+  * Parmys Logic Synthesis Flow:
+    * Better Verilog language coverage
+    * More efficient hard block mapping
+
+  * VPR Graphics Visualizations:
+    * New interface for improved usability and underlying graphics rewritten using EZGL/GTK to allow more UI widgets.
+    * Algorithm breakpoint visualizations for placement and routing algorithm debugging.
+    * User-guided (manual) placement optimization features.
+    * Enabled a live connection for client graphical application to VTR engines through sockets (server mode).
+    * Interactive timing path analysis (IPA) client using server mode.
+   
+  * Performance Enhancements:
+    * Parallel router for faster inter-cluster routing or flat routing.
+
+  * Re-clustering API to modify packing decisions during the flow.
+  * Support for floorplanning and placement constraints.
+  * Unified intra- and inter-cluster (flat) routing.
+  * Comprehensive web-based VTR utilities and API documentation.
+  
+### Changed
+  * The default values of many command line options (e.g. inner_num is 0.5 instead of 1.0)
+  * Changes to placement engine
+    * Smart centroid initial placement algorithm.
+    * Multiple smart placement directed moves.
+    * Reinforcement learning-based placement algorithm.
+  * Changes to routing engine
+    * Faster lookahead creation.
+    * More accurate lookahead for large blocks.
+    * More efficient heap and pruning strategies.
+    * max `pres_fac` capped to avoid possible numeric issues.
+    
+    
+### Fixed
+  * Many algorithmic and coding bugs are fixed in this release
+   
+### Removed
+  * Breadth-first (non-timing-driven) router.
+  * Non-linear congestion placement cost.
 
 ## v8.0.0 - 2020-03-24
 
@@ -88,7 +146,7 @@ _The following are changes which have been implemented in the VTR master branch 
  * Improved a wide variety of error messages
  * Improved STA timing reports (more details, clearer format)
  * VPR now uses Tatum as its STA engine
- * VPR now detects missmatched architecture (.xml) and implementation (.net/.place/.route) files more robustly
+ * VPR now detects mismatched architecture (.xml) and implementation (.net/.place/.route) files more robustly
  * Improved router run-time and quality through incremental re-routing and improved handling of high-fanout nets
  * The timing edges within each netlist primitive must now be specified in the <models> section of the architecture file
  * All interconnect tags must have unique names in the architecture file
@@ -106,8 +164,8 @@ _The following are changes which have been implemented in the VTR master branch 
  * Various other changes since VTR 7
 
 ### Fixed
- * FPGA Architecture file tags can be in arbitary orders
- * SDC command arguments can be in arbitary orders
+ * FPGA Architecture file tags can be in arbitrary orders
+ * SDC command arguments can be in arbitrary orders
  * Numerous other fixes since VTR 7
 
 ### Removed
@@ -117,6 +175,13 @@ _The following are changes which have been implemented in the VTR master branch 
 ### Deprecated
  * VPR's breadth-first router (use the timing-driven router, which provides supperiour QoR and Run-time)
 
+### Docker Image
+ * A docker image is available for VTR 8.0 release on mohamedelgammal/vtr8:latest. You can run it using the following commands:
+```
+$ sudo docker pull mohamedelgammal/vtr8:latest
+$ sudo docker run -it mohamedelgammal/vtr8:latest
+```
+ 
 ## v8.0.0-rc2 - 2019-08-01
 
 ### Changed
@@ -164,7 +229,7 @@ _The following are changes which have been implemented in the VTR master branch 
  * Improved a wide variety of error messages
  * Improved STA timing reports (more details, clearer format)
  * VPR now uses Tatum as its STA engine
- * VPR now detects missmatched architecture (.xml) and implementation (.net/.place/.route) files more robustly
+ * VPR now detects mismatched architecture (.xml) and implementation (.net/.place/.route) files more robustly
  * Improved router run-time and quality through incremental re-routing and improved handling of high-fanout nets
  * The timing edges within each netlist primitive must now be specified in the <models> section of the architecture file
  * All interconnect tags must have unique names in the architecture file
@@ -180,8 +245,8 @@ _The following are changes which have been implemented in the VTR master branch 
  * Various other changes since VTR 7
 
 ### Fixed
- * FPGA Architecture file tags can be in arbitary orders
- * SDC command arguments can be in arbitary orders
+ * FPGA Architecture file tags can be in arbitrary orders
+ * SDC command arguments can be in arbitrary orders
  * Numerous other fixes since VTR 7
 
 ### Deprecated

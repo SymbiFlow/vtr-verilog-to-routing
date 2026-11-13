@@ -39,9 +39,19 @@ In order to perform power estimation, you must add the following options:
 The CMOS technology properties file is an XML file that contains relevant process-dependent information needed for power estimation.
 XML files for 22nm, 45nm, and 130nm PTM models can be found here::
 
-$VTR_ROOT/vtrflow/tech/*
+$VTR_ROOT/vtr_flow/tech/*
 
 See :ref:`power_technology_properties` for information on how to generate an XML file for your own SPICE technology model.
+
+In this mode, the VTR will run ODIN->ABC->ACE->VPR. The ACE stage is additional and specific to this power estimation flow. Using run_vtr_flow.py will automatically run ACE 2.0 to generate activity information and a new BLIF file (see ::ref:`power_ace` for details).
+
+The final power estimates will be available in a file named <circuit_name>.power in the result directory.
+
+Here is an example command:
+
+.. code-block:: 
+    $VTR_ROOT/vtr_flow/scripts/run_vtr_flow.py ../benchmarks/verilog/diffeq1.v ../arch/timing/k6_frac_N10_frac_chain_depop50_mem32K_40nm.xml -power -cmos_tech ../tech/PTM_45nm/45nm.xml -temp_dir power_try_45nm
+
 
 VPR
 ~~~
@@ -66,7 +76,7 @@ Technology Properties
 
 Power estimation requires information detailing the properties of the CMOS technology.
 This information, which includes transistor capacitances, leakage currents, etc. is included in an ``.xml`` file, and provided as a parameter to VPR.
-This XML file is generated using a script which automatically runs HSPICE, performs multiple circuit simulations, and extract the necessary values.
+This XML file is generated using a script which automatically runs HSPICE, performs multiple circuit simulations, and extracts the necessary values.
 
 Some of these technology XML files are included with the release, and are located here::
 
@@ -83,7 +93,7 @@ If the user wishes to use a different CMOS technology file, they must run the fo
 
 where:
 
-    * ``<tech_file>``: Is a SPICE technology file, containing a ``pmos`` and ``nmos`` models.
+    * ``<tech_file>``: Is a SPICE technology file, containing ``pmos`` and ``nmos`` models.
 
     * ``<tech_size>``: The technology size, in meters.
 
@@ -93,7 +103,7 @@ where:
 
     * ``<vdd>``: Supply voltage in Volts.
 
-    * ``<temp>``: Operating temperature, in Celcius.
+    * ``<temp>``: Operating temperature, in Celsius.
 
 
 .. _power_ace:
@@ -102,7 +112,7 @@ ACE 2.0 Activity Estimation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Power estimation requires activity information for the entire netlist.
-This ativity information consists of two values:
+This activity information consists of two values:
 
 #. *The Signal Probability*, :math:`P_1`, is the long-term probability that a signal is logic-high.
 
@@ -118,7 +128,7 @@ This ativity information consists of two values:
 
 The default tool used to perform activity estimation in VTR is ACE 2.0 :cite:`lamoureux_activity_estimation`.
 This tool was originally designed to work with the (now obsolete) Berkeley SIS tool
-ACE 2.0 was modifed to use ABC, and is included in the VTR package here::
+ACE 2.0 was modified to use ABC, and is included in the VTR package here::
 
     $VTR_ROOT/ace2
 
@@ -133,12 +143,12 @@ where
     * ``<activities.act>``: Is the activity file to be created.
     * ``<new.blif>``: The new BLIF file.
 
-        This will be functionally identical in function to the ABC blif; however, since ABC does not maintain internal node names, a new BLIF must be produced with node names that match the activity file.
+        This will be functionally identical to the ABC blif; however, since ABC does not maintain internal node names, a new BLIF must be produced with node names that match the activity file. This blif file is fed to the subsequent parts of the flow (to VPR). If a user is using run_vtr_flow.py (which will run ACE 2.0 underneath if the options mentioned earlier like -power are used), then the flow will copy this ACE2 generated blif file (<circuit_name>.ace.blif) to <circuit_name>.pre-vpr.blif and then launch VPR with this new file.
 
-User’s may with to use their own activity estimation tool.
+Users may wish to use their own activity estimation tool.
 The produced activity file must contain one line for each net in the BLIF file, in the following format::
 
-    <net name> <signal probability> <transistion density>
+    <net name> <signal probability> <transition density>
 
 .. _power_arch_modeling:
 
@@ -150,7 +160,7 @@ The following section describes the architectural assumptions made by the power 
 Complex Blocks
 ~~~~~~~~~~~~~~
 
-The VTR architecture description language supports a hierarchichal description of blocks. In the architecture file, each block is described as a ``pb_type``, which may includes one or more children of type ``pb_type``, and interconnect structures to connect them.
+The VTR architecture description language supports a hierarchical description of blocks. In the architecture file, each block is described as a ``pb_type``, which may includes one or more children of type ``pb_type``, and interconnect structures to connect them.
 
 The power estimation algorithm traverses this hierarchy recursively, and performs power estimation for each ``pb_type``.
 The power model supports multiple power estimation methods, and the user specifies the desired method in the architecture file:
@@ -165,12 +175,12 @@ The following is a list of valid estimation methods.
 Detailed descriptions of each type are provided in the following sections.
 The methods are listed in order from most accurate to least accurate.
 
-#. ``specify-size``: Detailed transistor level modelleling.
+#. ``specify-size``: Detailed transistor level modelling.
 
    The user supplies all buffer sizes and wire-lengths.
    Any not provided by the user are ignored.
 
-#. ``auto-size``: Detailed transistor level modelleling.
+#. ``auto-size``: Detailed transistor level modelling.
 
    The user can supply buffer sizes and wire-lengths; however, they will be automatically inserted when not provided.
 
@@ -202,7 +212,7 @@ Other methods of estimation:
 
 
 ``specify-size``
-~~~~~~~~~~~~~~~~
+""""""""""""""""
 This estimation method provides a detailed transistor level modelling of CLBs, and will provide the most accurate power estimations.
 For each ``pb_type``, power estimation accounts for the following components (see :numref:`fig_power_sample_block`).
 
@@ -239,7 +249,7 @@ The wire and buffer attributes can be set using the following options.
 If no options are set, it is assumed that the wire capacitance is zero, and there are no buffers present.
 Keep in mind that the port construct allows for multiple pins per port.
 These attributes will be applied to each pin in the port.
-If necessary, the user can seperate a port into multiple ports with different wire/buffer properties.
+If necessary, the user can separate a port into multiple ports with different wire/buffer properties.
 
 * ``wire_capacitance=1.0e-15``: The absolute capacitance of the wire, in Farads.
 
@@ -257,13 +267,13 @@ If necessary, the user can seperate a port into multiple ports with different wi
 For all child ``pb_types``, the algorithm performs a recursive call.
 Eventually ``pb_types`` will be reached that have no children.
 These are primitives, such as flip-flops, LUTs, or other hard-blocks.
-The power model includes functions to perform transistor-level power estimation for flip-flops and LUTs.
+The power model includes functions to perform transistor-level power estimation for flip-flops and LUTs (Note: the power model doesn't, by default, include power estimation for single-bit adders that are commonly found in logic blocks of modern FPGAs).
 If the user wishes to use a design with other primitive types (memories, multipliers, etc), they must provide an equivalent function.
-If the user makes such a function, the ``power_calc_primitive`` function should be modified to call it.
+If the user makes such a function, the ``power_usage_primitive`` function should be modified to call it.
 Alternatively, these blocks can be configured to use higher-level power estimation methods.
 
 ``auto-size``
-~~~~~~~~~~~~~
+""""""""""""""""
 This estimation method also performs detailed transistor-level modelling.
 It is almost identical to the ``specify-size`` method described above.
 The only difference is that the local wire capacitance and buffers are automatically inserted for all pins, when necessary.
@@ -274,7 +284,7 @@ This is equivalent to using the ``specify-size`` method with the ``wire_length=a
 Although not as accurate as user-provided buffer and wire sizes, it is capable of automatically capturing trends in power dissipation as architectures are modified.
 
 ``pin-toggle``
-~~~~~~~~~~~~~~
+""""""""""""""""
 This method allows users to specify the dynamic power of a block in terms of the energy per toggle (in Joules) of each input, output or clock pin for the ``pb_type``.
 The static power is provided as an absolute (in Watts).
 This is done using the following construct:
@@ -286,14 +296,14 @@ This is done using the following construct:
         <power method="pin-toggle">
             <port name="A" energy_per_toggle="1.0e-12"/>
             <port name="B[3:2]" energy_per_toggle="1.0e-12"/>
-            <port name="C" energy_per_toggle="1.0e-12" scaled_by_static_porb="en1"/>
-            <port name="D" energy_per_toggle="1.0e-12" scaled_by_static_porb_n="en2"/>
+            <port name="C" energy_per_toggle="1.0e-12" scaled_by_static_prob="en1"/>
+            <port name="D" energy_per_toggle="1.0e-12" scaled_by_static_prob_n="en2"/>
             <static_power power_per_instance="1.0e-6"/>
         </power>
     </pb_type>
 
 Keep in mind that the port construct allows for multiple pins per port.
-Unless an subset index is provided, the energy per toggle will be applied to each pin in the port.
+Unless a subset index is provided, the energy per toggle will be applied to each pin in the port.
 The energy per toggle can be scaled by another signal using the ``scaled_by_static_prob``.
 For example, you could scale the energy of a memory block by the read enable pin.
 If the read enable were high 80% of the time, then the energy would be scaled by the :math:`signal\_probability`, 0.8.
@@ -304,7 +314,7 @@ It is assumed that the power usage specified here includes power of all child ``
 No further recursive power estimation will be performed.
 
 ``C-internal``
-~~~~~~~~~~~~~~
+""""""""""""""""
 This method allows the users to specify the dynamic power of a block in terms of the internal capacitance of the block.
 The activity will be averaged across all of the input pins, and will be supplied with the internal capacitance to the standard equation:
 
@@ -327,7 +337,7 @@ It is assumed that the power usage specified here includes power of all child ``
 No further recursive power estimation will be performed.
 
 ``absolute``
-~~~~~~~~~~~~
+""""""""""""""""
 This method is the most basic power estimation method, and allows users to specify both the dynamic and static power of a block as absolute
 values (in Watts).
 This is done using the following construct:
@@ -345,12 +355,12 @@ It is assumed that the power usage specified here includes power of all child ``
 No further recursive power estimation will be performed.
 
 Global Routing
---------------
+~~~~~~~~~~~~~~
 
 Global routing consists of switch boxes and input connection boxes.
 
 Switch Boxes
-~~~~~~~~~~~~
+""""""""""""""""
 
 Switch boxes are modelled as the following components (:numref:`fig_power_sb`):
 
@@ -389,7 +399,7 @@ The user may override this method by providing the buffer size as shown below:
 The size is the drive strength of the buffer, relative to a minimum-sized inverter.
 
 Input Connection Boxes
-~~~~~~~~~~~~~~~~~~~~~~
+""""""""""""""""""""""
 
 Input connection boxes are modelled as the following components (:numref:`fig_power_cb`):
 
@@ -419,9 +429,9 @@ The buffer sizes and wire capacitances are specified in the architecture file us
 
 The following clock options are supported:
 
-* ``C_wire=1e-16``: The absolute capacitance, in fards, of the wire between each clock buffer.
+* ``C_wire=1e-16``: The absolute capacitance, in farads, of the wire between each clock buffer.
 
-* ``C_wire_per_m=1e-12``: The wire capacitance, in fards per m.
+* ``C_wire_per_m=1e-12``: The wire capacitance, in farads per m.
 
     The capacitance is calculated using an automatically determined wirelength, based on the area of a tile in the FPGA.
 
@@ -465,8 +475,8 @@ In order to determine the wire length that connects a parent entity to its child
 :numref:`fig_power_local_interconnect` provides an illustration of a parent entity connected to its child entities, containing one of each interconnect type (direct, many-to-1, and complete).
 In this figure, the square on the left represents the area used by the transistors of the interconnect multiplexers.
 It is assumed that all connections from parent to child will pass through this area.
-Real wire lengths could me more or less than this estimate; some pins in the parent may be directly adjacent to child entities, or they may have to traverse a distance greater than just the interconnect area.
-Unfortuantely, a more rigorous estimation would require some information about the transistor layout.
+Real wire lengths could be more or less than this estimate; some pins in the parent may be directly adjacent to child entities, or they may have to traverse a distance greater than just the interconnect area.
+Unfortunately, a more rigorous estimation would require some information about the transistor layout.
 
 .. _fig_power_local_interconnect:
 
@@ -527,7 +537,7 @@ The logical effort factor can be modified in the architecture file:
 
     <architecture>
         <power>
-            <buffers logical_effor_factor="4"/>
+            <buffers logical_effort_factor="4"/>
         </power>
     </architecture>
 

@@ -22,18 +22,15 @@
 #if _WIN32
 // For Unix implementation, see filesystem-disk-unix.c++.
 
+// Request Vista-level APIs.
+#include "win32-api-version.h"
+
 #include "filesystem.h"
 #include "debug.h"
 #include "encoding.h"
 #include "vector.h"
 #include <algorithm>
 #include <wchar.h>
-
-// Request Vista-level APIs.
-#define WINVER 0x0600
-#define _WIN32_WINNT 0x0600
-
-#define WIN32_LEAN_AND_MEAN  // ::eyeroll::
 
 #include <windows.h>
 #include <winioctl.h>
@@ -161,6 +158,17 @@ static void rmrfChildren(ArrayPtr<const wchar_t> path) {
   auto glob = join16(path, L"*");
 
   WIN32_FIND_DATAW data;
+  // TODO(security): If `path` is a reparse point (symlink), this will follow it and delete the
+  //   contents. We check for reparse points before recursing, but there is still a TOCTOU race
+  //   condition.
+  //
+  //   Apparently, there is a whole different directory-listing API we could be using here:
+  //   `GetFileInformationByHandleEx()`, with the `FileIdBothDirectoryInfo` flag. This lets us
+  //   list the contents of a directory from its already-open handle -- it's probably how we should
+  //   do directory listing in general! If we open a file with FILE_FLAG_OPEN_REPARSE_POINT, then
+  //   the handle will represent the reparse point itself, and attempting to list it will produce
+  //   no entries. I had no idea this API existed when I wrote much of this code; I wish I had
+  //   because it seems much cleaner than the ancient FindFirstFile/FindNextFile API!
   HANDLE handle = FindFirstFileW(glob.begin(), &data);
   if (handle == INVALID_HANDLE_VALUE) {
     auto error = GetLastError();
@@ -200,7 +208,7 @@ static void rmrfChildren(ArrayPtr<const wchar_t> path) {
             Sleep(10);
             goto retry;
           }
-          // fallthrough
+          KJ_FALLTHROUGH;
         default:
           KJ_FAIL_WIN32("RemoveDirectory", error, dbgStr(child)) { break; }
       }
@@ -298,7 +306,7 @@ protected:
   }
 };
 
-#if _MSC_VER && _MSC_VER < 1910
+#if _MSC_VER && _MSC_VER < 1910 && !defined(__clang__)
 // TODO(msvc): MSVC 2015 can't initialize a constexpr's vtable correctly.
 const MmapDisposer mmapDisposer = MmapDisposer();
 #else
@@ -307,16 +315,7 @@ constexpr MmapDisposer mmapDisposer = MmapDisposer();
 
 void* win32Mmap(HANDLE handle, MmapRange range, DWORD pageProtect, DWORD access) {
   HANDLE mappingHandle;
-  mappingHandle = CreateFileMappingW(handle, NULL, pageProtect, 0, 0, NULL);
-  if (mappingHandle == INVALID_HANDLE_VALUE) {
-    auto error = GetLastError();
-    if (error == ERROR_FILE_INVALID && range.size == 0) {
-      // The documentation says that CreateFileMapping will fail with ERROR_FILE_INVALID if the
-      // file size is zero. Ugh.
-      return nullptr;
-    }
-    KJ_FAIL_WIN32("CreateFileMapping", error);
-  }
+  KJ_WIN32(mappingHandle = CreateFileMappingW(handle, NULL, pageProtect, 0, 0, NULL));
   KJ_DEFER(KJ_WIN32(CloseHandle(mappingHandle)) { break; });
 
   void* mapping = MapViewOfFile(mappingHandle, access,
@@ -428,6 +427,7 @@ public:
   }
 
   Array<const byte> mmap(uint64_t offset, uint64_t size) const {
+    if (size == 0) return nullptr;  // Windows won't allow zero-length mappings
     auto range = getMmapRange(offset, size);
     const void* mapping = win32Mmap(handle, range, PAGE_READONLY, FILE_MAP_READ);
     return Array<const byte>(reinterpret_cast<const byte*>(mapping) + (offset - range.offset),
@@ -435,6 +435,7 @@ public:
   }
 
   Array<byte> mmapPrivate(uint64_t offset, uint64_t size) const {
+    if (size == 0) return nullptr;  // Windows won't allow zero-length mappings
     auto range = getMmapRange(offset, size);
     void* mapping = win32Mmap(handle, range, PAGE_READONLY, FILE_MAP_COPY);
     return Array<byte>(reinterpret_cast<byte*>(mapping) + (offset - range.offset),
@@ -552,7 +553,8 @@ public:
       KJ_REQUIRE(slice.begin() >= bytes.begin() && slice.end() <= bytes.end(),
                  "byte range is not part of this mapping");
 
-      // Zero is treated specially by FlushViewOfFile(), so check for it.
+      // Zero is treated specially by FlushViewOfFile(), so check for it. (This also handles the
+      // case where `bytes` is actually empty and not a real mapping.)
       if (slice.size() > 0) {
         KJ_WIN32(FlushViewOfFile(slice.begin(), slice.size()));
       }
@@ -563,6 +565,10 @@ public:
   };
 
   Own<const WritableFileMapping> mmapWritable(uint64_t offset, uint64_t size) const {
+    if (size == 0) {
+      // Windows won't allow zero-length mappings
+      return heap<WritableFileMappingImpl>(nullptr);
+    }
     auto range = getMmapRange(offset, size);
     void* mapping = win32Mmap(handle, range, PAGE_READWRITE, FILE_MAP_ALL_ACCESS);
     auto array = Array<byte>(reinterpret_cast<byte*>(mapping) + (offset - range.offset),
@@ -580,8 +586,8 @@ public:
     PathPtr path = KJ_ASSERT_NONNULL(dirPath);
     auto glob = join16(path.forWin32Api(true), L"*");
 
-    // TODO(perf): Use FindFileEx() with FindExInfoBasic? Not apparently supported on Vista.
-    // TODO(someday): Use NtQueryDirectoryObject() instead? It's "internal", but so much cleaner.
+    // TODO(someday): Use GetFileInformationByHandleEx() with FileIdBothDirectoryInfo to enumerate
+    //   directories instead. It's much cleaner.
     WIN32_FIND_DATAW data;
     HANDLE handle = FindFirstFileW(glob.begin(), &data);
     if (handle == INVALID_HANDLE_VALUE) {
@@ -679,7 +685,7 @@ public:
         nativePath(path).begin(),
         GENERIC_READ,
         // When opening directories, we do NOT use FILE_SHARE_DELETE, because we need the directory
-        // path to remain vaild.
+        // path to remain valid.
         //
         // TODO(someday): Use NtCreateFile() and related "internal" APIs that allow for
         //   openat()-like behavior?
@@ -818,7 +824,7 @@ public:
           mode = mode - WriteMode::CREATE_PARENT;
           return createNamedTemporary(finalName, mode, kj::mv(tryCreate));
         }
-        // fallthrough
+        KJ_FALLTHROUGH;
       default:
         KJ_FAIL_WIN32("create(path)", error, path) { break; }
         return nullptr;
@@ -869,6 +875,7 @@ public:
             // Retry, but make sure we don't try to create the parent again.
             return tryReplaceNode(path, mode - WriteMode::CREATE_PARENT, kj::mv(tryCreate));
           }
+          KJ_FALLTHROUGH;
         default:
           KJ_FAIL_WIN32("create(path)", error, path) { return false; }
       } else {
@@ -936,7 +943,7 @@ public:
         NULL)) {
       case ERROR_PATH_NOT_FOUND:
         if (has(mode, WriteMode::CREATE)) {
-          // A parent directory didn't exist. Maybe cerate it.
+          // A parent directory didn't exist. Maybe create it.
           if (has(mode, WriteMode::CREATE_PARENT) && path.size() > 0 &&
               tryMkdir(path.parent(), WriteMode::CREATE | WriteMode::MODIFY |
                                       WriteMode::CREATE_PARENT, true)) {
@@ -1029,7 +1036,7 @@ public:
                 }
             }
 
-            // Succeded, delete temporary.
+            // Succeeded, delete temporary.
             rmrf(*tempName);
             return true;
           } else {
@@ -1237,7 +1244,7 @@ public:
     // We can't really create symlinks on Windows. Reasons:
     // - We'd need to know whether the target is a file or a directory to pass the correct flags.
     //   That means we'd need to evaluate the link content and track down the target. What if the
-    //   taget doesn't exist? It's unclear if this is even allowed on Windows.
+    //   target doesn't exist? It's unclear if this is even allowed on Windows.
     // - Apparently, creating symlinks is a privileged operation on Windows prior to Windows 10.
     //   The flag SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE is very new.
     KJ_UNIMPLEMENTED(
@@ -1290,13 +1297,13 @@ public:
         case ERROR_PATH_NOT_FOUND:
           return false;
         case ERROR_ACCESS_DENIED:
-          // This usually means that fromPath was a directory or toPath was a direcotry. Fall back
+          // This usually means that fromPath was a directory or toPath was a directory. Fall back
           // to default implementation.
           break;
         default:
           KJ_FAIL_WIN32("CopyFile", error, fromPath, toPath) { return false; }
       } else {
-        // Copy succeded.
+        // Copy succeeded.
         return true;
       }
     }
@@ -1514,7 +1521,7 @@ public:
     Vector<Entry> results;
     for (uint i = 0; i < 26; i++) {
       if (drives & (1 << i)) {
-        char name[2] = { 'A' + i, ':' };
+        char name[2] = { static_cast<char>('A' + i), ':' };
         results.add(Entry { FsNode::Type::DIRECTORY, kj::heapString(name, 2) });
       }
     }

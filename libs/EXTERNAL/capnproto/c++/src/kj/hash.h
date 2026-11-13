@@ -21,11 +21,9 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "string.h"
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 namespace _ {  // private
@@ -52,6 +50,7 @@ struct HashCoder {
   inline uint operator*(const Array<char>& s) const { return operator*(s.asBytes()); }
   inline uint operator*(const String& s) const { return operator*(s.asBytes()); }
   inline uint operator*(const StringPtr& s) const { return operator*(s.asBytes()); }
+  inline uint operator*(const ConstString& s) const { return operator*(s.asBytes()); }
 
   inline uint operator*(decltype(nullptr)) const { return 0; }
   inline uint operator*(bool b) const { return b; }
@@ -92,6 +91,8 @@ struct HashCoder {
 
   template <typename T>
   uint operator*(T* ptr) const {
+    static_assert(!isSameType<Decay<T>, char>(), "Wrap in StringPtr if you want to hash string "
+        "contents. If you want to hash the pointer, cast to void*");
     if (sizeof(ptr) == sizeof(uint)) {
       // TODO(cleanup): In C++17, make the if() above be `if constexpr ()`, then change this to
       //   reinterpret_cast<uint>(ptr).
@@ -105,6 +106,8 @@ struct HashCoder {
   uint operator*(ArrayPtr<T> arr) const;
   template <typename T, typename = decltype(instance<const HashCoder&>() * instance<const T&>())>
   uint operator*(const Array<T>& arr) const;
+  template <typename T, typename = EnableIf<__is_enum(T)>>
+  inline uint operator*(T e) const;
 
   template <typename T, typename Result = decltype(instance<T>().hashCode())>
   inline Result operator*(T&& value) const { return kj::fwd<T>(value).hashCode(); }
@@ -128,6 +131,14 @@ static KJ_CONSTEXPR(const) HashCoder HASHCODER = HashCoder();
 inline uint hashCode(uint value) { return value; }
 template <typename T>
 inline uint hashCode(T&& value) { return hashCode(_::HASHCODER * kj::fwd<T>(value)); }
+template <typename T, size_t N>
+inline uint hashCode(T (&arr)[N]) {
+  static_assert(!isSameType<Decay<T>, char>(), "Wrap in StringPtr if you want to hash string "
+      "contents. If you want to hash the pointer, cast to void*");
+  static_assert(isSameType<Decay<T>, char>(), "Wrap in ArrayPtr if you want to hash a C array. "
+      "If you want to hash the pointer, cast to void*");
+  return 0;
+}
 template <typename... T>
 inline uint hashCode(T&&... values) {
   uint hashes[] = { hashCode(kj::fwd<T>(values))... };
@@ -174,5 +185,12 @@ inline uint HashCoder::operator*(const Array<T>& arr) const {
   return operator*(arr.asPtr());
 }
 
+template <typename T, typename>
+inline uint HashCoder::operator*(T e) const {
+  return operator*(static_cast<__underlying_type(T)>(e));
+}
+
 }  // namespace _ (private)
 } // namespace kj
+
+KJ_END_HEADER

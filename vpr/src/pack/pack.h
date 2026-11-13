@@ -1,20 +1,86 @@
-#ifndef PACK_H
-#define PACK_H
-#include <vector>
+#pragma once
+
+#include <map>
+#include <string>
 #include <unordered_set>
-#include "vpr_types.h"
-#include "atom_netlist_fwd.h"
+#include <vector>
 
-bool try_pack(t_packer_opts* packer_opts,
-              const t_analysis_opts* analysis_opts,
-              const t_arch* arch,
-              const t_model* user_models,
-              const t_model* library_models,
-              float interc_delay,
-              std::vector<t_lb_type_rr_node>* lb_type_rr_graphs);
+#include "logical_ram_infer.h"
 
-float get_arch_switch_info(short switch_index, int switch_fanin, float& Tdel_switch, float& R_switch, float& Cout_switch);
+class AtomNetId;
+class LbTypeRRGraph;
+class FlatPlacementInfo;
+class PreClusterTimingManager;
+class Prepacker;
+struct t_analysis_opts;
+struct t_ap_opts;
+struct t_arch;
+struct t_packer_opts;
+struct t_logical_block_type;
+struct t_vpr_setup;
+using t_logical_block_type_ptr = const t_logical_block_type*;
 
-std::unordered_set<AtomNetId> alloc_and_load_is_clock(bool global_clocks);
+/**
+ * @brief Try to pack the atom netlist into legal clusters on the given
+ *        architecture. Will return true if successful, false otherwise.
+ *
+ *  @param packer_opts
+ *              Options passed by the user to configure the packing algorithm.
+ *  @param arch
+ *              The architecture to create clusters for.
+ *  @param prepacker
+ *              The prepacker used to form atoms into molecules prior to packing.
+ *  @param pre_cluster_timing_manager
+ *              Manager object to store the pre-computed timing delay calculations.
+ *              Used to inform the packer of timing critical paths.
+ *  @param flat_placement_info
+ *              Flat (primitive-level) placement information that may be
+ *              provided by the user as a hint for packing. Will be invalid if
+ *              there is no flat placement information provided.
+ *  @param ram_mapper
+ *              Pre-computed logical RAM groups with assigned physical types.
+ *              Used to guide packing for memory clusters. Defaults to an empty
+ *              mapper if not provided.
+ *  @param estimated_type_instance_counts
+ *              Estimated number of instances required for each logical block
+ *              type, computed before packing (see DeviceSizeEstimator). Used
+ *              by APPack to decide, per block type, whether unrelated
+ *              clustering should be enabled from the start. Defaults to an
+ *              empty map if not provided, in which case unrelated clustering
+ *              is left off on the first packing attempt.
+ */
+bool try_pack(const t_packer_opts& packer_opts,
+              const t_ap_opts& ap_opts,
+              const t_arch& arch,
+              const Prepacker& prepacker,
+              const PreClusterTimingManager& pre_cluster_timing_manager,
+              const FlatPlacementInfo& flat_placement_info,
+              const t_vpr_setup& vpr_setup,
+              const RamMapper& ram_mapper = RamMapper{},
+              const std::map<t_logical_block_type_ptr, size_t>& estimated_type_instance_counts = {});
 
-#endif
+/**
+ * @brief Try to fit the block type instances on the given architecture. Will
+ *        return true if successful, false otherwise.
+ *
+ *  @param arch
+ *              The architecture to try to fit the given instances.
+ *  @param num_type_instances
+ *              The mapping from each logical block type to the number of instances
+ *              of the corresponding logical block type.
+ *  @param type_util
+ *              The utilization of each logical block type on the architecture to
+ *              be filled.
+ *  @param target_device_utilization
+ *              The target device utilization.
+ *  @param device_layout_name
+ *              The device layout name for that architecture.
+ */
+bool try_size_device_grid(const t_arch& arch,
+                          const std::map<t_logical_block_type_ptr, size_t>& num_type_instances,
+                          std::map<t_logical_block_type_ptr, float>& type_util,
+                          float target_device_utilization,
+                          const std::string& device_layout_name,
+                          size_t device_width);
+
+std::unordered_set<AtomNetId> alloc_and_load_is_clock();

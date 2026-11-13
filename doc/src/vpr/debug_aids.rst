@@ -11,7 +11,8 @@ To access detailed echo files from VPR’s operation, use the command-line optio
 After parsing the netlist and architecture files, VPR dumps out an image of its internal data structures into echo files (typically ending in ``.echo``).
 These files can be examined to be sure that VPR is parsing the input files as you expect.
 
-You ca visualize and control the placement move generator whenever the placement engine is paused in the UI. Run with graphics and VTR_ENABLE_DEBUG_LOGGONG enabled and set a breakpoint to stop placement. The new location of the moving block for each proposed move will be highlighted with GREEN and the old location will be highlighted with GOLD. The fanin and fanout blocks will also be highlighted. The move type, move outcome and delta cost will be printed in the status bar.
+You can visualize and control the placement move generator whenever the placement engine is paused in the UI. Run with graphics and VTR_ENABLE_DEBUG_LOGGING enabled and set a breakpoint to stop placement. The new location of the moving block for each proposed move will be highlighted with GREEN and the old location will be highlighted with GOLD. The fanin and fanout blocks will also be highlighted. The move type, move outcome and delta cost will be printed in the status bar.
+
 .. warning:: VPR must have been compiled with `VTR_ENABLE_DEBUG_LOGGING` on to get any debug output from this flag.   
 
 If the preprocessor flag ``DEBUG`` is defined in ``vpr_types.h``, some additional sanity checks are performed during a run.
@@ -30,8 +31,8 @@ If you want to read a text file describing the entire routing resource graph, ca
 
 Placer and Router Debugger
 ==========================
-
-.. image:: https://github.com/verilog-to-routing/verilog-to-routing.github.io/blob/master/img/debuggerWindow.png
+ 
+.. image:: https://www.verilogtorouting.org/img/debuggerWindow.png
     :align: center
 
 Overview
@@ -62,8 +63,8 @@ Upon reaching a breakpoint, the program will stop, notify the user which breakpo
 Available Variables
 ~~~~~~~~~~~~~~~~~~~
 
-.. image:: https://github.com/verilog-to-routing/verilog-to-routing.github.io/blob/master/img/advancedWindow.png
-    :align: center
+.. image:: https://verilogtorouting.org/img/advancedWindow.png
+    :align: center 
 
 You can also find the variables’ list in the Advanced Settings Window, on the left.
 

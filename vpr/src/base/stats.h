@@ -1,42 +1,72 @@
 #pragma once
+
+#include <map>
+#include <rr_graph_fwd.h>
 #include <vector>
-#include <limits>
-#include <algorithm>
-#include "vpr_types.h"
+#include <string_view>
 
-void routing_stats(bool full_stats, enum e_route_type route_type, std::vector<t_segment_inf>& segment_inf, float R_minW_nmos, float R_minW_pmos, float grid_logic_tile_area, enum e_directionality directionality, int wire_to_ipin_switch);
+#include "netlist.h"
+#include "rr_graph_type.h"
 
-void print_wirelen_prob_dist();
+class DeviceGrid;
+
+/**
+ * @brief Prints out various statistics about the current routing.
+ *
+ * Both a routing and an rr_graph must exist when you call this routine.
+ */
+void routing_stats(const Netlist<>& net_list,
+                   bool full_stats,
+                   e_route_type route_type,
+                   std::vector<t_segment_inf>& segment_inf,
+                   float R_minW_nmos,
+                   float R_minW_pmos,
+                   float grid_logic_tile_area,
+                   e_directionality directionality,
+                   bool is_flat);
+
+void print_wirelen_prob_dist(bool is_flat);
 
 void print_lambda();
 
-void get_num_bends_and_length(ClusterNetId inet, int* bends, int* length, int* segments);
+void get_num_bends_and_length(ParentNetId inet, int* bends, int* length, int* segments, bool* is_absorbed_ptr);
 
 int count_netlist_clocks();
 
 /**
- * @brief template functions must be defined in header, or explicitely
- *        instantiated in definition file (defeats the point of template)
+ * @brief Calculate the device utilization
+ *
+ * Calculate the device utilization (i.e. fraction of used grid tiles)
+ * for the specified grid and resource requirements
  */
-template<typename T>
-double linear_regression_vector(const std::vector<T>& vals, size_t start_x = 0) {
-    // returns slope; index is x, val is y
-    size_t n{vals.size() - start_x};
+float calculate_device_utilization(const DeviceGrid& grid, const std::map<t_logical_block_type_ptr, size_t>& instance_counts);
 
-    double x_avg{0}, y_avg{0};
-    for (size_t x = start_x; x < vals.size(); ++x) {
-        x_avg += x;
-        y_avg += vals[x];
-    }
-    x_avg /= (double)n;
-    y_avg /= (double)n;
+/**
+ * @brief Prints the number of resources in the netlist and the number of available resources in the architecture.
+ */
+void print_resource_usage();
 
-    double numerator = 0, denominator = 0;
-    for (size_t x = start_x; x < vals.size(); ++x) {
-        numerator += (x - x_avg) * (vals[x] - y_avg);
-        denominator += (x - x_avg) * (x - x_avg);
-    }
+/**
+ * @brief Prints the device utilization
+ * @param target_device_utilization The target device utilization set by the user
+ */
+void print_device_utilization(const float target_device_utilization);
 
-    if (denominator == 0) return std::numeric_limits<double>::max();
-    return numerator / denominator;
-}
+/**
+ * @brief Writes channel occupancy data to a file.
+ *
+ * Each row contains:
+ *   - (x, y) coordinate
+ *   - Occupancy count
+ *   - Occupancy percentage (occupancy / capacity)
+ *   - Channel capacity
+ *
+ *   TODO: extend to 3D
+ *
+ * @param filename      Output file path.
+ * @param occupancy     Matrix of occupancy counts.
+ * @param capacity_list List of channel capacities (per y for chanx, per x for chany).
+ */
+void write_channel_occupancy_table(const std::string_view filename,
+                                   const vtr::Matrix<int>& occupancy,
+                                   const std::vector<int>& capacity_list);

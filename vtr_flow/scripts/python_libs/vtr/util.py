@@ -1,19 +1,97 @@
 """
-    Module to utilize many of the tools needed for VTR.
+Module to utilize many of the tools needed for VTR.
 """
-from pathlib import PurePath
-from pathlib import Path
+
 import sys
 import re
 import time
 import subprocess
 import argparse
 import csv
+import os
+import shutil
+import signal
+
 from collections import OrderedDict
-from prettytable import PrettyTable
+from functools import lru_cache
+from pathlib import PurePath
+from pathlib import Path
+from typing import List, Tuple
+
 import vtr.error
 from vtr.error import CommandError
 from vtr import paths
+
+
+@lru_cache(maxsize=1)
+def _resolve_memory_tracking_cmd():
+    """
+    Return the argv prefix that tracks peak memory of a child process,
+    or ``None`` if no working implementation is available on this host.
+
+    Tracks DEF-006: ``time -v`` is a GNU coreutils extension. macOS BSD
+    ``/usr/bin/time`` does not accept ``-v`` and aborts immediately.
+    On macOS, GNU time is typically installed via Homebrew
+    ``coreutils`` and exposed as ``gtime``. We probe in order:
+
+      1. ``gtime -v`` (Homebrew coreutils on macOS, or distros that
+         install GNU time under that name)
+      2. ``/usr/bin/env time -v`` (Linux / any host where the default
+         ``time`` is GNU time)
+
+    The probe runs ``<candidate> -v true`` once and inspects the exit
+    code. Result is cached for the lifetime of the process.
+    """
+    candidates = []
+    if shutil.which("gtime"):
+        candidates.append(["gtime", "-v"])
+    candidates.append(["/usr/bin/env", "time", "-v"])
+
+    for cand in candidates:
+        try:
+            probe = subprocess.run(
+                cand + ["true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except (OSError, FileNotFoundError):
+            continue
+        if probe.returncode == 0:
+            return cand
+
+    print(
+        "warning: GNU 'time -v' is unavailable on this host; per-stage memory "
+        "tracking is disabled. On macOS, install GNU coreutils "
+        "('brew install coreutils') to enable it.",
+        file=sys.stderr,
+    )
+    return None
+
+
+class RunDir:
+    """
+    A class for representing a run directory.
+    """
+
+    # The run directory name passed by set_global_run_dir
+    # is the run directory name to parse.
+    # If it is None, the latest run directory will be parsed.
+    g_run_dir_name = None
+
+    @classmethod
+    def set_user_run_dir_name(cls, current_run_dir_name):
+        """
+        Set the run directory name passed by the user.
+        """
+        cls.g_run_dir_name = current_run_dir_name
+
+    @classmethod
+    def get_user_run_dir_name(cls):
+        """
+        Get the run directory name passed by the user.
+        """
+        return cls.g_run_dir_name
 
 
 class RawDefaultHelpFormatter(
@@ -28,22 +106,22 @@ class RawDefaultHelpFormatter(
 # pylint: disable=too-many-arguments, too-many-instance-attributes, too-few-public-methods, too-many-locals
 class CommandRunner:
     """
-        An object for running system commands with timeouts, memory limits and varying verbose-ness
+    An object for running system commands with timeouts, memory limits and varying verbose-ness
 
-        Arguments
-        =========
-            timeout_sec: maximum walk-clock-time of the command in seconds. Default: None
-            max_memory_mb: maximum memory usage of the command in megabytes (if supported).
-                Default: None
-            track_memory: Whether to track usage of the command (disabled if not supported).
-                Default: True
-            verbose_error: Produce more verbose output if the command fails.
-                Default: Equal to verbose
-            verbose: Produce more verbose output. Default: False
-            echo_cmd: Echo the command before running. Default: Equal to verbose
-            indent: The string specifying a single indent (used in verbose mode)
-            valgrind: Indicates if commands should be run with valgrind
-        """
+    Arguments
+    =========
+        timeout_sec: maximum walk-clock-time of the command in seconds. Default: None
+        max_memory_mb: maximum memory usage of the command in megabytes (if supported).
+            Default: None
+        track_memory: Whether to track usage of the command (disabled if not supported).
+            Default: True
+        verbose_error: Produce more verbose output if the command fails.
+            Default: Equal to verbose
+        verbose: Produce more verbose output. Default: False
+        echo_cmd: Echo the command before running. Default: Equal to verbose
+        indent: The string specifying a single indent (used in verbose mode)
+        valgrind: Indicates if commands should be run with valgrind
+    """
 
     def __init__(
         self,
@@ -70,6 +148,7 @@ class CommandRunner:
         self._valgrind = valgrind
         self._expect_fail = expect_fail
 
+    # pylint: disable=too-many-branches
     def run_system_command(
         self, cmd, temp_dir, log_filename=None, expected_return_code=0, indent_depth=0
     ):
@@ -83,7 +162,7 @@ class CommandRunner:
         Arguments
         =========
             cmd: list of tokens that form the command to be run
-            log_filename: the log fiel name for the command's output. Default: derived from command
+            log_filename: the log filename for the command's output. Default: derived from command
             temp_dir: The directory to run the command in. Default: None (uses object default).
             expected_return_code: The expected return code from the command.
             If the actula return code does not match, will generate an exception. Default: 0
@@ -101,27 +180,28 @@ class CommandRunner:
         cmd = memory_limit + cmd if self._max_memory_mb and check_cmd(memory_limit[0]) else cmd
 
         # Enable memory tracking?
-        memory_tracking = ["/usr/bin/env", "time", "-v"]
-        cmd = (
-            (
-                memory_tracking
-                + [
-                    "valgrind",
-                    "--leak-check=full",
-                    "--suppressions=" + str(paths.valgrind_supp),
-                    "--error-exitcode=1",
-                    "--errors-for-leak-kinds=none",
-                    "--track-origins=yes",
-                    "--log-file=valgrind.log",
-                    "--error-limit=no",
-                ]
-                + cmd
-                if self._valgrind
-                else memory_tracking + cmd
-            )
-            if self._track_memory and check_cmd(memory_tracking[0])
-            else cmd
-        )
+        # DEF-006: probe for a working GNU 'time -v' instead of hard-coding
+        # the GNU-only path; falls back to no tracking on hosts where it is
+        # unavailable (e.g. macOS without Homebrew coreutils).
+        memory_tracking = _resolve_memory_tracking_cmd() if self._track_memory else None
+        if memory_tracking is not None:
+            if self._valgrind:
+                cmd = (
+                    memory_tracking
+                    + [
+                        "valgrind",
+                        "--leak-check=full",
+                        "--suppressions=" + str(paths.valgrind_supp),
+                        "--error-exitcode=1",
+                        "--errors-for-leak-kinds=none",
+                        "--track-origins=yes",
+                        "--log-file=valgrind.log",
+                        "--error-limit=no",
+                    ]
+                    + cmd
+                )
+            else:
+                cmd = memory_tracking + cmd
 
         # Flush before calling subprocess to ensure output is ordered
         # correctly if stdout is buffered
@@ -140,12 +220,25 @@ class CommandRunner:
         try:
             # Call the command
             stderr = None if self._valgrind else subprocess.STDOUT
+
+            # capnproto accesses PWD environment variable to learn about
+            # the current working directory. However, subprocess.Popen()
+            # changes the working directory without updating this variable.
+            # This can cause issues when a VTR task passes router lookahead
+            # or RR graph files to VPR. PWD environment variable is updated
+            # manually to prevent capnproto from throwing exceptions.
+            modified_environ = os.environ.copy()
+            modified_environ["PWD"] = str(temp_dir)
+
+            # pylint: disable-next=consider-using-with
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,  # We grab stdout
                 stderr=stderr,  # stderr redirected to stderr
                 universal_newlines=True,  # Lines always end in \n
                 cwd=str(temp_dir),  # Where to run the command
+                env=modified_environ,
+                start_new_session=True,
             )
 
             # Read the output line-by-line and log it
@@ -160,7 +253,6 @@ class CommandRunner:
 
                 # Read from subprocess output
                 for line in proc.stdout:
-
                     # Send to log file
                     log_f.write(line)
 
@@ -170,7 +262,18 @@ class CommandRunner:
                     # Abort if over time limit
                     elapsed_time = time.time() - start_time
                     if self._timeout_sec and elapsed_time > self._timeout_sec:
-                        proc.terminate()
+                        # Send SIGTERM command to all processes in the process
+                        # group. We need to do this since Popen may create a
+                        # process which has children. We want all of them to
+                        # receive this signal.
+                        os.killpg(proc.pid, signal.SIGTERM)
+                        # Wait 5 seconds for the process to gracefully terminate.
+                        # If it still has not terminated, send SIGKILL.
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        break
 
                 # Should now be finished (since we stopped reading from proc.stdout),
                 # sets the return code
@@ -216,32 +319,9 @@ def check_cmd(command):
     return Path(command).exists()
 
 
-def pretty_print_table(file, border=False):
-    """ Convert file to a pretty, easily read table """
-    table = PrettyTable()
-    table.border = border
-    reader = None
-    with open(file, "r") as csv_file:
-        reader = csv.reader(csv_file, delimiter="\t")
-        first = True
-        for row in reader:
-            row = [row_item.strip() + "\t" for row_item in row]
-            while row[-1] == "\t":
-                row = row[:-1]
-            if first:
-                table.field_names = list(row)
-                for head in list(row):
-                    table.align[head] = "l"
-                first = False
-            else:
-                table.add_row(row)
-    with open(file, "w+") as out_file:
-        print(table, file=out_file)
-
-
 def write_tab_delimitted_csv(filepath, rows):
     """
-    Write out the data provied in a tab-delimited CSV format
+    Write out the data provided in a tab-delimited CSV format
 
     filepath: The filepath to write the data to
     rows: An iterable of dictionary-like elements; each element
@@ -252,14 +332,13 @@ def write_tab_delimitted_csv(filepath, rows):
     columns = OrderedDict()
     for row in rows:
         for key, value in row.items():
-
             if key not in columns:
                 columns[key] = max(len(key), len(str(value)))
             else:
                 columns[key] = max(columns[key], len(str(value)))
 
     # Write the elements
-    with open(filepath, "w+") as file:
+    with open(filepath, "w+", encoding="utf-8") as file:
         writer = csv.writer(file, delimiter="\t")
 
         # Write out the header
@@ -278,10 +357,10 @@ def write_tab_delimitted_csv(filepath, rows):
 
 def load_tab_delimited_csv(filepath):
     """
-        loads a tab delimted csv as a list of ordered dictionaries
+    loads a tab delimited csv as a list of ordered dictionaries
     """
     data = []
-    with open(filepath) as file:
+    with open(filepath, "r", encoding="utf-8") as file:
         reader = csv.reader(file, delimiter="\t")
 
         header = []
@@ -307,18 +386,20 @@ def print_verbose(min_verbosity, curr_verbosity, string, endl=True):
         if endl:
             print(string)
         else:
-            print(string,)
+            print(
+                string,
+            )
 
 
 def file_replace(filename, search_replace_dict):
     """
-        searches file for specified values and replaces them with specified values.
+    searches file for specified values and replaces them with specified values.
     """
     lines = []
-    with open(filename, "r") as file:
+    with open(filename, "r", encoding="utf-8") as file:
         lines = file.readlines()
 
-    with open(filename, "w") as file:
+    with open(filename, "w", encoding="utf-8") as file:
         for line in lines:
             for search, replace in search_replace_dict.items():
                 line = line.replace(search, str(replace))
@@ -333,13 +414,13 @@ def relax_w(min_w, relax_factor, base=2):
     return relaxed_w
 
 
-def load_list_file(list_file):
+def load_list_file(list_file: str) -> List[str]:
     """
     Loads a file containing a single value-per-line,
     potentially with '#' comments
     """
     values = []
-    with open(list_file) as file:
+    with open(list_file, "r", encoding="utf-8") as file:
         for line in file:
             line = line.strip()
             # Handle comments
@@ -360,7 +441,7 @@ def load_config_lines(filepath, allow_includes=True):
         @include "another_file.txt"
 
     will cause the specified file to be included in-line.
-    The @included filename is interpretted as relative to the directory
+    The @included filename is interpreted as relative to the directory
     containing filepath.
 
     Returns a list of lines
@@ -369,7 +450,7 @@ def load_config_lines(filepath, allow_includes=True):
 
     blank_regex = re.compile(r"^\s*$")
     try:
-        with open(filepath) as file:
+        with open(filepath, "r", encoding="utf-8") as file:
             for line in file:
                 # Trim '\n'
                 line = line.strip()
@@ -406,14 +487,14 @@ def load_config_lines(filepath, allow_includes=True):
 
 def verify_file(file, file_type, should_exist=True):
     """
-        Verifies that the file is a Pathlib object and if not makes it one.
-        Ensures that the file exists by default.
-        This makes it possible to pass files into the various files as strings or as pathlib objects
+    Verifies that the file is a Pathlib object and if not makes it one.
+    Ensures that the file exists by default.
+    This makes it possible to pass files into the various files as strings or as pathlib objects
     """
     if not isinstance(file, Path):
         file = Path(file)
     if should_exist and not file.is_file():
-        raise Exception(
+        raise FileNotFoundError(
             "{file_type} file does not exist: {file} ".format(file_type=file_type, file=file)
         )
 
@@ -422,14 +503,49 @@ def verify_file(file, file_type, should_exist=True):
 
 def format_elapsed_time(time_delta):
     """
-        formats a time into desired string format
+    formats a time into desired string format
     """
     return "%.2f seconds" % time_delta.total_seconds()
 
 
+# Files that can be read back by VPR with their conventional extensions
+# and the command line option to read them.
+REUSABLE_FILES = {
+    "net": ["net", "--net_file"],
+    "place": ["place", "--place_file"],
+    "route": ["route", "--route_file"],
+    "rr_graph": ["rr_graph.xml", "--read_rr_graph"],
+    "lookahead": ["lookahead.bin", "--read_router_lookahead"],
+    "blif": ["pre-vpr.blif", "REPLACE_BLIF"],
+}
+
+
+def argparse_use_previous(inp: str) -> List[Tuple[str, List]]:
+    """
+    Parse a -use_previous parameter. Throw if not valid.
+    Returns a list with (run dir name, [extension, cmdline option]) elements.
+    """
+    tokens = [w.strip() for w in inp.split(",")]
+    tokens = [w for w in tokens if len(w)]
+    out = []
+    for w in tokens:
+        r = re.fullmatch(r"(\w+):(\w+)", w)
+        if not r:
+            raise argparse.ArgumentError(None, "Invalid input to -use_previous: %s" % w)
+        if not REUSABLE_FILES.get(r.group(2)):
+            raise argparse.ArgumentError(
+                None,
+                "Unknown file type to use_previous: %s, available types: %s"
+                % (r.group(2), ",".join(REUSABLE_FILES.keys())),
+            )
+        out.append((r.group(1), REUSABLE_FILES[r.group(2)]))
+
+    return out
+
+
 def argparse_str2bool(str_val):
     """
-        parses a string boolean to a boolean
+    parses a string boolean to a boolean
     """
     str_val = str_val.lower()
     if str_val in ["yes", "on", "true", "1"]:
@@ -448,62 +564,89 @@ def get_next_run_dir(base_dir):
     return str(PurePath(base_dir) / run_dir_name(get_next_run_number(base_dir)))
 
 
-def find_task_dir(config):
+def find_task_dir(config, alt_tasks_dir=None):
     """
-    find the task directory
+    Finds the task directory.
+
+    Returns the parent of the config directory, or if specified,
+    a directory with the task's name in an alternate location
     """
     task_dir = None
-    # Task dir is just above the config directory
-    task_dir = Path(config.config_dir).parent
+
+    if alt_tasks_dir is None:
+        task_dir = Path(config.config_dir).parent
+    else:
+        task_dir = Path(alt_tasks_dir) / config.task_name
+        task_dir.mkdir(parents=True, exist_ok=True)
     assert task_dir.is_dir
 
     return str(task_dir)
 
 
-def get_latest_run_dir(base_dir):
+def get_active_run_dir(base_dir):
     """
-    Returns the run directory with the highest run number in base_dir
+    Returns full path to the active run directory
+    locatedin base_dir
     """
-    latest_run_number = get_latest_run_number(base_dir)
+    active_run_dir_name = get_active_run_dir_name(base_dir)
 
-    if latest_run_number is None:
-        return None
+    run_dir = None
+    if active_run_dir_name:
+        run_dir = str(PurePath(base_dir) / active_run_dir_name)
 
-    return str(PurePath(base_dir) / run_dir_name(latest_run_number))
+    return run_dir
+
+
+def get_existing_run_dir(base_dir: str, run_dir: str) -> str:
+    """
+    Get an existing run directory (from a previous run). Throw if it doesn't exist
+    """
+    path = Path(base_dir) / run_dir
+    if not path.exists():
+        raise FileNotFoundError(
+            "Couldn't find previous run directory %s in %s" % (base_dir, run_dir)
+        )
+    return str(path)
 
 
 def get_next_run_number(base_dir):
     """
     Returns the next available (i.e. non-existing) run number in base_dir
     """
-    latest_run_number = get_latest_run_number(base_dir)
-
-    if latest_run_number is None:
-        next_run_number = 1
-    else:
+    latest_run_dir_name = get_active_run_dir_name(base_dir)
+    match = re.match(r"^run(\d{3})$", latest_run_dir_name)
+    next_run_number = 1
+    if match:
+        latest_run_number = int(match.group(1))
         next_run_number = latest_run_number + 1
 
     return next_run_number
 
 
-def get_latest_run_number(base_dir):
+def get_active_run_dir_name(base_dir):
     """
-    Returns the highest run number of all run directories with in base_dir
+    Returns the active run directory name. If the user has specified
+    a run directory name, it will be returned. Otherwise, the
+    highest run number of all run directories within in base_dir
+    will be returned.
     """
-    run_number = 1
-    run_dir = Path(base_dir) / run_dir_name(run_number)
-
-    if not run_dir.exists():
-        # No existing run directories
-        return None
-
-    while run_dir.exists():
-        run_number += 1
+    active_run_dir_name = ""
+    if RunDir.get_user_run_dir_name() is not None:
+        active_run_dir_name = RunDir.get_user_run_dir_name()
+    else:
+        run_number = 1
         run_dir = Path(base_dir) / run_dir_name(run_number)
 
-    # Currently one-past the last existing run dir,
-    # to get latest existing, subtract one
-    return run_number - 1
+        if run_dir.exists():
+            while run_dir.exists():
+                run_number += 1
+                run_dir = Path(base_dir) / run_dir_name(run_number)
+
+            # Currently one-past the last existing run dir,
+            # to get latest existing, subtract one
+            active_run_dir_name = run_dir_name(run_number - 1)
+
+    return active_run_dir_name
 
 
 def run_dir_name(run_num):

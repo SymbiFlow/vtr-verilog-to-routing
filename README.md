@@ -1,24 +1,25 @@
 # Verilog to Routing (VTR)
-[![Build Status](https://travis-ci.com/verilog-to-routing/vtr-verilog-to-routing.svg?branch=master)](https://travis-ci.com/verilog-to-routing/vtr-verilog-to-routing) [![Documentation Status](https://readthedocs.org/projects/vtr/badge/?version=latest)](http://docs.verilogtorouting.org/en/latest/)
+[![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-Ready--to--Code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/verilog-to-routing/vtr-verilog-to-routing.git)
+[![Build Status](https://github.com/verilog-to-routing/vtr-verilog-to-routing/workflows/Test/badge.svg)](https://github.com/verilog-to-routing/vtr-verilog-to-routing/actions?query=workflow%3ATest) [![Documentation Status](https://readthedocs.org/projects/vtr/badge/?version=latest)](http://docs.verilogtorouting.org/en/latest/)
 
 ## Introduction
-The Verilog-to-Routing (VTR) project is a world-wide collaborative effort to provide a open-source framework for conducting FPGA architecture and CAD research and development.
+The Verilog-to-Routing (VTR) project is a world-wide collaborative effort to provide an open-source framework for conducting FPGA architecture and CAD research and development.
 The VTR design flow takes as input a Verilog description of a digital circuit, and a description of the target FPGA architecture.
 It then performs:
-  * Elaboration & Synthesis (ODIN II)
+  * Elaboration, Synthesis & Partial Mapping (PARMYS)
   * Logic Optimization & Technology Mapping (ABC)
   * Packing, Placement, Routing & Timing Analysis (VPR)
 
 to generate FPGA speed and area results.
 VTR includes a set of benchmark designs known to work with the design flow.
 
-VTR can also produce [FASM](https://symbiflow.readthedocs.io/en/latest/fasm/docs/specification.html) to program some commercial FPGAs (via [Symbiflow](https://symbiflow.github.io/))
+VTR can also produce [FASM](https://fasm.readthedocs.io/en/latest/) to program some commercial FPGAs (via [Symbiflow](https://chipsalliance.org/announcement/2022/02/18/chips-alliance-forms-f4pga-workgroup-to-accelerate-adoption-of-open-source-fpga-tooling/))
 
 | Placement (carry-chains highlighted) | Critical Path |
 | ------------------------------------ | ------------- |
-| <img src="https://verilogtorouting.org/img/des90_placement_macros.gif" width="350"/> | <img src="https://verilogtorouting.org/img/des90_cpd.gif" width="350"/> | 
+| <img src="https://verilogtorouting.org/img/des90_placement_macros.gif" width="350"/> | <img src="https://verilogtorouting.org/img/des90_cpd.gif" width="350"/> |
 
-| Logical Connections | Routing Utilziation |
+| Logical Connections | Routing Utilization |
 | ------------------- | ------------------- |
 | <img src="https://verilogtorouting.org/img/des90_nets.gif" width="350"/> | <img src="https://verilogtorouting.org/img/des90_routing_util.gif" width="350"/> |
 
@@ -35,15 +36,15 @@ See the [full license](LICENSE.md) for details.
 ## How to Cite
 The following paper may be used as a general citation for VTR:
 
-K. E. Murray, O. Petelin, S. Zhong, J. M. Wang, M. ElDafrawy, J.-P. Legault, E. Sha, A. G. Graham, J. Wu, M. J. P. Walker, H. Zeng, P. Patros, J. Luu, K. B. Kent and V. Betz "VTR 8: High Performance CAD and Customizable FPGA Architecture Modelling", ACM TRETS, 2020.
+M. A. Elgammal, A. Mohaghegh, S. G. Shahrouz, F. Mahmoudi, F. Kosar, K. Talaei, J. Fife, D. Khadivi, K. Murray, A. Boutros, K. B. Kent, J. Goeders, and V. Betz "VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration", ACM TRETS, 2025. [PDF](https://dl.acm.org/doi/epdf/10.1145/3734798)
 
 Bibtex:
 ```
-@article{vtr8,
-  title={VTR 8: High Performance CAD and Customizable FPGA Architecture Modelling},
-  author={Murray, Kevin E. and Petelin, Oleg and Zhong, Sheng and Wang, Jai Min and ElDafrawy, Mohamed and Legault, Jean-Philippe and Sha, Eugene and Graham, Aaron G. and Wu, Jean and Walker, Matthew J. P. and Zeng, Hanqing and Patros, Panagiotis and Luu, Jason and Kent, Kenneth B. and Betz, Vaughn},
+@article{vtr9,
+  title={VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration},
+  author={Elgammal, Mohamed A. and Mohaghegh, Amin and Shahrouz, Soheil G. and Mahmoudi, Fatemehsadat and Kosar, Fahrican and Talaei, Kimia and Fife, Joshua and Khadivi, Daniel and Murray, Kevin and Boutros, Andrew and Kent, Kenneth B. and Goeders, Jeff and Betz, Vaughn},
   journal={ACM Trans. Reconfigurable Technol. Syst.},
-  year={2020}
+  year={2025}
 }
 ```
 
@@ -98,7 +99,7 @@ Professors: Kenneth Kent, Vaughn Betz, Jonathan Rose, Jason Anderson, Peter Jami
 Research Assistants: Aaron Graham
 
 
-Graduate Students: Kevin Murray, Jason Luu, Oleg Petelin, Xifian Tang, Mohamed Elgammal, Mohamed Eldafrawy, Jeffrey Goeders, Chi Wai Yu, Andrew Somerville, Ian Kuon, Alexander Marquardt, Andy Ye, Wei Mark Fang, Tim Liu, Charles Chiasson, Panagiotis (Panos) Patros, Jean-Philippe Legault, Aaron Graham, Nasrin Eshraghi Ivari, Maria Patrou, Scott Young, Sarah Khalid, Seyed Alireza Damghani
+Graduate Students: Kevin Murray, Jason Luu, Oleg Petelin, Xifian Tang, Mohamed Elgammal, Mohamed Eldafrawy, Jeffrey Goeders, Chi Wai Yu, Andrew Somerville, Ian Kuon, Alexander Marquardt, Andy Ye, Wei Mark Fang, Tim Liu, Charles Chiasson, Panagiotis (Panos) Patros, Jean-Philippe Legault, Aaron Graham, Nasrin Eshraghi Ivari, Maria Patrou, Scott Young, Sarah Khalid, Seyed Alireza Damghani, Harpreet Kaur, Daniel Khadivi, Alireza Azadi
 
 
 Summer Students: Opal Densmore, Ted Campbell, Cong Wang, Peter Milankov, Scott Whitty, Michael Wainberg, Suya Liu, Miad Nasr, Nooruddin Ahmed, Thien Yu, Long Yu Wang, Matthew J.P. Walker, Amer Hesson, Sheng Zhong, Hanqing Zeng, Vidya Sankaranarayanan, Jia Min Wang, Eugene Sha, Jean-Philippe Legault, Richard Ren, Dingyu Yang, Alexandrea Demmings, Hillary Soontiens, Julie Brown, Bill Hu, David Baines, Mahshad Farahani, Helen Dai, Daniel Zhai

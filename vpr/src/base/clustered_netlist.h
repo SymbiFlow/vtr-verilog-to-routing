@@ -1,5 +1,4 @@
-#ifndef CLUSTERED_NETLIST_H
-#define CLUSTERED_NETLIST_H
+#pragma once
 /**
  * @file
  * @brief This file defines the ClusteredNetlist class in the ClusteredContext
@@ -66,9 +65,9 @@
  * For Block 3, block_pin_nets_ of pin 0 returns 2 (or 1), non-zero as it is also a receiver.
  *
  * The block_pin_nets_ data structure exists for quick indexing, rather than using a linear search
- * with the available functions from the base Netlist, into the net_delay_ structure in the
- * PostClusterDelayCalculator of inter_cluster_delay(). net_delay_ is a 2D array, where the indexing
- * scheme is [net_id] followed by [pin_index on net].
+ * with the available functions from the base Netlist, into the net_delay_min_ and net_delay_max_
+ * structures in the PostClusterDelayCalculator of inter_cluster_delay(). They are 2D arrays, where the
+ * indexing scheme is [net_id] followed by [pin_index on net].
  *
  * Pins
  * ----
@@ -77,7 +76,7 @@
  *
  * Example of logical_pin_index_
  * ---------------------
- * Given a ClusterPinId, logical_pin_index_ will return the index of the pin within its block
+ * Given a ClusterPinId (think of it as a global index), logical_pin_index_ will return the index of the pin within its block
  * relative to the t_logical_block_type (logical description of the block).
  *
  * ```
@@ -88,15 +87,9 @@
  *           +-----------+
  * ```
  *
- * The index skips over unused pins, e.g. CLB has 6 pins (3 in, 3 out, numbered [0...5]), where
- * the first two ins, and last two outs are used. Indices [0,1] represent the ins, and [4,5]
- * represent the outs. Indices [2,3] are unused. Therefore, logical_pin_index_[92] = 5.
+ * logical_pin_index_ does not contain unused pins, e.g. CLB has 6 pins (3 in, 3 out), where
+ * pins 2 and 3 are unused. Therefore, if logical_pin_index_[92] = 5, then logical_pin_index[90] = 1 (since pins 2 and 3 are not stored in logical_pin_index_).
  *
- * Nets
- * ----
- * The pieces of unique net information stored are:
- *       net_global_:    Boolean mapping whether the net is global
- *       net_fixed_:     Boolean mapping whether the net is fixed (i.e. constant)
  *
  * Implementation
  * ==============
@@ -111,9 +104,6 @@
  *
  */
 #include "vpr_types.h"
-#include "vpr_utils.h"
-
-#include "vtr_util.h"
 
 #include "netlist.h"
 #include "clustered_netlist_fwd.h"
@@ -178,15 +168,9 @@ class ClusteredNetlist : public Netlist<ClusterBlockId, ClusterPortId, ClusterPi
      * Nets
      */
 
-    ///@brief Returns whether the net is ignored i.e. not routed
-    bool net_is_ignored(const ClusterNetId id) const;
-
-    ///@brief Returns whether the net is global
-    bool net_is_global(const ClusterNetId id) const;
-
   public: //Public Mutators
     /**
-     * @brief Create or return an existing block in the netlist
+     * @brief Create a new block in the netlist.
      *
      *   @param name   The unique name of the block
      *   @param pb     The physical representation of the block
@@ -195,16 +179,17 @@ class ClusteredNetlist : public Netlist<ClusterBlockId, ClusterPortId, ClusterPi
     ClusterBlockId create_block(const char* name, t_pb* pb, t_logical_block_type_ptr type);
 
     /**
-     * @brief Create or return an existing port in the netlist
+     * @brief Create a new port in the netlist.
      *
      *   @param blk_id   The block the port is associated with
      *   @param name     The name of the port (must match the name of a port in the block's model)
      *   @param width    The width (number of bits) of the port
      *   @param type     The type of the port (INPUT, OUTPUT, or CLOCK)
      */
-    ClusterPortId create_port(const ClusterBlockId blk_id, const std::string name, BitIndex width, PortType type);
+    ClusterPortId create_port(const ClusterBlockId blk_id, const std::string& name, BitIndex width, PortType type);
     /**
-     * @brief Create or return an existing pin in the netlist
+     * @brief Create a new pin in the netlist.
+     * @note If a pin with the specified ID already exists, the function will crash.
      *
      *   @param port_id    The port this pin is associated with
      *   @param port_bit   The bit index of the pin in the port
@@ -216,17 +201,82 @@ class ClusteredNetlist : public Netlist<ClusterBlockId, ClusterPortId, ClusterPi
     ClusterPinId create_pin(const ClusterPortId port_id, BitIndex port_bit, const ClusterNetId net_id, const PinType pin_type, int pin_index, bool is_const = false);
 
     /**
-     * @brief Create an empty, or return an existing net in the netlist
+     * @brief Create a net in the netlist
      *
      *   @param name  The unique name of the net
      */
-    ClusterNetId create_net(const std::string name);
+    ClusterNetId create_net(const std::string& name);
 
-    ///@brief Sets the flag in net_ignored_ = state
-    void set_net_is_ignored(ClusterNetId net_id, bool state);
+    /**
+     * @brief Given a name of a block and vector of possible cluster blocks
+     *        that are candidates to match the block name, go through 
+     *        the vector of cluster blocks and return the id of the block
+     *        where the block name matches the provided name.
+     * 
+     *        Given a string pattern representing a block name and a vector of
+     *        poissble cluster blocks that are candidates to match to the block
+     *        name pattern, go through the vector of cluster blocks and return 
+     *        the id of the block where the block name matches to the provided
+     *        input pattern.
+     * 
+     */
 
-    ///@brief Sets the flag in net_is_global_ = state
-    void set_net_is_global(ClusterNetId net_id, bool state);
+    /**
+     * @brief The intended use is to find the block id of a 
+     *        hard block without knowing its name in the netlist. Instead
+     *        a pattern can be created that we know the block's name will
+     *        match to. Generally, we expect the pattern to be constructed
+     *        using the block's module name in the HDL design, since we can
+     *        expect the netlist name of the block to include the module
+     *        name within it.
+     * 
+     *        For example, suppose a RAM block was named in the netlist as
+     *        "top|alu|test_ram|out". The user instantiated the ram module
+     *        in the HDL design as "test_ram". So instead of going through 
+     *        the netlist and finding the ram block's full name, this
+     *        function can be used by just providing the string pattern as
+     *        ".*test_ram.*". We know that the module name should be somewhere
+     *        within the string, so the pattern we provide says that the netlist
+     *        name of the block contains arbitrary characters then the module
+     *        name and then some other arbitrary characters after.
+     *        This pattern will then be used to match to the block in the
+     *        netlist. The matched cluster block id is returned, and if no
+     *        block matched to the input string then an invalid block id
+     *        is returned.
+     * 
+     *        The function 
+     *        here additionally requires a vector of possible cluster blocks
+     *        that can match to the input pattern. This vector can be the
+     *        entire netlist or a subset. For example, if the intended use 
+     *        is to find hard blocks, it is quite inefficient
+     *        to go through all the blocks to find a matching one. Instead, a
+     *        a filtered vector can be passed that is a subset of the entire 
+     *        netlist and can only contain blocks of a certain logical block 
+     *        type (blocks that can be placed on a specific hard block).
+     *        The idea here is that the filtered vector should be
+     *        considereably smaller that a vector of every block in the netlist
+     *        and this should help improve run time.
+     * 
+     *        This function runs in linear time (O(N)) as it goes over the
+     *        vector of 'cluster_block_candidates'. 'cluster_block_candidates'
+     *        could be the whole netlist or a subset as explained above.
+     *        Additionally, if there are multiple
+     *        blocks that match to the provided input pattern, then the
+     *        first block found is returned.
+     * 
+     * 
+     * @param name_pattern A regex string pattern that can be used to match to  
+     *             a clustered block name within the netlist.
+     * @param cluster_block_candidates A vector of clustered block ids that
+     *                                 represent a subset of the clustered
+     *                                 netlist. The blocks in this vector
+     *                                 will be used to compare and match
+     *                                 to the input string pattern. 
+     * @return A cluster block id representing a unique cluster block that 
+     *         matched to the input string pattern.
+     *         
+     */
+    ClusterBlockId find_block_by_name_fragment(const std::string& name_pattern, const std::vector<ClusterBlockId>& cluster_block_candidates) const;
 
   private: //Private Members
     /*
@@ -277,6 +327,7 @@ class ClusteredNetlist : public Netlist<ClusterBlockId, ClusterPortId, ClusterPi
     vtr::vector_map<ClusterBlockId, t_pb*> block_pbs_;                              ///<Physical block representing the clustering & internal hierarchy of each CLB
     vtr::vector_map<ClusterBlockId, t_logical_block_type_ptr> block_types_;         ///<The type of logical block this user circuit block is mapped to
     vtr::vector_map<ClusterBlockId, std::vector<ClusterPinId>> block_logical_pins_; ///<The logical pin associated with each physical tile pin
+    std::unordered_map<int, std::vector<ClusterBlockId>> blocks_per_type_;          ///<Block IDs associated with each physical block type, Used in placement to move specific block type
 
     //Pins
     /**
@@ -286,8 +337,4 @@ class ClusteredNetlist : public Netlist<ClusterBlockId, ClusterPortId, ClusterPi
     vtr::vector_map<ClusterPinId, int> pin_logical_index_;
 
     //Nets
-    vtr::vector_map<ClusterNetId, bool> net_is_ignored_; ///<Boolean mapping indicating if the net is ignored
-    vtr::vector_map<ClusterNetId, bool> net_is_global_;  ///<Boolean mapping indicating if the net is global
 };
-
-#endif

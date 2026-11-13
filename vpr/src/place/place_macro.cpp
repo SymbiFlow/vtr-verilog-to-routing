@@ -1,92 +1,248 @@
+
+#include "place_macro.h"
+
 #include <cstdio>
-#include <ctime>
 #include <cmath>
 #include <sstream>
 #include <map>
+#include <string_view>
+#include <utility>
+#include <vector>
 
+#include "atom_lookup.h"
+#include "atom_netlist.h"
+#include "atom_netlist_utils.h"
+#include "clustered_netlist.h"
+#include "physical_types_util.h"
 #include "vtr_assert.h"
-#include "vtr_memory.h"
 #include "vtr_util.h"
-
+#include "vpr_utils.h"
 #include "vpr_types.h"
 #include "vpr_error.h"
 #include "physical_types.h"
-#include "globals.h"
-#include "place.h"
-#include "read_xml_arch_file.h"
-#include "place_macro.h"
-#include "vpr_utils.h"
 #include "echo_files.h"
 
-/******************** File-scope variables declarations **********************/
+/**
+ * @brief Determines whether a cluster net is driven by a constant generator (e.g. gnd/vcc).
+ *
+ * Nets which were only inferred to be constant are not considered, since they are
+ * routed like any other net (see process_constant_nets).
+ *
+ * @param clb_net The unique id of a cluster net.
+ * @return True if the net is driven by a constant generator; otherwise false.
+ */
+static bool is_constant_clb_net(ClusterNetId clb_net,
+                                const AtomLookup& atom_lookup,
+                                const AtomNetlist& atom_nlist);
 
-/* f_idirect_from_blk_pin array allow us to quickly find pins that could be in a    *
- * direct connection. Values stored is the index of the possible direct connection  *
- * as specified in the arch file, OPEN (-1) is stored for pins that could not be    *
- * part of a direct chain conneciton.                                               *
- * [0...device_ctx.num_block_types-1][0...num_pins-1]                               */
-static int** f_idirect_from_blk_pin = nullptr;
+/**
+ * @brief Performs a sanity check on macros by making sure that
+ * each block appears in at most one macro.
+ * @param macros All placement macros in the netlist.
+ */
+static void validate_macros(const std::vector<t_pl_macro>& macros,
+                            const ClusteredNetlist& clb_nlist);
 
-/* f_direct_type_from_blk_pin array stores the value SOURCE if the pin is the       *
- * from_pin, SINK if the pin is the to_pin in the direct connection as specified in *
- * the arch file, OPEN (-1) is stored for pins that could not be part of a direct   *
- * chain conneciton.                                                                *
- * [0...device_ctx.num_block_types-1][0...num_pins-1]                               */
-static int** f_direct_type_from_blk_pin = nullptr;
+/**
+ * @brief   Tries to combine two placement macros.
+ * @details This function takes two placement macro ids which have a common cluster block
+ * or more in between. The function then tries to find if the two macros could be combined
+ * to form a larger macro. If it's impossible to combine the two macros together then
+ * this design will never place and route.
+ *
+ * @param pl_macro_member_blk_num   [0..num_macros-1][0..num_cluster_blocks-1]
+ *                                  2D array of macros created so far.
+ * @param matching_macro first macro id, which is a previous macro that is found to have the same block
+ * @param latest_macro second macro id, which is the macro being created at this iteration
+ * @return True if combining two macros was successful; otherwise false.
+ */
+static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num,
+                               int matching_macro,
+                               int latest_macro);
 
-/* f_imacro_from_blk_pin maps a blk_num to the corresponding macro index.           *
- * If the block is not part of a macro, the value OPEN (-1) is stored.              *
- * [0...cluster_ctx.clb_nlist.blocks().size()-1]                                    */
-static vtr::vector_map<ClusterBlockId, int> f_imacro_from_iblk;
+/**
+ * @brief Records which pins belong to one end of a direct connection.
+ *
+ * Finds the tile type and port named in pin_spec, checking each subtile for a match,
+ * and passes each matching port to mark_direct_of_pins(). Reports an error if the
+ * range extends past the port and warns about pins shared with another direct.
+ *
+ * @param idirect Index of this direct in the architecture's direct list.
+ * @param direct_type DRIVER for from_pin, RECEIVER for to_pin.
+ * @param pin_spec Parsed tile name, port name, and optional pin range.
+ * @param src_string Original pin specification, used in error and warning messages.
+ * @param line Line number of the direct in the architecture file.
+ * @param idirect_from_blk_pin Table of direct indices, indexed by tile type and block pin.
+ *                            UNDEFINED means the pin has no assigned direct.
+ * @param direct_type_from_blk_pin Table of DRIVER/RECEIVER roles, indexed by tile type and
+ *                                block pin. OPEN means the pin has no assigned direct.
+ * @param shared_pins Receives shared pins as (tile type index, block pin index) pairs.
+ * @param physical_tile_types Physical tile types in the device.
+ * @param port_pin_to_block_pin Converts port pin indices to block pin indices.
+ */
+static void mark_direct_of_ports(int idirect,
+                                 e_pin_type direct_type,
+                                 const t_direct_pin_spec& pin_spec,
+                                 std::string_view src_string,
+                                 int line,
+                                 std::vector<std::vector<int>>& idirect_from_blk_pin,
+                                 std::vector<std::vector<e_pin_type>>& direct_type_from_blk_pin,
+                                 std::vector<std::pair<int, int>>& shared_pins,
+                                 const std::vector<t_physical_tile_type>& physical_tile_types,
+                                 const PortPinToBlockPinConverter& port_pin_to_block_pin);
 
-/******************** Subroutine declarations ********************************/
+/**
+ * @brief Records a direct connection for the pins of one port named in pin_spec.
+ *
+ * Uses the pin range given in pin_spec, or the whole port if no range is given.
+ * Records each pin's direct index and DRIVER/RECEIVER role. Only includes pins with
+ * Fc = 0 for every routing segment, since pins with access to general routing do not
+ * require a placement macro.
+ *
+ * If a pin already belongs to another direct, leaves its entries unchanged and adds
+ * it to shared_pins. The caller clears these pins from the tables after processing
+ * all directs, so they cannot be used to form placement macros.
+ *
+ * @param pin_spec Parsed tile name, port name, and optional pin range. The range must
+ *                 fit within the port.
+ * @param itype Index of the physical tile type.
+ * @param isub_tile Index of the subtile within the tile type.
+ * @param iport Index of the port within the subtile.
+ * @param idirect_from_blk_pin Table of direct indices, indexed by tile type and block pin.
+ *                            UNDEFINED means the pin has no assigned direct.
+ * @param idirect Index of this direct in the architecture's direct list.
+ * @param direct_type_from_blk_pin Table of DRIVER/RECEIVER roles, indexed by tile type and
+ *                                block pin. OPEN means the pin has no assigned direct.
+ * @param direct_type DRIVER for from_pin, RECEIVER for to_pin.
+ * @param shared_pins Receives shared pins as (tile type index, block pin index) pairs.
+ * @param physical_tile_types Physical tile types in the device.
+ * @param port_pin_to_block_pin Converts port pin indices to block pin indices.
+ * @return Number of eligible pins that already belonged to another direct.
+ */
+static int mark_direct_of_pins(const t_direct_pin_spec& pin_spec,
+                               int itype,
+                               int isub_tile,
+                               int iport,
+                               std::vector<std::vector<int>>& idirect_from_blk_pin,
+                               int idirect,
+                               std::vector<std::vector<e_pin_type>>& direct_type_from_blk_pin,
+                               e_pin_type direct_type,
+                               std::vector<std::pair<int, int>>& shared_pins,
+                               const std::vector<t_physical_tile_type>& physical_tile_types,
+                               const PortPinToBlockPinConverter& port_pin_to_block_pin);
 
-static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& pl_macro_member_blk_num_of_this_blk, std::vector<int>& pl_macro_idirect, std::vector<int>& pl_macro_num_members, std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num);
+const std::vector<t_pl_macro>& PlaceMacros::macros() const {
+    return pl_macros_;
+}
 
-static void alloc_and_load_imacro_from_iblk(const std::vector<t_pl_macro>& macros);
+PlaceMacros::PlaceMacros(const std::vector<t_direct_inf>& directs,
+                         const std::vector<t_physical_tile_type>& physical_tile_types,
+                         const ClusteredNetlist& clb_nlist,
+                         const AtomNetlist& atom_nlist,
+                         const AtomLookup& atom_lookup) {
+    /* Allocates allocates and loads placement macros and returns
+     * the total number of macros in 2 steps.
+     *   1) Allocate temporary data structure for maximum possible
+     *      size and loops through all the blocks storing the data
+     *      relevant to the carry chains. At the same time, also count
+     *      the amount of memory required for the actual variables.
+     *   2) Allocate the actual variables with the exact amount of
+     *      memory. Then loads the data from the temporary data
+     *      structures before freeing them.
+     */
 
-static void write_place_macros(std::string filename, const std::vector<t_pl_macro>& macros);
+    size_t num_clusters = clb_nlist.blocks().size();
 
-static bool is_constant_clb_net(ClusterNetId clb_net);
+    // Allocate maximum memory for temporary variables.
+    std::vector<int> pl_macro_idirect(num_clusters);
+    std::vector<int> pl_macro_num_members(num_clusters);
+    /* For pl_macro_member_blk_num, Allocate for the first dimension only at first. Allocate for the second dimension
+     * when I know the size. Otherwise, the array is going to be of size cluster_ctx.clb_nlist.blocks().size()^2 */
+    std::vector<std::vector<ClusterBlockId>> pl_macro_member_blk_num(num_clusters);
 
-static bool net_is_driven_by_direct(ClusterNetId clb_net);
+    alloc_and_load_idirect_from_blk_pin_(directs, physical_tile_types);
 
-static void validate_macros(const std::vector<t_pl_macro>& macros);
+    /* Compute required size:
+     * Go through all the pins with possible direct connections in
+     * idirect_from_blk_pin_. Count the number of heads (which is the same
+     * as the number macros) and also the length of each macro
+     * Head - blocks with to_pin OPEN and from_pin connected
+     * Tail - blocks with to_pin connected and from_pin OPEN
+     */
+    const int num_macro = find_all_the_macro_(clb_nlist, atom_nlist, atom_lookup,
+                                              pl_macro_idirect, pl_macro_num_members,
+                                              pl_macro_member_blk_num);
 
-static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num, int matching_macro, int latest_macro);
-/******************** Subroutine definitions *********************************/
+    // Allocate the memories for the macro.
+    pl_macros_.resize(num_macro);
 
-static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& pl_macro_member_blk_num_of_this_blk, std::vector<int>& pl_macro_idirect, std::vector<int>& pl_macro_num_members, std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num) {
+    /* Allocate the memories for the chain members.
+     * Load the values from the temporary data structures.
+     */
+    for (int imacro = 0; imacro < num_macro; imacro++) {
+        pl_macros_[imacro].members = std::vector<t_pl_macro_member>(pl_macro_num_members[imacro]);
+
+        // Load the values for each member of the macro
+        for (size_t imember = 0; imember < pl_macros_[imacro].members.size(); imember++) {
+            pl_macros_[imacro].members[imember].offset.x = imember * directs[pl_macro_idirect[imacro]].x_offset;
+            pl_macros_[imacro].members[imember].offset.y = imember * directs[pl_macro_idirect[imacro]].y_offset;
+            pl_macros_[imacro].members[imember].offset.sub_tile = directs[pl_macro_idirect[imacro]].sub_tile_offset;
+            pl_macros_[imacro].members[imember].blk_index = pl_macro_member_blk_num[imacro][imember];
+        }
+    }
+
+    if (isEchoFileEnabled(E_ECHO_PLACE_MACROS)) {
+        write_place_macros_(getEchoFileName(E_ECHO_PLACE_MACROS),
+                            pl_macros_,
+                            physical_tile_types,
+                            clb_nlist);
+    }
+
+    validate_macros(pl_macros_, clb_nlist);
+
+    alloc_and_load_imacro_from_iblk_(pl_macros_, clb_nlist);
+}
+
+ClusterBlockId PlaceMacros::macro_head(ClusterBlockId blk) const {
+    int macro_index = get_imacro_from_iblk(blk);
+    if (macro_index == UNDEFINED) {
+        return ClusterBlockId::INVALID();
+    } else {
+        return pl_macros_[macro_index].members[0].blk_index;
+    }
+}
+
+int PlaceMacros::find_all_the_macro_(const ClusteredNetlist& clb_nlist,
+                                     const AtomNetlist& atom_nlist,
+                                     const AtomLookup& atom_lookup,
+                                     std::vector<int>& pl_macro_idirect,
+                                     std::vector<int>& pl_macro_num_members,
+                                     std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num) {
     /* Compute required size:                                                *
      * Go through all the pins with possible direct connections in           *
-     * f_idirect_from_blk_pin. Count the number of heads (which is the same  *
+     * idirect_from_blk_pin_. Count the number of heads (which is the same  *
      * as the number macros) and also the length of each macro               *
      * Head - blocks with to_pin OPEN and from_pin connected                 *
      * Tail - blocks with to_pin connected and from_pin OPEN                 */
-
-    int from_iblk_pin, to_iblk_pin, from_idirect, to_idirect,
-        from_src_or_sink, to_src_or_sink;
-    ClusterNetId to_net_id, from_net_id, next_net_id, curr_net_id;
-    ClusterBlockId next_blk_id;
-    int num_blk_pins, num_macro;
-    int imember;
-    auto& cluster_ctx = g_vpr_ctx.clustering();
+    std::vector<ClusterBlockId> pl_macro_member_blk_num_of_this_blk(clb_nlist.blocks().size());
 
     // Hash table holding the unique cluster ids and the macro id it belongs to
     std::unordered_map<ClusterBlockId, int> clusters_macro;
 
-    num_macro = 0;
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-        auto logical_block = cluster_ctx.clb_nlist.block_type(blk_id);
-        auto physical_tile = pick_best_physical_type(logical_block);
+    // counts the total number of macros
+    int num_macro = 0;
 
-        num_blk_pins = cluster_ctx.clb_nlist.block_type(blk_id)->pb_type->num_pins;
-        for (to_iblk_pin = 0; to_iblk_pin < num_blk_pins; to_iblk_pin++) {
+    for (ClusterBlockId blk_id : clb_nlist.blocks()) {
+        t_logical_block_type_ptr logical_block = clb_nlist.block_type(blk_id);
+        t_physical_tile_type_ptr physical_tile = pick_physical_type(logical_block);
+
+        int num_blk_pins = clb_nlist.block_type(blk_id)->pb_type->num_pins;
+        for (int to_iblk_pin = 0; to_iblk_pin < num_blk_pins; to_iblk_pin++) {
             int to_physical_pin = get_physical_pin(physical_tile, logical_block, to_iblk_pin);
 
-            to_net_id = cluster_ctx.clb_nlist.block_net(blk_id, to_iblk_pin);
-            to_idirect = f_idirect_from_blk_pin[physical_tile->index][to_physical_pin];
-            to_src_or_sink = f_direct_type_from_blk_pin[physical_tile->index][to_physical_pin];
+            ClusterNetId to_net_id = clb_nlist.block_net(blk_id, to_iblk_pin);
+            int to_idirect = idirect_from_blk_pin_[physical_tile->index][to_physical_pin];
+            e_pin_type to_src_or_sink = direct_type_from_blk_pin_[physical_tile->index][to_physical_pin];
 
             // Identify potential macro head blocks (i.e. start of a macro)
             //
@@ -97,22 +253,20 @@ static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& p
             // Note that the restriction that constant nets are not driven from another direct ensures that
             // blocks in the middle of a chain with internal constant signals are not detected as potential
             // head blocks.
-            if (to_src_or_sink == SINK && to_idirect != OPEN
-                && (to_net_id == ClusterNetId::INVALID()
-                    || (is_constant_clb_net(to_net_id)
-                        && !net_is_driven_by_direct(to_net_id)))) {
-                for (from_iblk_pin = 0; from_iblk_pin < num_blk_pins; from_iblk_pin++) {
+            if (to_src_or_sink == e_pin_type::RECEIVER && to_idirect != UNDEFINED
+                && (to_net_id == ClusterNetId::INVALID() || (is_constant_clb_net(to_net_id, atom_lookup, atom_nlist) && !is_net_direct_connection(to_net_id, to_idirect, clb_nlist)))) {
+                for (int from_iblk_pin = 0; from_iblk_pin < num_blk_pins; from_iblk_pin++) {
                     int from_physical_pin = get_physical_pin(physical_tile, logical_block, from_iblk_pin);
 
-                    from_net_id = cluster_ctx.clb_nlist.block_net(blk_id, from_iblk_pin);
-                    from_idirect = f_idirect_from_blk_pin[physical_tile->index][from_physical_pin];
-                    from_src_or_sink = f_direct_type_from_blk_pin[physical_tile->index][from_physical_pin];
+                    ClusterNetId from_net_id = clb_nlist.block_net(blk_id, from_iblk_pin);
+                    int from_idirect = idirect_from_blk_pin_[physical_tile->index][from_physical_pin];
+                    e_pin_type from_src_or_sink = direct_type_from_blk_pin_[physical_tile->index][from_physical_pin];
 
                     // Confirm whether this is a head macro
                     //
                     // The output SOURCE (from_pin) of a true head macro will:
                     //  * drive another block with the same direct connection
-                    if (from_src_or_sink == SOURCE && to_idirect == from_idirect && from_net_id != ClusterNetId::INVALID()) {
+                    if (from_src_or_sink == e_pin_type::DRIVER && to_idirect == from_idirect && from_net_id != ClusterNetId::INVALID() && is_net_direct_connection(from_net_id, to_idirect, clb_nlist)) {
                         // Mark down that this is the first block in the macro
                         pl_macro_member_blk_num_of_this_blk[0] = blk_id;
                         pl_macro_idirect[num_macro] = to_idirect;
@@ -124,24 +278,30 @@ static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& p
                         // there are at least 2 members - 1 head and 1 tail.
 
                         // Initialize the variables
-                        next_net_id = from_net_id;
-                        next_blk_id = blk_id;
+                        ClusterNetId next_net_id = from_net_id;
+                        ClusterBlockId next_blk_id = blk_id;
 
                         // Start finding the other members
                         while (next_net_id != ClusterNetId::INVALID()) {
-                            curr_net_id = next_net_id;
+                            ClusterNetId curr_net_id = next_net_id;
+
+                            // Check that the next net is driven by a direct with the same idirect and also have the same to_pin direct connection
+                            // If not, this is not a valid macro and we stop here.
+                            if (!is_net_direct_connection(curr_net_id, to_idirect, clb_nlist)) {
+                                break;
+                            }
 
                             // Assume that carry chains only has 1 sink - direct connection
-                            VTR_ASSERT(cluster_ctx.clb_nlist.net_sinks(curr_net_id).size() == 1);
-                            next_blk_id = cluster_ctx.clb_nlist.net_pin_block(curr_net_id, 1);
+                            VTR_ASSERT(clb_nlist.net_sinks(curr_net_id).size() == 1);
+                            next_blk_id = clb_nlist.net_pin_block(curr_net_id, 1);
 
                             // Assume that the from_iblk_pin index is the same for the next block
-                            VTR_ASSERT(f_idirect_from_blk_pin[physical_tile->index][from_physical_pin] == from_idirect
-                                       && f_direct_type_from_blk_pin[physical_tile->index][from_physical_pin] == SOURCE);
-                            next_net_id = cluster_ctx.clb_nlist.block_net(next_blk_id, from_iblk_pin);
+                            VTR_ASSERT(idirect_from_blk_pin_[physical_tile->index][from_physical_pin] == from_idirect
+                                       && direct_type_from_blk_pin_[physical_tile->index][from_physical_pin] == e_pin_type::DRIVER);
+                            next_net_id = clb_nlist.block_net(next_blk_id, from_iblk_pin);
 
                             // Mark down this block as a member of the macro
-                            imember = pl_macro_num_members[num_macro];
+                            int imember = pl_macro_num_members[num_macro];
                             pl_macro_member_blk_num_of_this_blk[imember] = next_blk_id;
 
                             // Increment the num_member count.
@@ -153,7 +313,7 @@ static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& p
                         pl_macro_member_blk_num[num_macro].resize(pl_macro_num_members[num_macro]);
                         int matching_macro = -1;
                         // Copy the data from the temporary array to the newly allocated array.
-                        for (imember = 0; imember < pl_macro_num_members[num_macro]; imember++) {
+                        for (int imember = 0; imember < pl_macro_num_members[num_macro]; imember++) {
                             auto cluster_id = pl_macro_member_blk_num_of_this_blk[imember];
                             pl_macro_member_blk_num[num_macro][imember] = cluster_id;
                             // check if this cluster block was in a previous macro
@@ -182,26 +342,18 @@ static void find_all_the_macro(int* num_of_macro, std::vector<ClusterBlockId>& p
                         num_macro++;
 
                     } // Do nothing if the from_pins does not have same possible direct connection.
-                }     // Finish going through all the pins for from_pins.
-            }         // Do nothing if the to_pins does not have same possible direct connection.
-        }             // Finish going through all the pins for to_pins.
-    }                 // Finish going through all blocks.
+                } // Finish going through all the pins for from_pins.
+            } // Do nothing if the to_pins does not have same possible direct connection.
+        } // Finish going through all the pins for to_pins.
+    } // Finish going through all blocks.
 
     // Now, all the data is readily stored in the temporary data structures.
-    *num_of_macro = num_macro;
+    return num_macro;
 }
 
-static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num, int matching_macro, int latest_macro) {
-    /* This function takes two placement macro ids which have a common cluster block
-     * or more in between. The function then tries to find if the two macros could
-     * be combined together to form a larger macro. If it's impossible to combine
-     * the two macros together then this design will never place and route.
-     * Arguments:
-     *  pl_macro_member_blk_num : [0..num_macros-1][0..num_cluster_blocks-1] 2D array
-     *                            of macros created so far.
-     *  matching_macro          : first macro id, which is a previous macro that is found to have the same block
-     *  latest_macro            : second macro id, which is the macro being created at this iteration */
-
+static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macro_member_blk_num,
+                               int matching_macro,
+                               int latest_macro) {
     auto& old_macro_blocks = pl_macro_member_blk_num[matching_macro];
     auto& new_macro_blocks = pl_macro_member_blk_num[latest_macro];
 
@@ -247,10 +399,10 @@ static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macr
 
     // Step 1) find the staring point of the matching
     auto new_macro_it = new_macro_blocks.begin();
-    auto old_macro_it = std::find(old_macro_blocks.begin(), old_macro_blocks.end(), *new_macro_it);
+    auto old_macro_it = std::ranges::find(old_macro_blocks, *new_macro_it);
     if (old_macro_it == old_macro_blocks.end()) {
         old_macro_it = old_macro_blocks.begin();
-        new_macro_it = std::find(new_macro_blocks.begin(), new_macro_blocks.end(), *old_macro_it);
+        new_macro_it = std::ranges::find(new_macro_blocks, *old_macro_it);
         // if matching is from the middle of the two macros, then combining macros is not possible
         if (new_macro_it == new_macro_blocks.end()) {
             return false;
@@ -299,143 +451,195 @@ static bool try_combine_macros(std::vector<std::vector<ClusterBlockId>>& pl_macr
     return true;
 }
 
-std::vector<t_pl_macro> alloc_and_load_placement_macros(t_direct_inf* directs, int num_directs) {
-    /* This function allocates and loads the macros placement macros   *
-     * and returns the total number of macros in 2 steps.              *
-     *   1) Allocate temporary data structure for maximum possible     *
-     *      size and loops through all the blocks storing the data     *
-     *      relevant to the carry chains. At the same time, also count *
-     *      the amount of memory required for the actual variables.    *
-     *   2) Allocate the actual variables with the exact amount of     *
-     *      memory. Then loads the data from the temporary data        *
-     *       structures before freeing them.                           *
-     *                                                                 *
-     * For pl_macro_member_blk_num, allocate for the first dimension   *
-     * only at first. Allocate for the second dimension when I know    *
-     * the size. Otherwise, the array is going to be of size           *
-     * cluster_ctx.clb_nlist.blocks().size()^2 (There are big		   *
-     * benckmarks VPR that have cluster_ctx.clb_nlist.blocks().size()  *
-     * in the 100k's range).										   *
-     *																   *
-     * The placement macro array is freed by the caller(s).            */
-
-    /* Declaration of local variables */
-    int num_macro;
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-
-    /* Allocate maximum memory for temporary variables. */
-    std::vector<int> pl_macro_idirect(cluster_ctx.clb_nlist.blocks().size());
-    std::vector<int> pl_macro_num_members(cluster_ctx.clb_nlist.blocks().size());
-    std::vector<std::vector<ClusterBlockId>> pl_macro_member_blk_num(cluster_ctx.clb_nlist.blocks().size());
-    std::vector<ClusterBlockId> pl_macro_member_blk_num_of_this_blk(cluster_ctx.clb_nlist.blocks().size());
-
-    /* Sets up the required variables. */
-    alloc_and_load_idirect_from_blk_pin(directs, num_directs,
-                                        &f_idirect_from_blk_pin, &f_direct_type_from_blk_pin);
-
-    /* Compute required size:                                                *
-     * Go through all the pins with possible direct connections in           *
-     * f_idirect_from_blk_pin. Count the number of heads (which is the same  *
-     * as the number macros) and also the length of each macro               *
-     * Head - blocks with to_pin OPEN and from_pin connected                 *
-     * Tail - blocks with to_pin connected and from_pin OPEN                 */
-    num_macro = 0;
-    find_all_the_macro(&num_macro, pl_macro_member_blk_num_of_this_blk,
-                       pl_macro_idirect, pl_macro_num_members, pl_macro_member_blk_num);
-
-    /* Allocate the memories for the macro. */
-    std::vector<t_pl_macro> macros(num_macro);
-
-    /* Allocate the memories for the chain members.             *
-     * Load the values from the temporary data structures.      */
-    for (int imacro = 0; imacro < num_macro; imacro++) {
-        macros[imacro].members = std::vector<t_pl_macro_member>(pl_macro_num_members[imacro]);
-
-        /* Load the values for each member of the macro */
-        for (size_t imember = 0; imember < macros[imacro].members.size(); imember++) {
-            macros[imacro].members[imember].offset.x = imember * directs[pl_macro_idirect[imacro]].x_offset;
-            macros[imacro].members[imember].offset.y = imember * directs[pl_macro_idirect[imacro]].y_offset;
-            macros[imacro].members[imember].offset.sub_tile = directs[pl_macro_idirect[imacro]].sub_tile_offset;
-            macros[imacro].members[imember].blk_index = pl_macro_member_blk_num[imacro][imember];
-        }
+int PlaceMacros::get_imacro_from_iblk(ClusterBlockId iblk) const {
+    int imacro;
+    if (iblk != ClusterBlockId::INVALID()) {
+        // Return the imacro for the block.
+        imacro = imacro_from_iblk_[iblk];
+    } else {
+        imacro = UNDEFINED; //No valid block, so no valid macro
     }
 
-    if (isEchoFileEnabled(E_ECHO_PLACE_MACROS)) {
-        write_place_macros(getEchoFileName(E_ECHO_PLACE_MACROS), macros);
-    }
-
-    validate_macros(macros);
-
-    return macros;
+    return imacro;
 }
 
-void get_imacro_from_iblk(int* imacro, ClusterBlockId iblk, const std::vector<t_pl_macro>& macros) {
-    /* This mapping is needed for fast lookup's whether the block with index *
-     * iblk belongs to a placement macro or not.                             *
-     *                                                                       *
-     * The array f_imacro_from_iblk is used for the mapping for speed reason *
-     * [0...cluster_ctx.clb_nlist.blocks().size()-1]                                                    */
+void PlaceMacros::alloc_and_load_idirect_from_blk_pin_(const std::vector<t_direct_inf>& directs,
+                                                       const std::vector<t_physical_tile_type>& physical_tile_types) {
+    // Allocate and initialize the values to UNDEFINED (-1).
+    idirect_from_blk_pin_.resize(physical_tile_types.size());
+    direct_type_from_blk_pin_.resize(physical_tile_types.size());
+    for (const t_physical_tile_type& type : physical_tile_types) {
+        if (is_empty_type(&type)) {
+            continue;
+        }
 
-    /* If the array is not allocated and loaded, allocate it.                */
-    if (f_imacro_from_iblk.size() == 0) {
-        alloc_and_load_imacro_from_iblk(macros);
+        idirect_from_blk_pin_[type.index].resize(type.num_pins, UNDEFINED);
+        direct_type_from_blk_pin_[type.index].resize(type.num_pins, e_pin_type::OPEN);
     }
 
-    if (iblk) {
-        /* Return the imacro for the block. */
-        *imacro = f_imacro_from_iblk[iblk];
-    } else {
-        *imacro = OPEN; //No valid block, so no valid macro
+    const PortPinToBlockPinConverter port_pin_to_block_pin;
+
+    // (type index, block pin index) of pins that are part of more than one direct
+    std::vector<std::pair<int, int>> shared_pins;
+
+    /* Load the values */
+    // Go through directs and find pins with possible direct connections
+    for (size_t idirect = 0; idirect < directs.size(); idirect++) {
+        // Parse out the pb_type and port name, possibly pin_indices from from_pin and to_pin
+        t_direct_pin_spec from_pin = parse_direct_pin_name(directs[idirect].from_pin, directs[idirect].line);
+        t_direct_pin_spec to_pin = parse_direct_pin_name(directs[idirect].to_pin, directs[idirect].line);
+
+        /* Now I have all the data that I need, I could go through all the block pins
+         * in all the blocks to find all the pins that could have possible direct
+         * connections. Mark all down all those pins with the idirect the pins belong
+         * to and whether it is a source or a sink of the direct connection. */
+
+        // Find blocks with the same name as from_pin's pb_type and port
+        mark_direct_of_ports(idirect, e_pin_type::DRIVER, from_pin, directs[idirect].from_pin,
+                             directs[idirect].line,
+                             idirect_from_blk_pin_, direct_type_from_blk_pin_, shared_pins,
+                             physical_tile_types,
+                             port_pin_to_block_pin);
+
+        // Then, find blocks with the same name as to_pin's pb_type and port
+        mark_direct_of_ports(idirect, e_pin_type::RECEIVER, to_pin, directs[idirect].to_pin,
+                             directs[idirect].line,
+                             idirect_from_blk_pin_, direct_type_from_blk_pin_, shared_pins,
+                             physical_tile_types,
+                             port_pin_to_block_pin);
+
+    } // Finish going through all the directs
+
+    // A placement macro needs a single direct per pin, so pins that are part of more
+    // than one direct are not used for macros. They were left marked above so that
+    // every direct naming them was detected; drop them now.
+    for (auto [itype, iblk_pin] : shared_pins) {
+        idirect_from_blk_pin_[itype][iblk_pin] = UNDEFINED;
+        direct_type_from_blk_pin_[itype][iblk_pin] = e_pin_type::OPEN;
     }
+}
+
+static void mark_direct_of_ports(int idirect,
+                                 e_pin_type direct_type,
+                                 const t_direct_pin_spec& pin_spec,
+                                 std::string_view src_string,
+                                 int line,
+                                 std::vector<std::vector<int>>& idirect_from_blk_pin,
+                                 std::vector<std::vector<e_pin_type>>& direct_type_from_blk_pin,
+                                 std::vector<std::pair<int, int>>& shared_pins,
+                                 const std::vector<t_physical_tile_type>& physical_tile_types,
+                                 const PortPinToBlockPinConverter& port_pin_to_block_pin) {
+    // Go through all the block types
+    for (int itype = 1; itype < (int)physical_tile_types.size(); itype++) {
+        auto& physical_tile = physical_tile_types[itype];
+        // Find blocks with the same pb_type_name
+        if (pin_spec.pb_type_name == physical_tile.name) {
+            int num_sub_tiles = physical_tile.sub_tiles.size();
+            for (int isub_tile = 0; isub_tile < num_sub_tiles; isub_tile++) {
+                auto& ports = physical_tile.sub_tiles[isub_tile].ports;
+                int num_ports = ports.size();
+                for (int iport = 0; iport < num_ports; iport++) {
+                    // Find ports with the same port_name
+                    if (pin_spec.port_name == ports[iport].name) {
+                        int num_port_pins = ports[iport].num_pins;
+
+                        // Check whether the pin range lies within the port
+                        if (!pin_spec.fits_in_port(num_port_pins)) {
+                            vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), line,
+                                      "Invalid pin - %.*s, the pin range [end_pin_index:start_pin_index] "
+                                      "must lie within the %d pins of the port.\n",
+                                      static_cast<int>(src_string.length()), src_string.data(), num_port_pins);
+                        }
+
+                        int num_shared_pins = mark_direct_of_pins(pin_spec, itype,
+                                                                  isub_tile, iport, idirect_from_blk_pin, idirect,
+                                                                  direct_type_from_blk_pin, direct_type, shared_pins,
+                                                                  physical_tile_types,
+                                                                  port_pin_to_block_pin);
+                        if (num_shared_pins > 0) {
+                            VTR_LOG_WARN("[LINE %d] %d pin(s) of %.*s are part of more than one direct connection; "
+                                         "placement macros will not be formed through them.\n",
+                                         line, num_shared_pins, static_cast<int>(src_string.length()), src_string.data());
+                        }
+                    } // Do nothing if port_name does not match
+                } // Finish going through all the ports
+            } // Finish going through all the subtiles
+        } // Do nothing if pb_type_name does not match
+    } // Finish going through all the blocks
+}
+
+static int mark_direct_of_pins(const t_direct_pin_spec& pin_spec,
+                               int itype,
+                               int isub_tile,
+                               int iport,
+                               std::vector<std::vector<int>>& idirect_from_blk_pin,
+                               int idirect,
+                               std::vector<std::vector<e_pin_type>>& direct_type_from_blk_pin,
+                               e_pin_type direct_type,
+                               std::vector<std::pair<int, int>>& shared_pins,
+                               const std::vector<t_physical_tile_type>& physical_tile_types,
+                               const PortPinToBlockPinConverter& port_pin_to_block_pin) {
+    int num_shared_pins = 0;
+
+    // Mark the specified pin range (inclusive), or the whole port if no range is given
+    int num_port_pins = physical_tile_types[itype].sub_tiles[isub_tile].ports[iport].num_pins;
+    int start_pin_index = pin_spec.has_pin_range() ? pin_spec.start_pin_index : 0;
+    int end_pin_index = pin_spec.has_pin_range() ? pin_spec.end_pin_index : num_port_pins - 1;
+    for (int iport_pin = start_pin_index; iport_pin <= end_pin_index; iport_pin++) {
+        int iblk_pin = port_pin_to_block_pin.get_blk_pin_from_port_pin(itype, isub_tile, iport, iport_pin);
+
+        // iterate through all segment connections and check if all Fc's are 0
+        bool all_fcs_0 = true;
+        for (const auto& fc_spec : physical_tile_types[itype].fc_specs) {
+            for (int ipin : fc_spec.pins) {
+                if (iblk_pin == ipin && fc_spec.fc_value > 0) {
+                    all_fcs_0 = false;
+                    break;
+                }
+            }
+            if (!all_fcs_0) break;
+        }
+
+        // Check the fc for the pin, direct chain link only if fc == 0
+        if (all_fcs_0) {
+            if (direct_type_from_blk_pin[itype][iblk_pin] != e_pin_type::OPEN) {
+                // Already part of another direct; the caller drops it once all directs are loaded
+                shared_pins.emplace_back(itype, iblk_pin);
+                num_shared_pins++;
+            } else {
+                idirect_from_blk_pin[itype][iblk_pin] = idirect;
+                direct_type_from_blk_pin[itype][iblk_pin] = direct_type;
+            }
+        }
+    } // Finish marking all the pins
+
+    return num_shared_pins;
 }
 
 /* Allocates and loads imacro_from_iblk array. */
-static void alloc_and_load_imacro_from_iblk(const std::vector<t_pl_macro>& macros) {
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-
-    f_imacro_from_iblk.resize(cluster_ctx.clb_nlist.blocks().size());
+void PlaceMacros::alloc_and_load_imacro_from_iblk_(const std::vector<t_pl_macro>& macros,
+                                                   const ClusteredNetlist& clb_nlist) {
+    imacro_from_iblk_.resize(clb_nlist.blocks().size());
 
     /* Allocate and initialize the values to OPEN (-1). */
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-        f_imacro_from_iblk.insert(blk_id, OPEN);
+    for (auto blk_id : clb_nlist.blocks()) {
+        imacro_from_iblk_.insert(blk_id, UNDEFINED);
     }
 
     /* Load the values */
     for (size_t imacro = 0; imacro < macros.size(); imacro++) {
         for (size_t imember = 0; imember < macros[imacro].members.size(); imember++) {
             ClusterBlockId blk_id = macros[imacro].members[imember].blk_index;
-            f_imacro_from_iblk.insert(blk_id, imacro);
+            imacro_from_iblk_.insert(blk_id, imacro);
         }
     }
 }
 
-void free_placement_macros_structs() {
-    /* This function frees up all the static data structures used. */
-
-    // This frees up the two arrays and set the pointers to NULL
-    auto& device_ctx = g_vpr_ctx.device();
-    unsigned int itype;
-    if (f_idirect_from_blk_pin != nullptr) {
-        for (itype = 1; itype < device_ctx.physical_tile_types.size(); itype++) {
-            free(f_idirect_from_blk_pin[itype]);
-        }
-        free(f_idirect_from_blk_pin);
-        f_idirect_from_blk_pin = nullptr;
-    }
-
-    if (f_direct_type_from_blk_pin != nullptr) {
-        for (itype = 1; itype < device_ctx.physical_tile_types.size(); itype++) {
-            free(f_direct_type_from_blk_pin[itype]);
-        }
-        free(f_direct_type_from_blk_pin);
-        f_direct_type_from_blk_pin = nullptr;
-    }
-}
-
-static void write_place_macros(std::string filename, const std::vector<t_pl_macro>& macros) {
+void PlaceMacros::write_place_macros_(std::string filename,
+                                      const std::vector<t_pl_macro>& macros,
+                                      const std::vector<t_physical_tile_type>& physical_tile_types,
+                                      const ClusteredNetlist& clb_nlist) const {
     FILE* f = vtr::fopen(filename.c_str(), "w");
-
-    auto& cluster_ctx = g_vpr_ctx.clustering();
 
     fprintf(f, "#Identified Placement macros\n");
     fprintf(f, "Num_Macros: %zu\n", macros.size());
@@ -447,7 +651,7 @@ static void write_place_macros(std::string filename, const std::vector<t_pl_macr
             const t_pl_macro_member* macro_memb = &macro->members[imember];
             fprintf(f, "Block_Id: %zu (%s), x_offset: %d, y_offset: %d, z_offset: %d\n",
                     size_t(macro_memb->blk_index),
-                    cluster_ctx.clb_nlist.block_name(macro_memb->blk_index).c_str(),
+                    clb_nlist.block_name(macro_memb->blk_index).c_str(),
                     macro_memb->offset.x,
                     macro_memb->offset.y,
                     macro_memb->offset.sub_tile);
@@ -460,23 +664,22 @@ static void write_place_macros(std::string filename, const std::vector<t_pl_macr
     fprintf(f, "#Macro-related direct connections\n");
     fprintf(f, "type      type_pin  is_direct direct_type\n");
     fprintf(f, "------------------------------------------\n");
-    auto& device_ctx = g_vpr_ctx.device();
-    for (const auto& type : device_ctx.physical_tile_types) {
+    for (const auto& type : physical_tile_types) {
         if (is_empty_type(&type)) {
             continue;
         }
 
         int itype = type.index;
         for (int ipin = 0; ipin < type.num_pins; ++ipin) {
-            if (f_idirect_from_blk_pin[itype][ipin] != OPEN) {
-                if (f_direct_type_from_blk_pin[itype][ipin] == SOURCE) {
-                    fprintf(f, "%-9s %-9d true      SOURCE    \n", type.name, ipin);
+            if (idirect_from_blk_pin_[itype][ipin] != UNDEFINED) {
+                if (direct_type_from_blk_pin_[itype][ipin] == e_pin_type::DRIVER) {
+                    fprintf(f, "%-9s %-9d true      SOURCE    \n", type.name.c_str(), ipin);
                 } else {
-                    VTR_ASSERT(f_direct_type_from_blk_pin[itype][ipin] == SINK);
-                    fprintf(f, "%-9s %-9d true      SINK      \n", type.name, ipin);
+                    VTR_ASSERT(direct_type_from_blk_pin_[itype][ipin] == e_pin_type::RECEIVER);
+                    fprintf(f, "%-9s %-9d true      SINK      \n", type.name.c_str(), ipin);
                 }
             } else {
-                VTR_ASSERT(f_direct_type_from_blk_pin[itype][ipin] == OPEN);
+                VTR_ASSERT(direct_type_from_blk_pin_[itype][ipin] == e_pin_type::OPEN);
             }
         }
     }
@@ -484,31 +687,64 @@ static void write_place_macros(std::string filename, const std::vector<t_pl_macr
     fclose(f);
 }
 
-static bool is_constant_clb_net(ClusterNetId clb_net) {
-    auto& atom_ctx = g_vpr_ctx.atom();
-    AtomNetId atom_net = atom_ctx.lookup.atom_net(clb_net);
+static bool is_constant_clb_net(ClusterNetId clb_net,
+                                const AtomLookup& atom_lookup,
+                                const AtomNetlist& atom_nlist) {
+    AtomNetId atom_net = atom_lookup.atom_net(clb_net);
 
-    return atom_ctx.nlist.net_is_constant(atom_net);
+    return is_constant_generator_net(atom_nlist, atom_net);
 }
 
-static bool net_is_driven_by_direct(ClusterNetId clb_net) {
-    auto& cluster_ctx = g_vpr_ctx.clustering();
+bool PlaceMacros::is_net_direct_connection(ClusterNetId clb_net, int idirect, const ClusteredNetlist& clb_nlist) {
+    ClusterBlockId block_id = clb_nlist.net_driver_block(clb_net);
+    int pin_index = clb_nlist.net_pin_logical_index(clb_net, 0);
 
-    ClusterBlockId block_id = cluster_ctx.clb_nlist.net_driver_block(clb_net);
-    int pin_index = cluster_ctx.clb_nlist.net_pin_logical_index(clb_net, 0);
-
-    auto logical_block = cluster_ctx.clb_nlist.block_type(block_id);
-    auto physical_tile = pick_best_physical_type(logical_block);
+    auto logical_block = clb_nlist.block_type(block_id);
+    auto physical_tile = pick_physical_type(logical_block);
     auto physical_pin = get_physical_pin(physical_tile, logical_block, pin_index);
 
-    auto direct = f_idirect_from_blk_pin[physical_tile->index][physical_pin];
+    auto driver_direct = idirect_from_blk_pin_[physical_tile->index][physical_pin];
 
-    return direct != OPEN;
+    int receiver_direct = UNDEFINED;
+
+    //if there is more than one sink, it should not be counted as a direct connection
+    if (clb_nlist.net_sinks(clb_net).size() > 1) {
+        return false;
+    }
+
+    ClusterPinId net_sink = clb_nlist.net_pin(clb_net, 1);
+    ClusterBlockId sink_block_id = clb_nlist.pin_block(net_sink);
+
+    if (sink_block_id == block_id) {
+        //net is connected back to the same block, should not be counted as a direct connection
+        VTR_LOG_WARN(
+            "Block '%s'have a direct connection to itself, this connection will not be counted as a direct connection to form a macro.\n",
+            clb_nlist.block_name(block_id).c_str());
+        return false;
+    }
+
+    int sink_pin_index = clb_nlist.net_pin_logical_index(clb_net, 1);
+
+    auto sink_logical_block = clb_nlist.block_type(sink_block_id);
+    auto sink_physical_tile = pick_physical_type(sink_logical_block);
+    auto sink_physical_pin = get_physical_pin(sink_physical_tile, sink_logical_block, sink_pin_index);
+
+    receiver_direct = idirect_from_blk_pin_[sink_physical_tile->index][sink_physical_pin];
+
+    if (driver_direct == UNDEFINED || receiver_direct == UNDEFINED) {
+        return false;
+    }
+
+    return driver_direct == idirect && receiver_direct == idirect;
 }
 
-static void validate_macros(const std::vector<t_pl_macro>& macros) {
+const t_pl_macro& PlaceMacros::operator[](int idx) const {
+    return pl_macros_[idx];
+}
+
+static void validate_macros(const std::vector<t_pl_macro>& macros,
+                            const ClusteredNetlist& clb_nlist) {
     //Perform sanity checks on macros
-    auto& cluster_ctx = g_vpr_ctx.clustering();
 
     //Verify that blocks only appear in a single macro
     std::multimap<ClusterBlockId, int> block_to_macro;
@@ -520,13 +756,13 @@ static void validate_macros(const std::vector<t_pl_macro>& macros) {
         }
     }
 
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
+    for (ClusterBlockId blk_id : clb_nlist.blocks()) {
         auto range = block_to_macro.equal_range(blk_id);
 
         int blk_macro_cnt = std::distance(range.first, range.second);
         if (blk_macro_cnt > 1) {
             std::stringstream msg;
-            msg << "Block #" << size_t(blk_id) << " '" << cluster_ctx.clb_nlist.block_name(blk_id) << "'"
+            msg << "Block #" << size_t(blk_id) << " '" << clb_nlist.block_name(blk_id) << "'"
                 << " appears in " << blk_macro_cnt << " placement macros (should appear in at most one). Related Macros:\n";
 
             for (auto iter = range.first; iter != range.second; ++iter) {

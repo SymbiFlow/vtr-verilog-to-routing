@@ -112,6 +112,14 @@ TEST(SchemaParser, Basic) {
   EXPECT_EQ("garply", barFields[3].getProto().getName());
   EXPECT_EQ(0x856789abcdef1234ull, getFieldTypeFileId(barFields[3]));
 
+  auto barStructs = barSchema.getAllNested();
+  ASSERT_EQ(1, barStructs.size());
+  EXPECT_EQ("Bar", barStructs[0].getUnqualifiedName());
+  barFields = barStructs[0].asStruct().getFields();
+  ASSERT_EQ(4u, barFields.size());
+  EXPECT_EQ("baz", barFields[0].getProto().getName());
+  EXPECT_EQ(0x823456789abcdef1ull, getFieldTypeFileId(barFields[0]));
+
   auto bazSchema = parser.parseDiskFile(
       "not/used/because/already/loaded",
       "src/foo/baz.capnp", importPath);
@@ -262,6 +270,28 @@ TEST(SchemaParser, SourceInfo) {
 
   ParsedSchema thud = file.getNested("Thud");
   expectSourceInfo(thud.getSourceInfo(), 0xcca9972702b730b4, "post-comment\n", {});
+}
+
+TEST(SchemaParser, SetFileIdsRequired) {
+  FakeFileReader reader;
+  reader.add("no-file-id.capnp",
+      "const foo :Int32 = 123;\n");
+
+  {
+    SchemaParser parser;
+    parser.setDiskFilesystem(reader);
+
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("File does not declare an ID.",
+        parser.parseDiskFile("no-file-id.capnp", "no-file-id.capnp", nullptr));
+  }
+  {
+    SchemaParser parser;
+    parser.setDiskFilesystem(reader);
+    parser.setFileIdsRequired(false);
+
+    auto fileSchema = parser.parseDiskFile("no-file-id.capnp", "no-file-id.capnp", nullptr);
+    KJ_EXPECT(fileSchema.getNested("foo").asConst().as<int32_t>() == 123);
+  }
 }
 
 }  // namespace

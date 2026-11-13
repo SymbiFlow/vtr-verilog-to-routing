@@ -1,0 +1,560 @@
+
+#include "placement_log_printer.h"
+
+#include "echo_files.h"
+#include "globals.h"
+#include "place_macro.h"
+#include "timing_util.h"
+#include "vtr_log.h"
+#include "annealer.h"
+#include "place_util.h"
+#include "PostClusterDelayCalculator.h"
+#include "tatum/TimingReporter.hpp"
+#include "VprTimingGraphResolver.h"
+#include "timing_info.h"
+#include "placer.h"
+#include "draw.h"
+#include "read_place.h"
+#include "tatum/echo_writer.hpp"
+#include "vpr_context.h"
+#include "vtr_util.h"
+#include "atom_netlist.h"
+#include "logic_types.h"
+#include "vtr_vector.h"
+
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <string>
+#include <vector>
+
+std::vector<PlaceStatusColumn> PlacementLogPrinter::get_place_status_columns() const {
+    const bool noc_enabled = placer_.noc_opts_.noc;
+    const bool has_interposer = g_vpr_ctx.device().grid.has_interposer_cuts();
+
+    std::vector<PlaceStatusColumn> cols;
+    auto add = [&](bool show, const char* d, const char* h1, const char* h2,
+                   std::function<std::string(float)> fn) {
+        if (!show) return;
+        cols.push_back(PlaceStatusColumn{d, h1, h2, std::move(fn)});
+    };
+
+    add(true, "----", "Tnum", "    ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const t_annealing_state& st = annealer.get_annealing_state();
+            return vtr::string_fmt("%4zu", st.num_temps);
+        });
+    // width 6
+    add(true, "------", " Time ", "(sec) ",
+        [](float elapsed_sec) { return vtr::string_fmt("%6.1f", elapsed_sec); });
+    add(true, "-------", "   T   ", "       ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const t_annealing_state& st = annealer.get_annealing_state();
+            return vtr::string_fmt("%7.1e", st.t);
+        });
+    add(true, "-------", "AvCost ", "       ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%7.3f", stats.av_cost);
+        });
+    // width 10
+    add(true, "----------", "Av BB Cost", "          ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%10.2f", stats.av_bb_cost);
+        });
+    add(true, "----------", "Av TD Cost", "          ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%-10.5g", stats.av_timing_cost);
+        });
+    // width 7
+    add(true, "-------", "  CPD  ", "  (ns) ",
+        [this](float) {
+            const bool is_td = placer_.placer_opts_.place_algorithm.is_timing_driven();
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            float cpd_ns = 1e9f * (is_td ? placer_.critical_path_.delay() : nan);
+            return vtr::string_fmt("%7.3f", cpd_ns);
+        });
+    // width 10
+    add(true, "----------", "   sTNS   ", "   (ns)   ",
+        [this](float) {
+            const bool is_td = placer_.placer_opts_.place_algorithm.is_timing_driven();
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            float sTNS_ns = 1e9f * (is_td ? placer_.timing_info_->setup_total_negative_slack() : nan);
+            return vtr::string_fmt("% 10.3g", sTNS_ns);
+        });
+    // width 8
+    add(true, "--------", "  sWNS  ", "  (ns)  ",
+        [this](float) {
+            const bool is_td = placer_.placer_opts_.place_algorithm.is_timing_driven();
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            float sWNS_ns = 1e9f * (is_td ? placer_.timing_info_->setup_worst_negative_slack() : nan);
+            return vtr::string_fmt("% 8.3f", sWNS_ns);
+        });
+    // width 7
+    add(true, "-------", "AcRate ", "       ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%7.3f", stats.success_rate);
+        });
+    add(true, "-------", "StdDev ", "       ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%7.4f", stats.std_dev);
+        });
+    // width 6
+    add(true, "------", "R lim ", "      ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const t_annealing_state& st = annealer.get_annealing_state();
+            return vtr::string_fmt("%6.1f", st.rlim);
+        });
+    // width 8
+    add(true, "--------", "CritExp ", "        ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const t_annealing_state& st = annealer.get_annealing_state();
+            return vtr::string_fmt("%8.2f", st.crit_exponent);
+        });
+    // width 9
+    add(true, "---------", "TotMoves ", "         ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            size_t v = static_cast<size_t>(annealer.get_total_iteration());
+            return (v <= static_cast<size_t>(std::pow(10, 9) - 1))
+                       ? vtr::string_fmt(" %9zu", v)
+                       : vtr::string_fmt(" %#9.3g", static_cast<double>(v));
+        });
+    // width 6
+    add(true, "------", "Alpha ", "      ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const t_annealing_state& st = annealer.get_annealing_state();
+            return vtr::string_fmt("%6.3f", st.alpha);
+        });
+    // width 8
+    add(noc_enabled, "--------", "Agg. BW ", " (bps)  ",
+        [this](float) {
+            const NocCostTerms& noc = placer_.costs_.noc_cost_terms;
+            return vtr::string_fmt("%7.2e", noc.aggregate_bandwidth);
+        });
+    add(noc_enabled, "--------", "Agg.Lat ", " (ns)   ",
+        [this](float) {
+            const NocCostTerms& noc = placer_.costs_.noc_cost_terms;
+            return vtr::string_fmt("%7.2e", noc.latency);
+        });
+    add(noc_enabled, "---------", "Lat Over.", " (ns)",
+        [this](float) {
+            const NocCostTerms& noc = placer_.costs_.noc_cost_terms;
+            return vtr::string_fmt("%8.2e", noc.latency_overrun);
+        });
+    add(noc_enabled, "---------", "NoC Cong.", "     ",
+        [this](float) {
+            const NocCostTerms& noc = placer_.costs_.noc_cost_terms;
+            return vtr::string_fmt("%8.2f", noc.congestion);
+        });
+    add(has_interposer, "---------", "Av Int.Cost", "     ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%9.3f", stats.av_interposer_cost);
+        });
+    add(has_interposer, "----------", "Int. Cong.", "          ",
+        [this](float) {
+            const PlacementAnnealer& annealer = *placer_.annealer_;
+            const auto& [swap_stats, move_type_stats, stats] = annealer.get_stats();
+            return vtr::string_fmt("%9.3f", stats.av_interposer_cong_cost);
+        });
+
+    return cols;
+}
+
+PlacementLogPrinter::PlacementLogPrinter(const Placer& placer, bool quiet)
+    : placer_(placer)
+    , quiet_(quiet)
+    , msg_(quiet ? 0 : vtr::bufsize) {
+    place_status_columns_ = get_place_status_columns();
+}
+
+void PlacementLogPrinter::print_place_status_header() const {
+    if (quiet_) return;
+    const auto& cols = place_status_columns_;
+    VTR_LOG("\n");
+    for (int line = 0; line < 4; ++line) {
+        for (size_t i = 0; i < cols.size(); ++i) {
+            if (i) VTR_LOG(" ");
+            const auto& col = cols[i];
+            if (line == 0 || line == 3)
+                VTR_LOG("%s", col.dash.c_str());
+            else if (line == 1)
+                VTR_LOG("%s", col.header1.c_str());
+            else
+                VTR_LOG("%s", col.header2.c_str());
+        }
+        VTR_LOG("\n");
+    }
+}
+
+void PlacementLogPrinter::print_place_status(float elapsed_sec) const {
+    if (quiet_) return;
+
+    const t_annealing_state& annealing_state = placer_.annealer_->get_annealing_state();
+
+    const auto& cols = place_status_columns_;
+    for (size_t i = 0; i < cols.size(); ++i) {
+        if (i) VTR_LOG(" ");
+        VTR_LOG("%s", cols[i].format_value(elapsed_sec).c_str());
+    }
+    VTR_LOG("\n");
+    fflush(stdout);
+
+    const t_placer_costs& costs = placer_.costs_;
+    sprintf(msg_.data(), "Cost: %g  BB Cost %g  TD Cost %g  Temperature: %g",
+            costs.cost, costs.bb_cost, costs.timing_cost, annealing_state.t);
+    update_screen(ScreenUpdatePriority::MINOR, msg_.data(), e_pic_type::PLACEMENT, placer_.timing_info_);
+}
+
+void PlacementLogPrinter::print_resources_utilization() const {
+    if (quiet_) {
+        return;
+    }
+
+    const auto& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& device_ctx = g_vpr_ctx.device();
+    const auto& block_locs = placer_.placer_state_.block_locs();
+
+    size_t max_block_name = 0;
+    size_t max_tile_name = 0;
+
+    //Record the resource requirement
+    std::map<t_logical_block_type_ptr, size_t> num_type_instances;
+    std::map<t_logical_block_type_ptr, std::map<t_physical_tile_type_ptr, size_t>> num_placed_instances;
+
+    for (ClusterBlockId blk_id : cluster_ctx.clb_nlist.blocks()) {
+        const t_pl_loc& loc = block_locs[blk_id].loc;
+
+        t_physical_tile_type_ptr physical_tile = device_ctx.grid.get_physical_type({loc.x, loc.y, loc.layer});
+        t_logical_block_type_ptr logical_block = cluster_ctx.clb_nlist.block_type(blk_id);
+
+        num_type_instances[logical_block]++;
+        num_placed_instances[logical_block][physical_tile]++;
+
+        max_block_name = std::max(max_block_name, logical_block->name.length());
+        max_tile_name = std::max(max_tile_name, physical_tile->name.length());
+    }
+
+    VTR_LOG("\n");
+    VTR_LOG("Placement resource usage:\n");
+    for (const auto [logical_block_type_ptr, _] : num_type_instances) {
+        for (const auto [physical_tile_type_ptr, num_instances] : num_placed_instances[logical_block_type_ptr]) {
+            VTR_LOG("  %-*s implemented as %-*s: %d\n", max_block_name,
+                    logical_block_type_ptr->name.c_str(), max_tile_name,
+                    physical_tile_type_ptr->name.c_str(), num_instances);
+        }
+    }
+    VTR_LOG("\n");
+}
+
+void PlacementLogPrinter::print_resources_utilization_per_die() const {
+    if (quiet_) {
+        return;
+    }
+
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const DeviceGrid& grid = device_ctx.grid;
+
+    // The per-die breakdown is only meaningful on multi-die (2.5D/3D) devices.
+    if (grid.get_die_count() <= 1) {
+        return;
+    }
+
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
+    const LogicalModels& models = device_ctx.arch->models;
+    const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs = placer_.placer_state_.block_locs();
+
+    // DeviceDieId, t_logical_block_type::index, and LogicalModelId are all contiguous
+    // ranges starting at 0, so the counts are stored in vectors indexed by these ids
+    // instead of maps. They are zero-initialized; only non-zero entries are printed below.
+    const size_t num_dice = grid.get_die_count();
+    const size_t num_logical_block_types = device_ctx.logical_block_types.size();
+    const size_t num_models = models.all_models().size();
+
+    // Number of placed clustered blocks of each type on each die, indexed by [die][logical block type index].
+    vtr::vector<DeviceDieId, std::vector<size_t>> clb_per_die(num_dice, std::vector<size_t>(num_logical_block_types, 0));
+    // Number of placed atom (primitive) blocks of each model type on each die, indexed by [die][model id].
+    vtr::vector<DeviceDieId, vtr::vector<LogicalModelId, size_t>> atom_per_die(num_dice, vtr::vector<LogicalModelId, size_t>(num_models, 0));
+
+    for (ClusterBlockId blk_id : cluster_ctx.clb_nlist.blocks()) {
+        const t_pl_loc& loc = block_locs[blk_id].loc;
+        DeviceDieId die_id = grid.get_loc_die_id({loc.x, loc.y, loc.layer});
+
+        t_logical_block_type_ptr logical_block = cluster_ctx.clb_nlist.block_type(blk_id);
+        clb_per_die[die_id][logical_block->index]++;
+
+        // Every atom contained in this cluster is placed on the same die as the cluster.
+        for (AtomBlockId atom_blk : cluster_ctx.atoms_lookup[blk_id]) {
+            LogicalModelId model = atom_ctx.netlist().block_model(atom_blk);
+            atom_per_die[die_id][model]++;
+        }
+    }
+
+    VTR_LOG("\n");
+    VTR_LOG("Placement resource usage per die:\n");
+
+    // Iterate the dies in die-region order
+    for (const t_die_region& die_region : grid.all_die_regions()) {
+        DeviceDieId die_id = grid.get_die_region_id(die_region);
+
+        // x_die/y_die identify the die's position within the grid of dies on this layer;
+        // they are not tile grid (x, y) coordinates.
+        VTR_LOG("  Die (x_die=%d, y_die=%d, layer=%d):\n",
+                die_region.x_die, die_region.y_die, die_region.layer);
+
+        // Clustered blocks placed on this die.
+        size_t total_clbs = 0;
+        VTR_LOG("    Clustered blocks:\n");
+        for (const t_logical_block_type& block_type : device_ctx.logical_block_types) {
+            if (block_type.is_empty()) {
+                continue;
+            }
+            size_t num_placed = clb_per_die[die_id][block_type.index];
+            VTR_LOG("      %s: %zu\n", block_type.name.c_str(), num_placed);
+            total_clbs += num_placed;
+        }
+        VTR_LOG("      Total: %zu\n", total_clbs);
+
+        // Atom blocks placed on this die.
+        size_t total_atoms = 0;
+        VTR_LOG("    Atom blocks:\n");
+        for (LogicalModelId model_id : models.all_models()) {
+            size_t num_placed = atom_per_die[die_id][model_id];
+            VTR_LOG("      %s -> %zu\n", models.model_name(model_id).c_str(), num_placed);
+            total_atoms += num_placed;
+        }
+        VTR_LOG("      Total: %zu\n", total_atoms);
+    }
+    VTR_LOG("\n");
+}
+
+void PlacementLogPrinter::print_placement_swaps_stats() const {
+    if (quiet_) {
+        return;
+    }
+
+    const PlacementAnnealer& annealer = *placer_.annealer_;
+    const auto& [swap_stats, move_type_stats, placer_stats] = annealer.get_stats();
+    const t_annealing_state& annealing_state = annealer.get_annealing_state();
+
+    size_t total_swap_attempts = swap_stats.num_swap_rejected + swap_stats.num_swap_accepted + swap_stats.num_swap_aborted;
+    VTR_ASSERT(total_swap_attempts > 0);
+
+    size_t num_swap_print_digits = ceil(log10(total_swap_attempts));
+    float reject_rate = (float)swap_stats.num_swap_rejected / total_swap_attempts;
+    float accept_rate = (float)swap_stats.num_swap_accepted / total_swap_attempts;
+    float abort_rate = (float)swap_stats.num_swap_aborted / total_swap_attempts;
+    VTR_LOG("Placement number of temperatures: %d\n", annealing_state.num_temps);
+    VTR_LOG("Placement total # of swap attempts: %*d\n", num_swap_print_digits,
+            total_swap_attempts);
+    VTR_LOG("\tSwaps accepted: %*d (%4.1f %%)\n", num_swap_print_digits,
+            swap_stats.num_swap_accepted, 100 * accept_rate);
+    VTR_LOG("\tSwaps rejected: %*d (%4.1f %%)\n", num_swap_print_digits,
+            swap_stats.num_swap_rejected, 100 * reject_rate);
+    VTR_LOG("\tSwaps aborted: %*d (%4.1f %%)\n", num_swap_print_digits,
+            swap_stats.num_swap_aborted, 100 * abort_rate);
+}
+
+void PlacementLogPrinter::print_initial_placement_stats() const {
+    if (quiet_) {
+        return;
+    }
+
+    const t_placer_costs& costs = placer_.costs_;
+    const t_placer_opts& placer_opts = placer_.placer_opts_;
+    std::shared_ptr<const SetupTimingInfo> timing_info = placer_.timing_info_;
+
+    VTR_LOG("Initial placement cost: %g bb_cost: %g td_cost: %g\n",
+            costs.cost, costs.bb_cost, costs.timing_cost);
+
+    double wirelength = placer_.net_cost_handler_.get_total_wirelength_estimate();
+    VTR_LOG("Initial placement BB estimate of wirelength: %g\n", wirelength);
+
+    if (placer_.noc_opts_.noc) {
+        VTR_ASSERT(placer_.noc_cost_handler_.has_value());
+        placer_.noc_cost_handler_->print_noc_costs("Initial NoC Placement Costs", costs, placer_.noc_opts_);
+    }
+
+    if (g_vpr_ctx.device().grid.has_interposer_cuts()) {
+        VTR_ASSERT(placer_.interposer_cost_handler_.has_value());
+        VTR_LOG("Initial placement estimated interposer cost: %g\n", costs.interposer_cost);
+        VTR_LOG("Initial number of nets crossing interposer cuts: %d\n", placer_.interposer_cost_handler_->get_num_nets_crossing_interposer_cuts());
+    }
+
+    if (g_vpr_ctx.device().grid.get_num_layers() > 1) {
+        VTR_LOG("Initial number of nets spanning multiple layers: %d\n",
+                placer_.net_cost_handler_.get_num_nets_spanning_multiple_layers());
+    }
+
+    if (placer_opts.place_algorithm.is_timing_driven()) {
+        VTR_LOG("Initial placement estimated Critical Path Delay (CPD): %g ns\n",
+                1e9 * placer_.critical_path_.delay());
+        VTR_LOG("Initial placement estimated setup Total Negative Slack (sTNS): %g ns\n",
+                1e9 * timing_info->setup_total_negative_slack());
+        VTR_LOG("Initial placement estimated setup Worst Negative Slack (sWNS): %g ns\n",
+                1e9 * timing_info->setup_worst_negative_slack());
+        VTR_LOG("\n");
+        VTR_LOG("Initial placement estimated setup slack histogram:\n");
+        print_histogram(create_setup_slack_histogram(*timing_info->setup_analyzer()));
+    }
+
+    const BlkLocRegistry& blk_loc_registry = placer_.placer_state_.blk_loc_registry();
+    const PlaceMacros& place_macros = *g_vpr_ctx.placement().place_macros;
+    size_t num_macro_members = 0;
+    for (const t_pl_macro& macro : place_macros.macros()) {
+        num_macro_members += macro.members.size();
+    }
+    VTR_LOG("Placement contains %zu placement macros involving %zu blocks (average macro size %f)\n",
+            place_macros.macros().size(), num_macro_members,
+            float(num_macro_members) / place_macros.macros().size());
+    VTR_LOG("\n");
+
+    sprintf(msg_.data(),
+            "Initial Placement:  Cost=%g,  BB Cost=%g,  TD Cost=%g, Channel Factor=%d",
+            costs.cost, costs.bb_cost, costs.timing_cost, placer_opts.place_chan_width);
+
+    // Draw the initial placement
+    update_screen(ScreenUpdatePriority::MAJOR, msg_.data(), e_pic_type::PLACEMENT, timing_info);
+
+    if (placer_opts.placement_saves_per_temperature >= 1) {
+        std::string filename = vtr::string_fmt("placement_%03d_%03d.place", 0, 0);
+        VTR_LOG("Saving initial placement to file: %s\n", filename.c_str());
+        print_place(nullptr, nullptr, filename.c_str(), blk_loc_registry.block_locs());
+    }
+}
+
+void PlacementLogPrinter::print_post_placement_stats() const {
+    if (quiet_) {
+        return;
+    }
+
+    const auto& timing_ctx = g_vpr_ctx.timing();
+    const auto& [swap_stats, move_type_stats, placer_stats] = placer_.annealer_->get_stats();
+
+    VTR_LOG("\n");
+    VTR_LOG("Swaps called: %d\n", swap_stats.num_ts_called);
+    placer_.annealer_->get_move_abortion_logger().report_aborted_moves();
+
+    VTR_LOG("\n");
+    double estimated_wirelength = placer_.net_cost_handler_.get_total_wirelength_estimate();
+    VTR_LOG("BB estimate of min-dist (placement) wire length: %.0f\n", estimated_wirelength);
+
+    if (g_vpr_ctx.device().grid.has_interposer_cuts()) {
+        VTR_ASSERT(placer_.interposer_cost_handler_.has_value());
+        VTR_LOG("Number of nets crossing interposer cuts: %d\n", placer_.interposer_cost_handler_->get_num_nets_crossing_interposer_cuts());
+    }
+
+    if (g_vpr_ctx.device().grid.get_num_layers() > 1) {
+        VTR_LOG("Number of nets spanning multiple layers: %d\n",
+                placer_.net_cost_handler_.get_num_nets_spanning_multiple_layers());
+    }
+
+    if (placer_.placer_opts_.place_algorithm.is_timing_driven()) {
+        //Final timing estimate
+        VTR_ASSERT(placer_.timing_info_);
+
+        if (isEchoFileEnabled(E_ECHO_FINAL_PLACEMENT_TIMING_GRAPH)) {
+            tatum::write_echo(getEchoFileName(E_ECHO_FINAL_PLACEMENT_TIMING_GRAPH),
+                              *timing_ctx.graph, *timing_ctx.constraints,
+                              *placer_.placement_delay_calc_, placer_.timing_info_->analyzer());
+
+            tatum::NodeId debug_tnode = id_or_pin_name_to_tnode(placer_.analysis_opts_.echo_dot_timing_graph_node);
+            write_setup_timing_graph_dot(getEchoFileName(E_ECHO_FINAL_PLACEMENT_TIMING_GRAPH) + std::string(".dot"),
+                                         *placer_.timing_info_, debug_tnode);
+        }
+
+        generate_post_place_timing_reports(placer_.placer_opts_, placer_.analysis_opts_, *placer_.timing_info_,
+                                           *placer_.placement_delay_calc_, /*is_flat=*/false, placer_.placer_state_.blk_loc_registry());
+
+        // Print critical path delay metrics
+        VTR_LOG("\n");
+        print_setup_timing_summary(*timing_ctx.constraints,
+                                   *placer_.timing_info_->setup_analyzer(), "Placement estimated ", "");
+    }
+
+    sprintf(msg_.data(),
+            "Placement Completed: Cost=%g,  bb_cost=%g, td_cost=%g, Channel Factor=%d",
+            placer_.costs_.cost, placer_.costs_.bb_cost, placer_.costs_.timing_cost, placer_.placer_opts_.place_chan_width);
+    VTR_LOG("Placement cost: %g, bb_cost: %g, td_cost: %g, \n", placer_.costs_.cost,
+            placer_.costs_.bb_cost, placer_.costs_.timing_cost);
+    // Mark placement as fully settled so `wait_for_stage placement_done`
+    // barriers in graphics_commands resume on this final checkpoint rather
+    // than the per-iteration placement update_screen() calls.
+    notify_stage_complete(e_pic_type::PLACEMENT);
+    update_screen(ScreenUpdatePriority::MAJOR, msg_.data(), e_pic_type::PLACEMENT, placer_.timing_info_);
+
+    // print the noc costs info
+    if (placer_.noc_opts_.noc) {
+        VTR_ASSERT(placer_.noc_cost_handler_.has_value());
+        placer_.noc_cost_handler_->print_noc_costs("\nNoC Placement Costs", placer_.costs_, placer_.noc_opts_);
+
+        // TODO: move this to an appropriate file
+#ifdef ENABLE_NOC_SAT_ROUTING
+        if (costs.noc_cost_terms.congestion > 0.0) {
+            VTR_LOG("NoC routing configuration is congested. Invoking the SAT NoC router.\n");
+            invoke_sat_router(costs, noc_opts, placer_opts.seed);
+        }
+#endif //ENABLE_NOC_SAT_ROUTING
+    }
+
+    // Print out swap statistics and resource utilization
+    print_resources_utilization();
+    print_resources_utilization_per_die();
+    print_placement_swaps_stats();
+
+    move_type_stats.print_placement_move_types_stats(placer_.placer_state_.blk_loc_registry().movable_blocks_per_type());
+
+    if (placer_.noc_opts_.noc) {
+        write_noc_placement_file(placer_.noc_opts_.noc_placement_file_name,
+                                 placer_.placer_state_.block_locs());
+    }
+
+    print_timing_stats("Placement Quench", placer_.post_quench_timing_stats_, placer_.pre_quench_timing_stats_);
+    print_timing_stats("Placement Total ", timing_ctx.stats, placer_.pre_place_timing_stats_);
+
+    const auto& p_runtime_ctx = placer_.placer_state_.runtime();
+    VTR_LOG("update_td_costs: connections %g nets %g sum_nets %g total %g\n",
+            p_runtime_ctx.f_update_td_costs_connections_elapsed_sec,
+            p_runtime_ctx.f_update_td_costs_nets_elapsed_sec,
+            p_runtime_ctx.f_update_td_costs_sum_nets_elapsed_sec,
+            p_runtime_ctx.f_update_td_costs_total_elapsed_sec);
+}
+
+void generate_post_place_timing_reports(const t_placer_opts& placer_opts,
+                                        const t_analysis_opts& analysis_opts,
+                                        const SetupTimingInfo& timing_info,
+                                        const PlacementDelayCalculator& delay_calc,
+                                        bool is_flat,
+                                        const BlkLocRegistry& blk_loc_registry) {
+    const auto& timing_ctx = g_vpr_ctx.timing();
+    const auto& atom_ctx = g_vpr_ctx.atom();
+    const LogicalModels& models = g_vpr_ctx.device().arch->models;
+
+    VprTimingGraphResolver resolver(atom_ctx.netlist(), atom_ctx.lookup(), models, *timing_ctx.graph,
+                                    delay_calc, is_flat, blk_loc_registry);
+    resolver.set_detail_level(analysis_opts.timing_report_detail);
+
+    tatum::TimingReporter timing_reporter(resolver, *timing_ctx.graph,
+                                          *timing_ctx.constraints);
+
+    timing_reporter.report_timing_setup(
+        placer_opts.post_place_timing_report_file,
+        *timing_info.setup_analyzer(), analysis_opts.timing_report_npaths);
+}

@@ -1,17 +1,28 @@
-#ifndef VPR_CONTEXT_H
-#define VPR_CONTEXT_H
+#pragma once
+
 #include <unordered_map>
 #include <memory>
 #include <vector>
+#include <mutex>
+#include <utility>
 
+#include "flat_placement_types.h"
+#include "physical_types.h"
+#include "place_macro.h"
+#include "user_place_constraints.h"
+#include "user_relative_macros.h"
+#include "user_route_constraints.h"
 #include "vpr_types.h"
-#include "vtr_ndmatrix.h"
+#include "vtr_cache.h"
+#include "vtr_optional.h"
 #include "vtr_vector.h"
+#include "vtr_vector_map.h"
 #include "atom_netlist.h"
 #include "clustered_netlist.h"
-#include "rr_graph_storage.h"
-#include "rr_node.h"
+#include "rr_graph_view.h"
 #include "rr_rc_data.h"
+#include "rr_graph_builder.h"
+#include "rr_graph_cost.h"
 #include "tatum/TimingGraph.hpp"
 #include "tatum/TimingConstraints.hpp"
 #include "power.h"
@@ -19,11 +30,34 @@
 #include "device_grid.h"
 #include "clock_network_builders.h"
 #include "clock_connection_builders.h"
-#include "route_traceback.h"
+#include "route_tree.h"
+#include "bus_mux_route_types.h"
 #include "router_lookahead.h"
-#include "place_macro.h"
 #include "compressed_grid.h"
-#include "metadata_storage.h"
+#include "noc_storage.h"
+#include "noc_traffic_flows.h"
+#include "noc_routing.h"
+#include "tatum/report/TimingPath.hpp"
+#include "blk_loc_registry.h"
+
+#ifndef NO_SERVER
+
+#include "gateio.h"
+#include "taskresolver.h"
+
+class SetupHoldTimingInfo;
+class PostClusterDelayCalculator;
+
+#endif // NO_SERVER
+
+struct t_rr_node_route_inf;
+
+template<typename T>
+struct ChannelMetric {
+    T x;
+    T y;
+    T z;
+};
 
 /**
  * @brief A Context is collection of state relating to a particular part of VPR
@@ -47,17 +81,50 @@ struct Context {
  *
  * This should contain only data structures related to user specified netlist
  * being implemented by VPR onto the target device.
+ *
+ * This class provides two categories of getter functions that give mutable or
+ * immutable reference to the global state. If you need read-only access, use
+ * the normal getter functions and if you need write access to the context use
+ * the mutable functions.
  */
 struct AtomContext : public Context {
     /********************************************************************
      * Atom Netlist
      ********************************************************************/
+  private:
+    /// @brief Atom netlist
+    AtomNetlist nlist_;
+    /// @brief Mappings to/from the Atom Netlist to physically described .blif models
+    AtomLookup lookup_;
+    /// @brief Placement information on each atom known (from a file or another
+    ///        algorithm) before packing and the cluster-level placement.
+    FlatPlacementInfo flat_placement_info_;
 
-    ///@brief Atom netlist
-    AtomNetlist nlist;
-
-    ///@brief Mappings to/from the Atom Netlist to physically described .blif models
-    AtomLookup lookup;
+  public:
+    /**
+     * @brief Immutable reference to the AtomNetlist
+     */
+    inline const AtomNetlist& netlist() const { return nlist_; }
+    /**
+     * @brief Mutable reference to the AtomNetlist
+     */
+    inline AtomNetlist& mutable_netlist() { return nlist_; }
+    /**
+     * @brief Immutable reference to the AtomLookup
+     */
+    inline const AtomLookup& lookup() const { return lookup_; }
+    /**
+     * @brief Mutable reference to the AtomLookup
+     */
+    inline AtomLookup& mutable_lookup() { return lookup_; }
+    /**
+     * @brief Immutable reference to the FlatPlacementInfo
+     */
+    inline const FlatPlacementInfo& flat_placement_info() const { return flat_placement_info_; }
+    /**
+     * @brief Mutable reference to the FlatPlacementInfo
+     */
+    inline FlatPlacementInfo& mutable_flat_placement_info() { return flat_placement_info_; }
 };
 
 /**
@@ -86,19 +153,10 @@ struct TimingContext : public Context {
     std::shared_ptr<tatum::TimingConstraints> constraints;
 
     t_timing_analysis_profile_info stats;
-};
 
-namespace std {
-template<>
-struct hash<std::tuple<int, int, short>> {
-    std::size_t operator()(const std::tuple<int, int, short>& ok) const noexcept {
-        std::size_t seed = std::hash<int>{}(std::get<0>(ok));
-        vtr::hash_combine(seed, std::get<1>(ok));
-        vtr::hash_combine(seed, std::get<2>(ok));
-        return seed;
-    }
+    /// Represents whether VPR should fail if timing constraints aren't met.
+    bool terminate_if_timing_fails = false;
 };
-} // namespace std
 
 /**
  * @brief State relating the device
@@ -110,7 +168,20 @@ struct DeviceContext : public Context {
      * Physical FPGA architecture
      *********************************************************************/
 
-    DeviceGrid grid; ///<FPGA complex block grid [0 .. grid.width()-1][0 .. grid.height()-1]
+    /**
+     * @brief The device grid
+     *
+     * This represents the physical layout of the device.
+     * To get the physical tile at each location (layer_num, x, y) the helper functions
+     * in this data structure should be used.
+     */
+    DeviceGrid grid;
+
+    /**
+     * @brief The VIB device grid. For details about this layout
+     * refer to https://doi.org/10.1109/ICFPT59805.2023.00014
+     */
+    VibDeviceGrid vib_grid;
 
     /*
      * Empty types
@@ -128,6 +199,11 @@ struct DeviceContext : public Context {
     std::vector<t_physical_tile_type> physical_tile_types;
     std::vector<t_logical_block_type> logical_block_types;
 
+    /// Keep which layer in multi-die FPGA require inter-cluster programmable routing resources [0..number_of_layers-1]
+    /// If a layer doesn't require inter-cluster programmable routing resources,
+    /// RRGraph generation will ignore building SBs and CBs for that specific layer.
+    std::vector<bool> inter_cluster_prog_routing_resources;
+
     /**
      * @brief Boolean that indicates whether the architecture implements an N:M
      *        physical tiles to logical blocks mapping
@@ -141,69 +217,137 @@ struct DeviceContext : public Context {
     ///@brief chan_width is for x|y-directed channels; i.e. between rows
     t_chan_width chan_width;
 
+    /**
+     * @brief The channel width that was requested the last time the RR graph was (re)built.
+     *
+     * May be different than chan_width above since some architectures add to the requested
+     * channel width (for example, dedicated clock networks).
+     */
+    t_chan_width requested_chan_width;
+
     /*
      * Structures to define the routing architecture of the FPGA.
      */
 
-    t_rr_graph_storage rr_nodes; // autogenerated in build_rr_graph
-
-    std::vector<t_rr_indexed_data> rr_indexed_data; // [0 .. num_rr_indexed_data-1]
+    vtr::vector<RRIndexedDataId, t_rr_indexed_data> rr_indexed_data; // [0 .. num_rr_indexed_data-1]
 
     ///@brief Fly-weighted Resistance/Capacitance data for RR Nodes
-    std::vector<t_rr_rc_data> rr_rc_data;
+    RRRCData rr_rc_data;
 
     ///@brief Sets of non-configurably connected nodes
-    std::vector<std::vector<int>> rr_non_config_node_sets;
+    std::vector<std::vector<RRNodeId>> rr_non_config_node_sets;
 
-    ///@brief Reverse look-up from RR node to non-configurably connected node set (index into rr_nonconf_node_sets)
-    std::unordered_map<int, int> rr_node_to_non_config_node_set;
+    ///@brief Reverse look-up from RR node to non-configurably connected node set (index into rr_non_config_node_sets)
+    std::unordered_map<RRNodeId, int> rr_node_to_non_config_node_set;
 
-    ///@brief The indicies of rr nodes of a given type at a specific x,y grid location
-    t_rr_node_indices rr_node_indices; // [0..NUM_RR_TYPES-1][0..grid.width()-1][0..grid.width()-1][0..size-1]
+    /// @brief Bus-based mux instances of the intra-cluster rr graph. Empty unless flat
+    ///        routing is enabled and the architecture has <mux bus="true">.
+    vtr::vector<BusMuxId, t_rr_bus_mux> rr_bus_muxes;
 
-    ///@brief Autogenerated in build_rr_graph based on switch fan-in. [0..(num_rr_switches-1)]
-    std::vector<t_rr_switch_inf> rr_switch_inf;
+    ///@brief Look-up from the output bit of a bus-based mux to the mux and the edges driving the bit
+    std::unordered_map<RRNodeId, t_rr_bus_mux_out_node> rr_bus_mux_out_nodes;
 
-    ///@brief Wire segment types in RR graph
-    std::vector<t_segment_inf> rr_segments;
-
-    int num_arch_switches;
-    t_arch_switch_inf* arch_switch_inf; // [0..(num_arch_switches-1)]
-
-    /*
-     * Clock Networks
+    /* A writeable view of routing resource graph to be the ONLY database
+     * for routing resource graph builder functions.
      */
+    RRGraphBuilder rr_graph_builder{};
 
+    /* A read-only view of routing resource graph to be the ONLY database
+     * for client functions: GUI, placer, router, timing analyzer etc.
+     */
+    RRGraphView rr_graph{rr_graph_builder.rr_nodes(),
+                         rr_graph_builder.node_lookup(),
+                         rr_graph_builder.rr_node_metadata(),
+                         rr_graph_builder.rr_edge_metadata(),
+                         rr_indexed_data,
+                         rr_rc_data,
+                         rr_graph_builder.rr_segments(),
+                         rr_graph_builder.rr_switch()};
+
+    ///@brief Track ids for each rr_node in the rr_graph. This is used by drawer for tileable routing resource graph
+    std::map<RRNodeId, std::vector<size_t>> rr_node_track_ids;
+
+    std::vector<t_arch_switch_inf> arch_switch_inf; // [0..(num_arch_switches-1)]
+
+    std::map<int, t_arch_switch_inf> all_sw_inf;
+
+    int delayless_switch_idx = UNDEFINED;
+
+    /// Stores the number of wire segments in each routing channel segment at [layer][x][y]
+    ChannelMetric<vtr::NdMatrix<int, 3>> rr_chan_segment_width;
+
+    /**
+     * @brief Available routing capacity crossing each horizontal interposer cut.
+     *
+     * Indexed as `[layer][cut_idx][x]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_horizontal_interposer_cuts()[layer]`.
+     * Values are accumulated from the capacities of `CHANY` rr_nodes which cross the cut.
+     */
+    vtr::NdMatrix<int, 3> horz_interposer_capacity_;
+
+    /**
+     * @brief Available routing capacity crossing each vertical interposer cut.
+     *
+     * Indexed as `[layer][cut_idx][y]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_vertical_interposer_cuts()[layer]`.
+     * Values are accumulated from the capacities of `CHANX` rr_nodes which cross the cut.
+     */
+    vtr::NdMatrix<int, 3> vert_interposer_capacity_;
+
+    /**
+     * @brief Min/max y coordinate of all routing wires that cross each horizontal interposer cut.
+     *
+     * Indexed as `[layer][cut_idx]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_horizontal_interposer_cuts()[layer]`.
+     * The pair stores `{min_y, max_y}` of all `CHANY` rr_nodes that cross the cut.
+     * i.e. the smallest y of any rr_node that crosses a cut, and the largest y of
+     * any rr node that crosses the cut. These values will normally come from different wires;
+     * e.g. with length 10 interposer wires you'd expect to get min_y to be 9 below the cut
+     * and max_y to be 9 above the cut.
+     */
+    vtr::NdMatrix<std::pair<int, int>, 2> horz_interposer_cut_bounds_;
+
+    /**
+     * @brief Min/max x coordinate of all routing wires that cross each vertical interposer cut.
+     *
+     * Indexed as `[layer][cut_idx]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_vertical_interposer_cuts()[layer]`.
+     * The pair stores `{min_x, max_x}` of all `CHANX` rr_nodes that cross the cut.
+     * This is similar to horz_interposer_cut_bounds_, but for vertical interposer cuts and wires.
+     */
+    vtr::NdMatrix<std::pair<int, int>, 2> vert_interposer_cut_bounds_;
+
+    /**
+     * @brief Minimum length of all routing wires that cross each horizontal interposer cut.
+     *
+     * Indexed as `[layer][cut_idx]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_horizontal_interposer_cuts()[layer]`.
+     */
+    vtr::NdMatrix<uint16_t, 2> horz_interposer_cut_min_seg_length;
+
+    /**
+     * @brief Minimum length of all routing wires that cross each vertical interposer cut.
+     *
+     * Indexed as `[layer][cut_idx]`, where `cut_idx` refers to the entry in
+     * `DeviceGrid::get_vertical_interposer_cuts()[layer]`.
+     * This is similar to horz_interposer_cut_min_seg_length, but for vertical interposer cuts and wires.
+     */
+    vtr::NdMatrix<uint16_t, 2> vert_interposer_cut_min_seg_length;
+
+    /// Stores the maximum channel segment width in each horizontal/vertical channel
+    ChannelMetric<std::vector<int>> rr_chan_width;
+
+    bool rr_graph_is_flat = false;
+
+    /// Whether each layer has 3D switchblocks i.e. a CHANX/CHANY wire that fans out to a CHANZ wire [0..number_of_layers-1]
+    std::vector<bool> has_3d_switchblocks;
+
+    /// @brief Version of the Generic Switch Block used to build the tileable RR graph.
+    e_gsb_version gsb_version;
+
+    // Clock Networks
     std::vector<std::unique_ptr<ClockNetwork>> clock_networks;
     std::vector<std::unique_ptr<ClockConnection>> clock_connections;
-
-    /**
-     * @brief rr_node idx that connects to the input of all clock network wires
-     *
-     * Useful for two stage clock routing
-     * XXX: currently only one place to source the clock networks so only storing
-     *      a single value
-     */
-    int virtual_clock_network_root_idx;
-
-    /**
-     * @brief Attributes for each rr_node.
-     *
-     * key:     rr_node index
-     * value:   map of <attribute_name, attribute_value>
-     */
-    MetadataStorage<int> rr_node_metadata;
-    /**
-     * @brief  Attributes for each rr_edge
-     *
-     * key:     <source rr_node_index, sink rr_node_index, iswitch>
-     * iswitch: Index of the switch type used to go from this rr_node to
-     *          the next one in the routing.  OPEN if there is no next node
-     *          (i.e. this node is the last one (a SINK) in a branch of the
-     *          net's routing).
-     * value:   map of <attribute_name, attribute_value>
-     */
-    MetadataStorage<std::tuple<int, int, short>> rr_edge_metadata;
 
     /**
      * @brief switch_fanin_remap is only used for printing out switch fanin stats
@@ -213,7 +357,7 @@ struct DeviceContext : public Context {
      * map key: num of all possible fanin of that type of switch on chip
      * map value: remapped switch index (index in rr_switch_inf)
      */
-    std::vector<std::map<int, int>> switch_fanin_remap;
+    t_arch_switch_fanin switch_fanin_remap;
 
     /*******************************************************************
      * Architecture
@@ -223,14 +367,22 @@ struct DeviceContext : public Context {
     /*******************************************************************
      * Clock Network
      ********************************************************************/
-    t_clock_arch* clock_arch;
+    std::shared_ptr<std::vector<t_clock_network>> clock_arch;
 
-    /**
-     * @brief Name of rrgraph file read (if any).
-     *
-     * Used to determine when reading rrgraph if file is already loaded.
-     */
-    std::string read_rr_graph_filename;
+    /// @brief Name of rrgraph file read (if any).
+    ///        Used to determine if the specified rr-graph file is already loaded,
+    /// so we can avoid redundant reading of the rr-graph
+    std::string loaded_rr_graph_filename;
+
+    /// @brief Name of rrgraph edge override file read (if any).
+    ///        Used to determine if the specified rr-graph edge override file is already loaded,
+    ///        so we can avoid redundant reading of the rr-graph
+    std::string loaded_rr_edge_override_filename;
+
+    /*******************************************************************
+     * Place Related
+     *******************************************************************/
+    enum e_pad_loc_type pad_loc_type;
 };
 
 /**
@@ -266,18 +418,33 @@ struct ClusteringContext : public Context {
      * CLB Netlist
      ********************************************************************/
 
-    ///@brief New netlist class derived from Netlist
+    /// @brief New netlist class derived from Netlist
     ClusteredNetlist clb_nlist;
 
-    /* Database for nets of each clb block pin after routing stage
-     * - post_routing_clb_pin_nets:
-     *     mapping of pb_type pins to clustered net ids
-     * - pre_routing_net_pin_mapping:
-     *     a copy of mapping for current pb_route index to previous pb_route index
-     *     Record the previous pin mapping for finding the correct pin index during timing analysis
-     */
+    /// @brief Database for nets of each clb block pin after routing stage.
+    ///  - post_routing_clb_pin_nets:
+    ///     mapping of pb_type pins to clustered net ids.
+    ///  - pre_routing_net_pin_mapping:
+    ///     a copy of mapping for current pb_route index to previous pb_route index
+    ///     Record the previous pin mapping for finding the correct pin index during
+    ///     timing analysis.
     std::map<ClusterBlockId, std::map<int, ClusterNetId>> post_routing_clb_pin_nets;
     std::map<ClusterBlockId, std::map<int, int>> pre_routing_net_pin_mapping;
+
+    /// @brief A vector of unordered_sets of AtomBlockIds that are inside each
+    ///        clustered block [0 .. num_clustered_blocks-1]
+    /// This is populated when the packing is loaded.
+    vtr::vector<ClusterBlockId, std::unordered_set<AtomBlockId>> atoms_lookup;
+};
+
+/**
+ * @brief State relating to packing multithreading
+ *
+ * This contains data structures to synchronize multithreading of packing iterative improvement.
+ */
+struct PackingMultithreadingContext : public Context {
+    vtr::vector<ClusterBlockId, bool> clb_in_flight;
+    vtr::vector<ClusterBlockId, std::mutex> mu;
 };
 
 /**
@@ -287,23 +454,115 @@ struct ClusteringContext : public Context {
  * or related placer algorithm state.
  */
 struct PlacementContext : public Context {
-    ///@brief Clustered block placement locations
-    vtr::vector_map<ClusterBlockId, t_block_loc> block_locs;
+  private:
+    /**
+     * Determines if blk_loc_registry_ can be accessed by calling getter methods.
+     * This flag should be set to false at the beginning of the placement stage,
+     * and set to true at the end of placement. This ensures that variables that
+     * are subject to change during placement are kept local to the placement stage.
+     */
+    bool loc_vars_are_accessible_ = true;
 
-    ///@brief Clustered pin placement mapping with physical pin
-    vtr::vector_map<ClusterPinId, int> physical_pins;
+    /**
+     * @brief Stores block location information, which is subject to change during the
+     * placement stage.
+     */
+    BlkLocRegistry blk_loc_registry_;
 
-    ///@brief Clustered block associated with each grid location (i.e. inverse of block_locs)
-    vtr::Matrix<t_grid_blocks> grid_blocks; //[0..device_ctx.grid.width()-1][0..device_ctx.grid.width()-1]
+  public:
+    /**
+     * @brief Initialize the variables stored within the placement context. This
+     *        must be called before performing placement, but must be called
+     *        after the clusters are loaded.
+     *
+     *  @param directs
+     *      A list of the direct connections in the architecture.
+     */
+    void init_placement_context(const std::vector<t_direct_inf>& directs);
 
-    ///@brief The pl_macros array stores all the placement macros (usually carry chains).
-    std::vector<t_pl_macro> pl_macros;
+    /**
+     * @brief Clean variables from the placement context which are not used
+     *        outside of placement.
+     *
+     * There are some variables that are stored in the placement context and are
+     * only used in placement; while there are some that are used outside of
+     * placement. This method frees up the memory of the variables used only
+     * within placement.
+     */
+    void clean_placement_context_post_place();
+
+    const vtr::vector_map<ClusterBlockId, t_block_loc>& block_locs() const {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.block_locs();
+    }
+    vtr::vector_map<ClusterBlockId, t_block_loc>& mutable_block_locs() {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.mutable_block_locs();
+    }
+    const GridBlock& grid_blocks() const {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.grid_blocks();
+    }
+    GridBlock& mutable_grid_blocks() {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.mutable_grid_blocks();
+    }
+    vtr::vector_map<ClusterPinId, int>& mutable_physical_pins() {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.mutable_physical_pins();
+    }
+    const vtr::vector_map<ClusterPinId, int>& physical_pins() const {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_.physical_pins();
+    }
+    BlkLocRegistry& mutable_blk_loc_registry() {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_;
+    }
+    const BlkLocRegistry& blk_loc_registry() const {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        return blk_loc_registry_;
+    }
+
+    /**
+     * @brief Makes blk_loc_registry_ inaccessible through the getter methods.
+     *
+     * This method should be called at the beginning of the placement stage to
+     * guarantee that the placement stage code does not access block location variables
+     * stored in the global state.
+     */
+    void lock_loc_vars() {
+        VTR_ASSERT_SAFE(loc_vars_are_accessible_);
+        loc_vars_are_accessible_ = false;
+    }
+
+    /**
+     * @brief Makes blk_loc_registry_ accessible through the getter methods.
+     *
+     * This method should be called at the end of the placement stage to
+     * make the block location information accessible for subsequent stages.
+     */
+    void unlock_loc_vars() {
+        VTR_ASSERT_SAFE(!loc_vars_are_accessible_);
+        loc_vars_are_accessible_ = true;
+    }
+
+    /**
+     * @brief Collection of all the placement macros in the netlist. A placement
+     *        macro is a set of clustered blocks that must be placed in a way
+     *        that is compliant with relative locations specified by the macro.
+     *        Macros are used during placement and are not modified after they
+     *        are created.
+     * This is created at the start of placement.
+     */
+    std::unique_ptr<PlaceMacros> place_macros;
 
     /**
      * @brief Compressed grid space for each block type
      *
      * Used to efficiently find logically 'adjacent' blocks of the same
      * block type even though the may be physically far apart
+     * Indexed with logical block type index: [0...num_logical_block_types-1] -> logical block compressed grid
      */
     t_compressed_block_grids compressed_block_grids;
 
@@ -313,6 +572,12 @@ struct PlacementContext : public Context {
      * Used for unique identification and consistency checking
      */
     std::string placement_id;
+
+    /**
+     * Use during placement to print extra debug information. It is set to true based on the number assigned to
+     * placer_debug_net or placer_debug_block parameters in the command line.
+     */
+    bool f_placer_debug = false;
 };
 
 /**
@@ -323,15 +588,19 @@ struct PlacementContext : public Context {
  */
 struct RoutingContext : public Context {
     /* [0..num_nets-1] of linked list start pointers.  Defines the routing.  */
-    vtr::vector<ClusterNetId, t_traceback> trace;
-    vtr::vector<ClusterNetId, std::unordered_set<int>> trace_nodes;
+    vtr::vector<ParentNetId, vtr::optional<RouteTree>> route_trees;
 
-    vtr::vector<ClusterNetId, std::vector<int>> net_rr_terminals; /* [0..num_nets-1][0..num_pins-1] */
-    vtr::vector<ClusterNetId, uint8_t> is_clock_net;              /* [0..num_nets-1] */
+    vtr::vector<ParentNetId, std::unordered_set<int>> trace_nodes;
 
-    vtr::vector<ClusterBlockId, std::vector<int>> rr_blk_source; /* [0..num_blocks-1][0..num_class-1] */
+    vtr::vector<ParentNetId, std::vector<RRNodeId>> net_rr_terminals; /* [0..num_nets-1][0..num_pins-1] */
 
-    std::vector<t_rr_node_route_inf> rr_node_route_inf; /* [0..device_ctx.num_rr_nodes-1] */
+    vtr::vector<ParentNetId, uint8_t> is_clock_net; /* [0..num_nets-1] */
+
+    vtr::vector<ParentBlockId, std::vector<RRNodeId>> rr_blk_source; /* [0..num_blocks-1][0..num_class-1] */
+
+    vtr::vector<RRNodeId, t_rr_node_route_inf> rr_node_route_inf; /* [0..device_ctx.num_rr_nodes-1] */
+
+    vtr::vector<BusMuxId, t_bus_mux_route_inf> bus_mux_route_inf; ///< Current routing state of each DeviceContext::rr_bus_muxes entry.
 
     /**
      * @brief Information about whether a node is part of a non-configurable set
@@ -342,13 +611,13 @@ struct RoutingContext : public Context {
      * bit value 1: node is part of a non-configurable set
      * Initialized once when RoutingContext is initialized, static throughout invocation of router
      */
-    vtr::dynamic_bitset<> non_configurable_bitset; /*[0...device_ctx.num_rr_nodes] */
+    vtr::dynamic_bitset<RRNodeId> non_configurable_bitset; /*[0...device_ctx.num_rr_nodes] */
 
     ///@brief Information about current routing status of each net
     t_net_routing_status net_status;
 
     ///@brief Limits area within which each net must be routed.
-    vtr::vector<ClusterNetId, t_bb> route_bb; /* [0..cluster_ctx.clb_nlist.nets().size()-1]*/
+    vtr::vector<ParentNetId, t_bb> route_bb; /* [0..cluster_ctx.clb_nlist.nets().size()-1]*/
 
     t_clb_opins_used clb_opins_used_locally; //[0..cluster_ctx.clb_nlist.blocks().size()-1][0..num_class-1]
 
@@ -359,6 +628,9 @@ struct RoutingContext : public Context {
      */
     std::string routing_id;
 
+    // Cache key used to create router lookahead
+    std::tuple<e_router_lookahead, std::string, std::vector<t_segment_inf>> router_lookahead_cache_key_;
+
     /**
      * @brief Cache of router lookahead object.
      *
@@ -367,7 +639,201 @@ struct RoutingContext : public Context {
     vtr::Cache<std::tuple<e_router_lookahead, std::string, std::vector<t_segment_inf>>,
                RouterLookahead>
         cached_router_lookahead_;
+
+    /// @brief User specified routing constraints
+    UserRouteConstraints constraints;
+
+    /** Is flat routing enabled? */
+    bool is_flat;
 };
+
+/**
+ * @brief State relating to VPR's floorplanning constraints
+ *
+ * This should contain only data structures related to constraining blocks
+ * to certain regions on the chip.
+ */
+struct FloorplanningContext : public Context {
+    /**
+     * @brief Update the floorplanning constraints after a clustering has been
+     *        created.
+     *
+     * After clustering, the constraints of contained atoms are used to compute
+     * the constraints of clusters.
+     *
+     * This must be called before using the cluster_constraints.
+     */
+    void update_floorplanning_context_post_pack();
+
+    /**
+     * @brief Update the floorplanning constraints before placement.
+     *
+     * Placement groups clusters together into macros which must be placed
+     * together. This imposes more constraints onto the clusters which needs to
+     * be updated.
+     *
+     * This must be called before placement, but after the placement context is
+     * initialized.
+     *
+     *  @param place_macros
+     *      Macros of clusters which must be placed together. Initialized in the
+     *      placement context.
+     */
+    void update_floorplanning_context_pre_place(const PlaceMacros& place_macros);
+
+    /**
+     * @brief Clean the floorplanning constraints after placement.
+     *
+     * After placement, many of the variables in this class will no longer be
+     * used (since the placement is no longer changing, the constraints are no
+     * longer needed). This method will free up the memory used by this class.
+     */
+    void clean_floorplanning_context_post_place();
+
+    /**
+     * @brief Stores groups of constrained atoms, areas where the atoms are constrained to
+     *
+     * Provides all information needed about floorplanning constraints, including
+     * which atoms are constrained and the regions they are constrained to.
+     *
+     * The constraints are input into vpr and do not change.
+     */
+    UserPlaceConstraints constraints;
+
+    /**
+     * @brief Stores user-defined relative placement macros.
+     *
+     * The relative macros are input into vpr and do not change.
+     */
+    UserRelativeMacros relative_macros;
+
+    /**
+     * @brief Constraints for each cluster
+     *
+     * Each cluster will have a PartitionRegion specifying its regions constraints
+     * according to the constrained atoms packed into it. This structure allows the floorplanning
+     * constraints for a given cluster to be found easily given its ClusterBlockId.
+     *
+     * The constraints on each cluster are computed during the clustering process and can change.
+     */
+    vtr::vector<ClusterBlockId, PartitionRegion> cluster_constraints;
+
+    /**
+     * @brief Floorplanning constraints in the compressed grid coordinate system.
+     *
+     * Indexing -->  [0..grid.num_layers-1][0..numClusters-1]
+     *
+     * Each clustered block has a logical type with a corresponding compressed grid.
+     * Compressed floorplanning constraints are calculated by translating the grid locations
+     * of floorplanning regions to compressed grid locations. To ensure regions do not enlarge:
+     * - The bottom left corner is rounded up to the nearest compressed location.
+     * - The top right corner is rounded down to the nearest compressed location.
+     *
+     * When the floorplanning constraint spans across multiple layers, a compressed
+     * constraints is created for each a layer that the original constraint includes.
+     * This is because blocks of the same type might have different (x, y) locations
+     * in different layers, and as result, their compressed locations in each layer
+     * may correspond to a different physical (x, y) location.
+     *
+     */
+    std::vector<vtr::vector<ClusterBlockId, PartitionRegion>> compressed_cluster_constraints;
+};
+
+/**
+ * @brief State of the Network on Chip (NoC)
+ *
+ * This should only contain data structures related to describing the
+ * NoC within the device.
+ */
+struct NocContext : public Context {
+    /**
+     * @brief A model of the NoC
+     *
+     * Contains all the routers and links that make up the NoC. The routers contain
+     * information regarding the physical tile positions they represent. The links
+     * define the connections between every router (topology) and also metrics that describe its
+     * "usage".
+     *
+     *
+     * The NoC model is created once from the architecture file description.
+     */
+    NocStorage noc_model;
+
+    /**
+     * @brief Stores all the communication happening between routers in the NoC
+     *
+     * Contains all of the traffic flows that describe which pairs of logical routers are
+     * communicating and also some metrics and constraints on the data transfer between the two routers.
+     *
+     *
+     * This is created from a user supplied .flows file.
+     */
+    NocTrafficFlows noc_traffic_flows_storage;
+
+    /**
+     * @brief Contains the packet routing algorithm used by the NoC.
+     *
+     * This should be used to route traffic flows within the NoC.
+     *
+     * This is created from a user supplied command line option "--noc_routing_algorithm"
+     */
+    std::unique_ptr<NocRouting> noc_flows_router;
+};
+
+#ifndef NO_SERVER
+/**
+ * @brief State relating to server mode
+ *
+ * This should contain only data structures that
+ * relate to the vpr server state.
+ */
+struct ServerContext : public Context {
+    /**
+     * @brief \ref server::GateIO.
+     */
+    server::GateIO gate_io;
+
+    /**
+     * @brief \ref server::TaskResolver.
+     */
+    server::TaskResolver task_resolver;
+
+    /**
+     * @brief Stores the critical path items.
+     *
+     * This value is used when rendering the critical path by the selected index.
+     * Once calculated upon request, it provides the value for a specific critical path
+     * to be rendered upon user request.
+     */
+    std::vector<tatum::TimingPath> crit_paths;
+
+    /**
+     * @brief Stores the selected critical path elements.
+     *
+     * This value is used to render the selected critical path elements upon client request.
+     * The std::map key plays role of path index, where the element indexes are stored as std::set.
+     */
+    std::map<std::size_t, std::set<std::size_t>> crit_path_element_indexes;
+
+    /**
+     * @brief Stores the flag indicating whether to draw the critical path contour.
+     *
+     * If True, the entire path will be rendered with some level of transparency, regardless of the selection of path elements. However, selected path elements will be drawn in full color.
+     * This feature is helpful in visual debugging, to see how the separate path elements are mapped into the whole path.
+     */
+    bool draw_crit_path_contour = false;
+
+    /**
+     * @brief Reference to the SetupHoldTimingInfo calculated during the routing stage.
+     */
+    std::shared_ptr<SetupHoldTimingInfo> timing_info;
+
+    /**
+     * @brief Reference to the PostClusterDelayCalculator calculated during the routing stage.
+     */
+    std::shared_ptr<PostClusterDelayCalculator> routing_delay_calc;
+};
+#endif // NO_SERVER
 
 /**
  * @brief This object encapsulates VPR's state.
@@ -440,6 +906,20 @@ class VprContext : public Context {
     const RoutingContext& routing() const { return routing_; }
     RoutingContext& mutable_routing() { return routing_; }
 
+    const FloorplanningContext& floorplanning() const { return constraints_; }
+    FloorplanningContext& mutable_floorplanning() { return constraints_; }
+
+    const NocContext& noc() const { return noc_; }
+    NocContext& mutable_noc() { return noc_; }
+
+    const PackingMultithreadingContext& packing_multithreading() const { return packing_multithreading_; }
+    PackingMultithreadingContext& mutable_packing_multithreading() { return packing_multithreading_; }
+
+#ifndef NO_SERVER
+    const ServerContext& server() const { return server_; }
+    ServerContext& mutable_server() { return server_; }
+#endif // NO_SERVER
+
   private:
     DeviceContext device_;
 
@@ -451,6 +931,12 @@ class VprContext : public Context {
     ClusteringContext clustering_;
     PlacementContext placement_;
     RoutingContext routing_;
-};
+    FloorplanningContext constraints_;
+    NocContext noc_;
 
-#endif
+#ifndef NO_SERVER
+    ServerContext server_;
+#endif // NO_SERVER
+
+    PackingMultithreadingContext packing_multithreading_;
+};

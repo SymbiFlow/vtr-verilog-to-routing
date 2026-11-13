@@ -9,7 +9,7 @@ if grep 'localhost:4000' *.md _posts/*.md; then
 fi
 
 if [ "x$(git status --porcelain)" != "x" ]; then
-  echo -n "git repo has uncommited changes.  Continue anyway? (y/N) " >&2
+  echo -n "git repo has uncommitted changes.  Continue anyway? (y/N) " >&2
   read -n 1 YESNO
   echo >&2
   if [ "x$YESNO" != xy ]; then
@@ -44,7 +44,7 @@ echo "Regenerating site..."
 
 rm -rf _site _site.tar.gz
 
-jekyll build --safe $FUTURE --config $CONFIG
+jekyll _3.8.1_ build --safe $FUTURE --config $CONFIG
 
 echo -n "Push now? (y/N)"
 read -n 1 YESNO
@@ -52,7 +52,7 @@ echo
 
 if [ "x$YESNO" == "xy" ]; then
   echo "Pushing..."
-  tar cz --xform='s,_site/,,' _site/* | gce-ss ssh fe --command "cd /var/www/capnproto.org$PREFIX && tar xz"
+  tar cz --xform='s,_site/,,' _site/* | gce-ss ssh alpha2 --command "cd /var/www/capnproto.org$PREFIX && tar xz"
 else
   echo "Push CANCELED"
 fi

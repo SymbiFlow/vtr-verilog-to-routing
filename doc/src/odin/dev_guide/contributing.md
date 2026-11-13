@@ -1,40 +1,44 @@
 # Contributing
 
 The Odin II team welcomes outside help from anyone interested.
-To fix issues or add a new feature submit a PR or WIP PR following the provided guidelines.  
+To fix issues or add a new feature submit a PR or WIP PR following the provided guidelines.
 
 ## Creating a Pull Request (PR)
 
-**Important** Before creating a Pull Request (PR), if it is a bug you have happened upon and intend to fix make sure you create an issue beforhand.
+**Important** Before creating a Pull Request (PR), if it is a bug you have happened upon and intend to fix make sure you create an issue beforehand.
 
 Pull requests are intended to correct bugs and improve Odin's performance.
-To create a pull request, clone the vtr-verilog-rooting repository and branch from the master.
+To create a pull request, clone the [vtr-verilog-to-routing repository](https://github.com/verilog-to-routing/vtr-verilog-to-routing) and branch from the master.
 Make changes to the branch that improve Odin II and correct the bug.
 **Important** In addition to correcting the bug, it is required that test cases (benchmarks) are created that reproduce the issue and are included in the regression tests.
 An example of a good test case could be the benchmark found in the "Issue" being addressed.
-The results of these new tests need to be regenerate. See [regression tests](./regression_tests) for further instruction.
+The results of these new tests need to be regenerate. See [regression tests](regression_test.md) for further instruction.
 Push these changes to the cloned repository and create the pull request.
 Add a description of the changes made and reference the "issue" that it corrects. There is a template provided on GitHub.
 
 ### Creating a "Work in progress" (WIP) PR
 
-**Important** Before creating a WIP PR, if it is a bug you have happened upon and intend to fix make sure you create an issue beforhand.
+**Important** Before creating a WIP PR, if it is a bug you have happened upon and intend to fix make sure you create an issue beforehand.
 
 A "work in progress" PR is a pull request that isn't complete or ready to be merged.
-It is intended to demonstrate that an Issue is being addressed and indicates to other developpers that they don't need to fix it.
-Creating a WIP PR is similar to a regular PR with a few adjustements.
-First, clone the vtr-verilog-rooting repository and branch from the master.
+It is intended to demonstrate that an Issue is being addressed and indicates to other developers that they don't need to fix it.
+Creating a WIP PR is similar to a regular PR with a few adjustments.
+First, clone the [vtr-verilog-to-routing repository](https://github.com/verilog-to-routing/vtr-verilog-to-routing) and branch from the master.
 Make changes to that branch.
 Then, create a pull request with that branch and **include WIP in the title.**
 This will automatically indicate that this PR is not ready to be merged.
 Continue to work on the branch, pushing the commits regularly.
-Like a PR, test cases are also needed to be included through the use of benchmarks.
-See [regression tests](./regression_tests) for further instruction.
+Like a PR, test cases must be included through the use of benchmarks.
+See [regression tests](regression_test.md) for further instruction.
 
-### Formating
+### Formatting
 
 Odin II shares the same contributing philosophy as [VPR](https://docs.verilogtorouting.org/en/latest/dev/contributing/contributing/).
 Most importantly PRs will be rejected if they do not respect the coding standard: see [VPRs coding standard](https://docs.verilogtorouting.org/en/latest/dev/developing/#code-formatting)
+
+To correct any code formatting issues flagged by the CI system, simply run ``make format`` to adapt the newly added code to VPR's coding standard.
+If you have made alterations to python scripts, you would probably need to run ``make format-py`` and ``./dev/pylint_check.py`` from the VTR root directory to correct the python code formatting and check for lint errors. 
+
 
 ## Odin II's Flow
 
@@ -90,14 +94,14 @@ digraph G {
 
 Odin II uses Bison and Flex to parse a passed Verilog file and produce an Abstract Syntax Tree for each module found in the Verilog File.
 The AST is considered the "front-end" of Odin II.
-Most of the code for this can be found in verilog_bison.y, verilog_flex.l and parse_making_ast.cpp located in the ODIN_II/SRC directory.
+Most of the code for this can be found in verilog_bison.y, verilog_flex.l and parse_making_ast.cpp located in the odin_ii/SRC directory.
 
 ### AST Elaboration
 
 In this step, Odin II parses through the ASTs and elaborates specific parts like for loops, function instances, etc.
 It also will simplify the tree and rid itself of useless parts, such as an unused if statement.
 It then builds one large AST, incorporating each module.
-The code for this can mostly be found in ast_elaborate.cpp located in the ODIN_II/SRC directory.
+The code for this can mostly be found in ast_elaborate.cpp located in the odin_ii/SRC directory.
 
 > **NOTE**
 >
@@ -107,7 +111,7 @@ The code for this can mostly be found in ast_elaborate.cpp located in the ODIN_I
 
 Once again, Odin II parses through the AST assembling a Netlist.
 During the Netlist creation, pins are assigned and connected.
-The code for this can be found in netlist_create_from_ast.cpp located in the ODIN_II/SRC directory.
+The code for this can be found in netlist_create_from_ast.cpp located in the odin_ii/SRC directory.
 
 > **NOTE**
 >
@@ -128,7 +132,7 @@ The simulator of Odin II takes an Input Vector file and creates an Output Vector
 
 When making improvements to Odin II, there are some features the developer should be aware of to make their job easier.
 For instance, Odin II has a -A and -G command that prints the ASTs and Netlist viewable with GraphViz.
-These files can be found in the ODIN_II directory.
+These files can be found in the odin_ii directory.
 This is very helpful to visualize what is being created and how everything is related to each other in the Netlist and AST.
 
 Another feature to be aware of is ``make test``.

@@ -20,9 +20,6 @@
 // THE SOFTWARE.
 
 #include "json.h"
-#include <math.h>    // for HUGEVAL to check for overflow in strtod
-#include <stdlib.h>  // strtod
-#include <errno.h>   // for strtod errors
 #include <capnp/orphan.h>
 #include <kj/debug.h>
 #include <kj/function.h>
@@ -37,6 +34,7 @@ struct JsonCodec::Impl {
   bool prettyPrint = false;
   HasMode hasMode = HasMode::NON_NULL;
   size_t maxNestingDepth = 64;
+  bool rejectUnknownFields = false;
 
   kj::HashMap<Type, HandlerBase*> typeHandlers;
   kj::HashMap<StructSchema::Field, HandlerBase*> fieldHandlers;
@@ -95,6 +93,10 @@ struct JsonCodec::Impl {
         return kj::strTree(call.getFunction(), '(', encodeList(
             kj::mv(encodedElements), childMultiline, indent, multiline, true), ')');
       }
+
+      case JsonValue::RAW: {
+        return kj::strTree(value.getRaw());
+      }
     }
 
     KJ_FAIL_ASSERT("unknown JsonValue type", static_cast<uint>(value.which()));
@@ -109,7 +111,6 @@ struct JsonCodec::Impl {
       switch (c) {
         case '\"': escaped.addAll(kj::StringPtr("\\\"")); break;
         case '\\': escaped.addAll(kj::StringPtr("\\\\")); break;
-        case '/' : escaped.addAll(kj::StringPtr("\\/" )); break;
         case '\b': escaped.addAll(kj::StringPtr("\\b")); break;
         case '\f': escaped.addAll(kj::StringPtr("\\f")); break;
         case '\n': escaped.addAll(kj::StringPtr("\\n")); break;
@@ -185,6 +186,8 @@ void JsonCodec::setMaxNestingDepth(size_t maxNestingDepth) {
 }
 
 void JsonCodec::setHasMode(HasMode mode) { impl->hasMode = mode; }
+
+void JsonCodec::setRejectUnknownFields(bool enabled) { impl->rejectUnknownFields = enabled; }
 
 kj::String JsonCodec::encode(DynamicValue::Reader value, Type type) const {
   MallocMessageBuilder message;
@@ -387,7 +390,7 @@ void JsonCodec::decodeObject(JsonValue::Reader input, StructSchema type, Orphana
     KJ_IF_MAYBE(fieldSchema, type.findFieldByName(field.getName())) {
       decodeField(*fieldSchema, field.getValue(), orphanage, output);
     } else {
-      // Unknown json fields are ignored to allow schema evolution
+      KJ_REQUIRE(!impl->rejectUnknownFields, "Unknown field", field.getName());
     }
   }
 }
@@ -742,7 +745,7 @@ public:
 private:
   kj::String consumeQuotedString() {
     input.consume('"');
-    // TODO(perf): Avoid copy / alloc if no escapes encoutered.
+    // TODO(perf): Avoid copy / alloc if no escapes encountered.
     // TODO(perf): Get statistics on string size and preallocate?
     kj::Vector<char> decoded;
 
@@ -820,9 +823,9 @@ private:
       if ('0' <= c && c <= '9') {
         codePoint |= c - '0';
       } else if ('a' <= c && c <= 'f') {
-        codePoint |= c - 'a';
+        codePoint |= c - 'a' + 10;
       } else if ('A' <= c && c <= 'F') {
-        codePoint |= c - 'A';
+        codePoint |= c - 'A' + 10;
       } else {
         KJ_FAIL_REQUIRE("Invalid hex digit in unicode escape.", c);
       }
@@ -926,7 +929,7 @@ public:
       // * Named unions, which are special cases of named groups. In this case, the union may be
       //   annotated by annotating the field. In this case, we receive a non-null `discriminator`
       //   as a constructor parameter, and schemaProto.getAnnotations() must be empty because
-      //   it's not possible to annotate a group's type (becaues the type is anonymous).
+      //   it's not possible to annotate a group's type (because the type is anonymous).
       // * Unnamed unions, of which there can only be one in any particular scope. In this case,
       //   the parent struct type itself is annotated.
       // So if we received `null` as the constructor parameter, check for annotations on the struct
@@ -1172,7 +1175,7 @@ private:
       // The parent struct is a flattened union, and some of the union's members are flattened
       // structs or groups, and this field is possibly a member of one or more of them. `index`
       // is not used, because it's possible that the same field name appears in multiple variants.
-      // Intsead, the parser must find the union tag, and then can descend and attempt to parse
+      // Instead, the parser must find the union tag, and then can descend and attempt to parse
       // the field in the context of whichever variant is selected.
 
       UNION_VALUE
@@ -1255,7 +1258,7 @@ private:
           // When we have an explicit union discriminant, we don't need to encode void fields.
         } else {
           flattenedFields.add(FlattenedField {
-              prefix, info.name, which->getType(), reader.get(*which) });
+              prefix, info.name, *which, reader.get(*which) });
         }
       }
     }
@@ -1317,14 +1320,15 @@ private:
 
       KJ_UNREACHABLE;
     } else {
-      // Ignore undefined field.
+      // Ignore undefined field -- unless the flag is set to reject them.
+      KJ_REQUIRE(!codec.impl->rejectUnknownFields, "Unknown field", name);
       return true;
     }
   }
 
   const void* getUnionInstanceIdentifier(DynamicStruct::Builder obj) const {
     // Gets a value uniquely identifying an instance of a union.
-    // HACK: We return a poniter to the union's discriminant within the underlying buffer.
+    // HACK: We return a pointer to the union's discriminant within the underlying buffer.
     return reinterpret_cast<const uint16_t*>(
         AnyStruct::Reader(obj.asReader()).getDataSection().begin()) + discriminantOffset;
   }
@@ -1384,7 +1388,7 @@ class JsonCodec::JsonValueHandler final: public JsonCodec::Handler<DynamicStruct
 public:
   void encode(const JsonCodec& codec, DynamicStruct::Reader input,
               JsonValue::Builder output) const override {
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
     // TODO(msvc): Hack to work around missing AnyStruct::Builder constructor on MSVC.
     rawCopy(input, toDynamic(output));
 #else

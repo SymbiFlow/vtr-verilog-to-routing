@@ -8,30 +8,28 @@
 //			INTERNAL FUNCTION DECLARATIONS
 //============================================================================================
 //Cleanup Functions
-void build_netlist (t_module* module, busvec* buses, s_hash** hash_table);
-void init_nets (t_pin_def** pins, int num_pins, busvec* buses, struct s_hash** hash_table);
-void set_net_assigns (t_assign** assignments, int num_assigns, busvec* buses, struct s_hash** hash_table);
-void add_subckts (t_node** nodes, int num_nodes, busvec* buses, struct s_hash** hash_table);
-void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** nodes, int original_num_nodes, t_module* module );
-void clean_netlist ( busvec* buses, struct s_hash** hash_table, t_node** nodes, int num_nodes );
+void build_netlist (t_module* module, busvec* buses, std::unordered_map<std::string, int> & hash_table);
+void init_nets (t_pin_def** pins, int num_pins, busvec* buses, std::unordered_map<std::string, int> & hash_table);
+void set_net_assigns (t_assign** assignments, int num_assigns, busvec* buses, std::unordered_map<std::string, int> & hash_table);
+void add_subckts (t_node** nodes, int num_nodes, busvec* buses, std::unordered_map<std::string, int> & hash_table);
+void remove_one_lut_nodes ( busvec* buses, std::unordered_map<std::string, int> & hash_table, t_module* module );
+void clean_netlist ( busvec* buses, std::unordered_map<std::string, int> & hash_table, t_node** nodes, int num_nodes );
 void reassign_net_source (t_net* net);
-void print_to_module ( t_module* module, busvec* buses, struct s_hash** hash_table );
+void print_to_module ( t_module* module, busvec* buses, std::unordered_map<std::string, int> & hash_table );
 
-netvec* get_bus_from_hash (struct s_hash** hash_table, char* temp_name, busvec* buses);
+netvec* get_bus_from_hash (std::unordered_map<std::string, int> & hash_table, char* temp_name, busvec* buses);
 
-void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_hash** hash_table);
+void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, std::unordered_map<std::string, int> & hash_table);
 void print_all_nets ( busvec* buses, const char* filename );
 
 bool is_feeder_onelut ( t_node* node );
-void remove_node ( t_node* node, t_node** nodes, int original_num_nodes );
 
 //============================================================================================
 //============================================================================================
 
 void netlist_cleanup (t_module* module){
 
-	struct s_hash** hash_table = alloc_hash_table();
-
+	std::unordered_map<std::string, int> hash_table;
 	busvec buses;
 
 	cout << "\t>> Building netlist...\n" ;
@@ -50,7 +48,7 @@ void netlist_cleanup (t_module* module){
 
 	cout << "\t>> Removing One-LUTs" << "...\n";
 
-	remove_one_lut_nodes ( &buses, hash_table, module->array_of_nodes, module->number_of_nodes, module );
+	remove_one_lut_nodes ( &buses, hash_table, module );
 
 	cout << "\t>> Removing buffered nets" << ((clean_mode == CL_BUFF)? "":" and inverted subckt inputs") << "...\n";
 
@@ -65,14 +63,12 @@ void netlist_cleanup (t_module* module){
 
 	print_to_module ( module, &buses, hash_table );
 
-	free_hash_table(hash_table);
-
 }
 
 //============================================================================================
 //============================================================================================
 
-void build_netlist (t_module* module, busvec* buses, s_hash** hash_table){
+void build_netlist (t_module* module, busvec* buses, std::unordered_map<std::string, int> & hash_table){
 
 	//Initialize all nets
 	init_nets(module->array_of_pins, module->number_of_pins, buses, hash_table);
@@ -105,7 +101,7 @@ void build_netlist (t_module* module, busvec* buses, s_hash** hash_table){
 //============================================================================================
 //============================================================================================
 
-void init_nets (t_pin_def** pins, int num_pins, busvec* buses, struct s_hash** hash_table){
+void init_nets (t_pin_def** pins, int num_pins, busvec* buses, std::unordered_map<std::string, int> & hash_table){
 
 	t_net temp_net;
 	netvec temp_bus;
@@ -113,7 +109,9 @@ void init_nets (t_pin_def** pins, int num_pins, busvec* buses, struct s_hash** h
 	for (int i = 0; i < num_pins; i++){
 		temp_bus.clear();	//reset the temporary bus 
 
-		insert_in_hash_table(hash_table, pins[i]->name, i);	//place the net in the hash table
+		std::string pin_name(pins[i]->name);
+
+		hash_table[pin_name] = i; //place the net in the hash table - the value is the bus index
 
 		temp_net.pin = pins[i];	//each bus corresponds to a pin
 
@@ -140,7 +138,7 @@ void init_nets (t_pin_def** pins, int num_pins, busvec* buses, struct s_hash** h
 //============================================================================================
 //============================================================================================
 
-void set_net_assigns (t_assign** assignments, int num_assigns, busvec* buses, struct s_hash** hash_table){
+void set_net_assigns (t_assign** assignments, int num_assigns, busvec* buses, std::unordered_map<std::string, int> & hash_table){
 
 	t_net* temp_net;
 	netvec* temp_bus;
@@ -197,7 +195,7 @@ void set_net_assigns (t_assign** assignments, int num_assigns, busvec* buses, st
 //============================================================================================
 //============================================================================================
 
-void add_subckts (t_node** nodes, int num_nodes, busvec* buses, struct s_hash** hash_table){
+void add_subckts (t_node** nodes, int num_nodes, busvec* buses, std::unordered_map<std::string, int> & hash_table){
 
 	t_net* temp_net;
 	netvec* temp_bus;
@@ -238,7 +236,7 @@ void add_subckts (t_node** nodes, int num_nodes, busvec* buses, struct s_hash** 
 //============================================================================================
 //============================================================================================
 
-void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** nodes, int original_num_nodes, t_module* module ){
+void remove_one_lut_nodes ( busvec* buses, std::unordered_map<std::string, int> & hash_table, t_module* module ){
 /*
         Quartus fitter may have introduced some one-LUTs in the post-fit netlist that makes it harder for VPR to place and route.
         Generally, these one-LUTs are inserted by the Quartus router in order to pass a signal through a LUT to the FF in the same
@@ -278,8 +276,17 @@ void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** 
                                 ---->
                                 |
                                 ---->
+	Change Log:
+		- Srivatsan Srinivasan, September 2021:
+			- removed the function parameters "original_num_nodes" and "nodes". These values can be from the "module" parameter and are now assigned internally within this function.
+		- Srivatsan Srinivasan, August 2021:
+			- Moved the incrementing of the "oneluts_elim" variable to this function from the "remove_node" function. The purpose of this change was to localise any variable attached to removing one lut nodes within this function. Additionally, now the "remove_node" function is generalized and is not limited to be only used by "remove_one_lut_nodes".
 */
 	oneluts_elim = 0;
+
+	// parameters related to the module
+	int original_num_nodes = module->number_of_nodes;
+	t_node** nodes = module->array_of_nodes;
 
 	t_node* temp_node;
 	t_node_port_association* temp_port;
@@ -290,7 +297,7 @@ void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** 
 	t_node_port_association* source_port;
 	t_node_port_association* prev_port;
 	netvec* prev_bus;
-	t_net* prev_net;
+	t_net* prev_net = nullptr;
 
 	netvec* vcc_bus = get_bus_from_hash (hash_table, const_cast<char*>("vcc"), buses);
 	VTR_ASSERT(vcc_bus != NULL);
@@ -344,37 +351,17 @@ void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** 
 
 					//Free the LUT
 					remove_node(source_node, nodes, original_num_nodes);
+					
+					// increment the count of the number of one lut nodes we eliminiated
+					oneluts_elim++;
 
 				}
 			}
 		}
 	}
 
-	//Regorganize nodes array by filling in gaps with the last available elements in the array to save CPU time
-	int new_array_size = original_num_nodes - oneluts_elim;
-	int curr_node_index = 0;
-	int replacement_node_index = original_num_nodes - 1;
-	while (curr_node_index < replacement_node_index) {
-		if (nodes[curr_node_index] == NULL) {
-			if (nodes[replacement_node_index] != NULL) {
-				//Replace gap with node
-				nodes[curr_node_index] = nodes[replacement_node_index];
-				nodes[replacement_node_index] = NULL;
-				curr_node_index++;
-			}
-			replacement_node_index--;
-		} else {
-			curr_node_index++;
-		}
-	}
-	if (nodes[curr_node_index] == NULL) {
-		VTR_ASSERT(curr_node_index == new_array_size); //check array size
-	} else {
-		VTR_ASSERT(curr_node_index == new_array_size - 1); //check array size
-	}
-
-	//Update array bounds
-	module -> number_of_nodes = new_array_size;
+	// fix the module nodes list (node array) by filling in the gaps where the one-lut nodes have been removed above 
+	reorganize_module_node_list(module);
 
     //Reduce run-time by only verifying at the end
 	//verify_netlist (nodes, module->number_of_nodes, buses, hash_table);
@@ -388,7 +375,7 @@ void remove_one_lut_nodes ( busvec* buses, struct s_hash** hash_table, t_node** 
 //============================================================================================
 //============================================================================================
 
-void clean_netlist ( busvec* buses, struct s_hash** hash_table, t_node** nodes, int num_nodes ){
+void clean_netlist ( busvec* buses, std::unordered_map<std::string, int> & hash_table, t_node** nodes, int num_nodes ){
 	netvec* temp_bus;
 
 	t_net* temp_net;
@@ -541,7 +528,7 @@ void reassign_net_source (t_net* net){
 //============================================================================================
 //============================================================================================
 
-void print_to_module ( t_module* module, busvec* buses, struct s_hash** hash_table ){
+void print_to_module ( t_module* module, busvec* buses, std::unordered_map<std::string, int> & hash_table ){
 
 	t_net* target_net;
 	t_net* source_net;
@@ -623,21 +610,22 @@ void print_to_module ( t_module* module, busvec* buses, struct s_hash** hash_tab
 
 //============================================================================================
 //============================================================================================
+#include <fstream>
+netvec* get_bus_from_hash (std::unordered_map<std::string, int> & hash_table, char* bus_name, busvec* buses){
 
-netvec* get_bus_from_hash (struct s_hash** hash_table, char* bus_name, busvec* buses){
-	s_hash* hash_entry;
+	std::string bus_name_str(bus_name);
+    auto hash_entry = hash_table.find(bus_name_str);
 
-	hash_entry = get_hash_entry (hash_table, bus_name);
-	VTR_ASSERT(hash_entry != NULL);
-	VTR_ASSERT((unsigned int)hash_entry->index < buses->size());
+	VTR_ASSERT(hash_entry != hash_table.end());
+	VTR_ASSERT((unsigned int)hash_entry->second < buses->size());
 
-	return &(buses->at(hash_entry->index));
+	return &(buses->at(hash_entry->second));
 }
 
 //============================================================================================
 //============================================================================================
 
-void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_hash** hash_table){
+void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, std::unordered_map<std::string, int> & hash_table){
 
 	netvec* temp_bus;
 
@@ -649,11 +637,9 @@ void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_has
 	
 	t_pin_def* ref_pin;
 
-	s_hash* hash_entry;
-
 	cout << "\t>> Verifying netlist...\n" ;
 
-	//Step 0: Construct child_count "matrix" corresponding to the net indeces. 
+	//Step 0: Construct child_count "matrix" corresponding to the net indices. 
 	//	The children of each net will be counted as the netlist is verified, 
 	//	then compared against the number of children stored in the net.
 	vector < vector <int> > child_count;
@@ -669,14 +655,15 @@ void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_has
 
 		ref_pin = temp_bus->at(0).pin;
 
-		hash_entry = get_hash_entry (hash_table, ref_pin->name);
-		VTR_ASSERT(hash_entry != NULL);
-		VTR_ASSERT(hash_entry->index == i);
-		
+		auto hash_entry = hash_table.find(ref_pin->name);
+
+		VTR_ASSERT(hash_entry != hash_table.end());
+		VTR_ASSERT((unsigned int)hash_entry->second == (unsigned int)i);
+
 		for (int j = 0; (unsigned int)j < temp_bus->size(); j++){
 			temp_net = &(temp_bus->at(j));
 
-			VTR_ASSERT((temp_net->bus_index == i)&&(temp_net->wire_index == j));	//indeces must line up
+			VTR_ASSERT((temp_net->bus_index == i)&&(temp_net->wire_index == j));	//indices must line up
 			VTR_ASSERT(ref_pin == temp_net->pin);	//all nets in a common bus share a pin
 
 			if (temp_net->driver == CONST){
@@ -689,7 +676,7 @@ void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_has
 				net_source = (t_net*)temp_net->source;
 
                 //PIN_INOUT should have been removed earlier
-				VTR_ASSERT((net_source->pin->type == PIN_INPUT)||(net_source->pin->type == PIN_WIRE));
+				VTR_ASSERT((net_source->pin->type == PIN_OUTPUT) || (net_source->pin->type == PIN_INPUT)||(net_source->pin->type == PIN_WIRE));
 
 				VTR_ASSERT((unsigned int)net_source->bus_index < child_count.size());
 				VTR_ASSERT((unsigned int)net_source->wire_index < child_count[net_source->bus_index].size());
@@ -739,7 +726,7 @@ void verify_netlist ( t_node** nodes, int num_nodes, busvec* buses, struct s_has
 		VTR_ASSERT(temp_bus->size() > 0);
 		for (int j = 0; (unsigned int)j < temp_bus->size(); j++){
 			temp_net = &(temp_bus->at(j));
-			VTR_ASSERT((temp_net->bus_index == i)&&(temp_net->wire_index == j));	//indeces must line up
+			VTR_ASSERT((temp_net->bus_index == i)&&(temp_net->wire_index == j));	//indices must line up
 			VTR_ASSERT(child_count[i][j] == temp_net->num_children);
 		}
 	}
@@ -829,6 +816,12 @@ bool is_feeder_onelut ( t_node* node ) {
 void remove_node ( t_node* node, t_node** nodes, int original_num_nodes ) {
 	//Free node and assign it to NULL on the spot
 	//Array will be re-organized to fill in the gaps later
+	/*
+		Change Log:
+		- Srivatsan Srinivasan, August 2021:
+			- Orirignally, the "oneluts_elim" variable (which is used to keep track of the number of one lut nodes removed from the node list) was incremented here. This incrementation has been moved to the "remove_one_lut_nodes" function.
+			- This purpose of this change is that now this function is not limited to just be used by "remove_one_lut_nodes".
+	*/
 
 	VTR_ASSERT(node != NULL);
 	VTR_ASSERT(nodes != NULL);
@@ -848,7 +841,65 @@ void remove_node ( t_node* node, t_node** nodes, int original_num_nodes ) {
 	}
 	
 	VTR_ASSERT(found);
-	oneluts_elim++;
+}
+
+//============================================================================================
+//============================================================================================
+
+void reorganize_module_node_list(t_module* module)
+{
+	/*
+        The purpose of this function is to regorganize the module node list (node array) by filling in gaps with the last available elements in the array to save CPU time.
+
+		The module provided to this function is expected to have nodes deleted within its nodes list (array). This essentially creates gaps in the array. So we fill in the gaps of this array and ensure it is a continuous list of nodes.
+
+		Please refer to the example below:
+
+		Initial Node array:
+             ------      ------                  ------      ------
+            |LUT 1| --> |LUT 2| -->         --> |LUT 3| --> |LUT 4|
+            ------      ------                  ------      ------
+
+		After reorganization and filling gaps:
+
+             ------      ------      ------      ------
+            |LUT 1| --> |LUT 2| --> |LUT 4| --> |LUT 3| -->
+            ------      ------      ------      ------
+
+		The function fills in the gaps with the last available node in the list (as shown in the example above).
+
+	Change Log:
+		- Srivatsan Srinivasan, August 2021:
+			- created this function to reorganize node arrays with gaps inside of them.
+			- Initially the feature provided by this function was embedded inside the "remove_one_lut_nodes" function. By creating a separate function, we are now not restricted to only removing one-lut nodes. 
+			- Now we can remove any types of nodes and then run this function to reorganize the node array.  
+*/
+	// assign module related parameters
+	int original_number_of_nodes = module->number_of_nodes;
+	t_node** module_node_list = module->array_of_nodes;
+
+	int curr_node_index = 0;
+	int replacement_node_index = original_number_of_nodes - 1;
+	while (curr_node_index <= replacement_node_index) {
+		if (module_node_list[curr_node_index] == NULL) {
+			if (module_node_list[replacement_node_index] != NULL) {
+				//Replace gap with node
+				module_node_list[curr_node_index] = module_node_list[replacement_node_index];
+				module_node_list[replacement_node_index] = NULL;
+				curr_node_index++;
+			}
+			replacement_node_index--;
+		} else {
+			curr_node_index++;
+		}
+	}
+	
+	//Update array bounds
+	// curr_node_index keeps track of the number of non-removed nodes within the node array. 
+	// So we can use it directly to indicate the new size of the array.
+	module -> number_of_nodes = curr_node_index;
+
+	return;
 }
 
 //============================================================================================

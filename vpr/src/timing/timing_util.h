@@ -1,19 +1,20 @@
-#ifndef VPR_TIMING_UTIL_H
-#define VPR_TIMING_UTIL_H
+#pragma once
+
 #include <vector>
+#include <string_view>
 
-#include "tatum/timing_analyzers.hpp"
+#include "netlist_fwd.h"
 #include "tatum/TimingConstraints.hpp"
-#include "tatum/timing_paths.hpp"
-
-#include "vtr_vec_id_set.h"
 
 #include "histogram.h"
+#include "tatum/analyzers/HoldTimingAnalyzer.hpp"
+#include "tatum/analyzers/SetupTimingAnalyzer.hpp"
+#include "tatum/report/TimingPath.hpp"
+#include "tatum/report/SkewPath.hpp"
+#include "tatum/report/TimingPathCategory.hpp"
 #include "timing_info_fwd.h"
-#include "DomainPair.h"
-#include "globals.h"
+#include "domain_pair.h"
 
-#include "vpr_utils.h"
 #include "clustered_netlist_utils.h"
 
 double sec_to_nanosec(double seconds);
@@ -36,6 +37,13 @@ float find_setup_total_negative_slack(const tatum::SetupTimingAnalyzer& setup_an
 //Returns the worst negative slack (setup) across all timing end-points and clock domain pairs
 float find_setup_worst_negative_slack(const tatum::SetupTimingAnalyzer& setup_analyzer);
 
+//Returns the worst setup skew path for each clock domain pair (launch domain == capture domain
+//included), sorted worst-first. The first entry is therefore also the overall worst setup skew.
+//Only paths in the categories accepted by category_filter (by default all paths) are considered.
+std::vector<tatum::SkewPath> find_setup_worst_skew_per_domain_pair(const tatum::TimingConstraints& constraints,
+                                                                   const tatum::SetupTimingAnalyzer& setup_analyzer,
+                                                                   const tatum::TimingPathCategoryFilter& category_filter = tatum::TimingPathCategoryFilter::all());
+
 //Returns the slack at a particular node for the specified clock domains (if found), otherwise NAN
 float find_node_setup_slack(const tatum::SetupTimingAnalyzer& setup_analyzer, tatum::NodeId node, tatum::DomainId launch_domain, tatum::DomainId capture_domain);
 
@@ -43,12 +51,17 @@ float find_node_setup_slack(const tatum::SetupTimingAnalyzer& setup_analyzer, ta
 std::vector<HistogramBucket> create_setup_slack_histogram(const tatum::SetupTimingAnalyzer& setup_analyzer, size_t num_bins = 10);
 
 //Returns a criticality histogram
-std::vector<HistogramBucket> create_criticality_histogram(const SetupTimingInfo& setup_timing,
+std::vector<HistogramBucket> create_criticality_histogram(const Netlist<>& net_list,
+                                                          const SetupTimingInfo& setup_timing,
                                                           const ClusteredPinAtomPinsLookup& netlist_pin_lookup,
+                                                          bool is_flat,
                                                           size_t num_bins = 10);
 
 //Print a useful summary of timing information
-void print_setup_timing_summary(const tatum::TimingConstraints& constraints, const tatum::SetupTimingAnalyzer& setup_analyzer, std::string prefix);
+void print_setup_timing_summary(const tatum::TimingConstraints& constraints,
+                                const tatum::SetupTimingAnalyzer& setup_analyzer,
+                                std::string_view prefix,
+                                std::string_view timing_summary_filename);
 
 /*
  * Hold-time related statistics
@@ -62,11 +75,20 @@ float find_hold_worst_negative_slack(const tatum::HoldTimingAnalyzer& hold_analy
 //Returns the worst slack (hold) between the specified launch and capture clock domains
 float find_hold_worst_slack(const tatum::HoldTimingAnalyzer& hold_analyzer, const tatum::DomainId launch, const tatum::DomainId capture);
 
+//Returns the worst hold skew path for each clock domain pair (launch domain == capture domain
+//included), sorted worst-first. The first entry is therefore also the overall worst hold skew.
+//Only paths in the categories accepted by category_filter (by default all paths) are considered.
+std::vector<tatum::SkewPath> find_hold_worst_skew_per_domain_pair(const tatum::TimingConstraints& constraints,
+                                                                  const tatum::HoldTimingAnalyzer& hold_analyzer,
+                                                                  const tatum::TimingPathCategoryFilter& category_filter = tatum::TimingPathCategoryFilter::all());
+
 //Returns a setup slack histogram
 std::vector<HistogramBucket> create_hold_slack_histogram(const tatum::HoldTimingAnalyzer& hold_analyzer, size_t num_bins = 10);
 
 //Print a useful summary of timing information
-void print_hold_timing_summary(const tatum::TimingConstraints& constraints, const tatum::HoldTimingAnalyzer& hold_analyzer, std::string prefix);
+void print_hold_timing_summary(const tatum::TimingConstraints& constraints,
+                               const tatum::HoldTimingAnalyzer& hold_analyzer,
+                               std::string_view prefix);
 
 float find_total_negative_slack_within_clb_blocks(const tatum::HoldTimingAnalyzer& hold_analyzer);
 
@@ -81,107 +103,15 @@ tatum::NodeId find_origin_node_for_hold_slack(const tatum::TimingTags::tag_range
 //Returns the a map of domain's and their clock fanout (i.e. logical outputs at which the clock captures)
 std::map<tatum::DomainId, size_t> count_clock_fanouts(const tatum::TimingGraph& timing_graph, const tatum::SetupTimingAnalyzer& setup_analyzer);
 
-//Helper class for iterating through the timing edges associated with a particular
-//clustered netlist pin, and invalidating them.
-//
-//For efficiency, it pre-calculates and stores the mapping from ClusterPinId -> tatum::EdgeIds,
-//and tracks whether a particular ClusterPinId has been already invalidated (to avoid the expense
-//of invalidating it multiple times)
-class ClusteredPinTimingInvalidator {
-  public:
-    typedef vtr::Range<const tatum::EdgeId*> tedge_range;
-
-  public:
-    ClusteredPinTimingInvalidator(const ClusteredNetlist& clb_nlist,
-                                  const ClusteredPinAtomPinsLookup& clb_atom_pin_lookup,
-                                  const AtomNetlist& atom_nlist,
-                                  const AtomLookup& atom_lookup,
-                                  const tatum::TimingGraph& timing_graph) {
-        pin_first_edge_.reserve(clb_nlist.pins().size() + 1); //Exact
-        timing_edges_.reserve(clb_nlist.pins().size() + 1);   //Lower bound
-
-        for (ClusterPinId clb_pin : clb_nlist.pins()) {
-            pin_first_edge_.push_back(timing_edges_.size());
-
-            for (const AtomPinId atom_pin : clb_atom_pin_lookup.connected_atom_pins(clb_pin)) {
-                tatum::EdgeId tedge = atom_pin_to_timing_edge(timing_graph, atom_nlist, atom_lookup, atom_pin);
-
-                if (!tedge) {
-                    continue;
-                }
-
-                timing_edges_.push_back(tedge);
-            }
-        }
-        //Sentinels
-        timing_edges_.push_back(tatum::EdgeId::INVALID());
-        pin_first_edge_.push_back(timing_edges_.size());
-
-        VTR_ASSERT(pin_first_edge_.size() == clb_nlist.pins().size() + 1);
-    }
-
-    //Returns the set of timing edges associated with the specified cluster pin
-    tedge_range pin_timing_edges(ClusterPinId pin) const {
-        int ipin = size_t(pin);
-        return vtr::make_range(&timing_edges_[pin_first_edge_[ipin]],
-                               &timing_edges_[pin_first_edge_[ipin + 1]]);
-    }
-
-    //Invalidates all timing edges associated with the clustered netlist connection
-    //driving the specified pin
-    template<class TimingInfo>
-    void invalidate_connection(ClusterPinId pin, TimingInfo* timing_info) {
-        if (invalidated_pins_.count(pin)) return; //Already invalidated
-
-        for (tatum::EdgeId edge : pin_timing_edges(pin)) {
-            timing_info->invalidate_delay(edge);
-        }
-
-        invalidated_pins_.insert(pin);
-    }
-
-    //Resets invalidation state for this class
-    void reset() {
-        invalidated_pins_.clear();
-    }
-
-  private:
-    tatum::EdgeId atom_pin_to_timing_edge(const tatum::TimingGraph& timing_graph, const AtomNetlist& atom_nlist, const AtomLookup& atom_lookup, const AtomPinId atom_pin) {
-        tatum::NodeId pin_tnode = atom_lookup.atom_pin_tnode(atom_pin);
-        VTR_ASSERT_SAFE(pin_tnode);
-
-        AtomNetId atom_net = atom_nlist.pin_net(atom_pin);
-        VTR_ASSERT_SAFE(atom_net);
-
-        AtomPinId atom_net_driver = atom_nlist.net_driver(atom_net);
-        VTR_ASSERT_SAFE(atom_net_driver);
-
-        tatum::NodeId driver_tnode = atom_lookup.atom_pin_tnode(atom_net_driver);
-        VTR_ASSERT_SAFE(driver_tnode);
-
-        //Find and invalidate the incoming timing edge corresponding
-        //to the connection between the net driver and sink pin
-        for (tatum::EdgeId edge : timing_graph.node_in_edges(pin_tnode)) {
-            if (timing_graph.edge_src_node(edge) == driver_tnode) {
-                //The edge corresponding to this atom pin
-                return edge;
-            }
-        }
-        return tatum::EdgeId::INVALID(); //None found
-    }
-
-  private:
-    std::vector<int> pin_first_edge_; //Indicies into timing_edges corresponding
-    std::vector<tatum::EdgeId> timing_edges_;
-    vtr::vec_id_set<ClusterPinId> invalidated_pins_;
-};
-
 /*
  * Slack and criticality calculation utilities
  */
 
 //Return the criticality of a net's pin in the CLB netlist
-float calculate_clb_net_pin_criticality(const SetupTimingInfo& timing_info, const ClusteredPinAtomPinsLookup& pin_lookup, ClusterPinId clb_pin);
+float calculate_clb_net_pin_criticality(const SetupTimingInfo& timing_info,
+                                        const ClusteredPinAtomPinsLookup& pin_lookup,
+                                        const ParentPinId clb_pin,
+                                        bool is_flat);
 
 //Return the setup slack of a net's pin in the CLB netlist
 float calculate_clb_net_pin_setup_slack(const SetupTimingInfo& timing_info, const ClusteredPinAtomPinsLookup& pin_lookup, ClusterPinId clb_pin);
@@ -198,19 +128,48 @@ float calculate_clb_net_pin_setup_slack(const SetupTimingInfo& timing_info, cons
 //         IEEE CAD, vol. 34, no. 12, pp. 1942-1953, Dec. 2015. doi: 10.1109/TCAD.2015.2440316
 //
 // which handles the trade-off between different timing constraints in multi-clock circuits.
-float calc_relaxed_criticality(const std::map<DomainPair, float>& domains_max_req,
-                               const std::map<DomainPair, float>& domains_worst_slack,
+float calc_relaxed_criticality(const DomainPairTable<float>& domains_max_req,
+                               const DomainPairTable<float>& domains_worst_slack,
                                const tatum::TimingTags::tag_range tags);
 
 /*
  * Debug
  */
-void print_tatum_cpds(std::vector<tatum::TimingPathInfo> cpds);
+void print_tatum_cpds(const std::vector<tatum::TimingPathInfo>& cpds);
 
-tatum::NodeId id_or_pin_name_to_tnode(std::string name_or_id);
-tatum::NodeId pin_name_to_tnode(std::string name);
+tatum::NodeId id_or_pin_name_to_tnode(const std::string& name_or_id);
+tatum::NodeId pin_name_to_tnode(const std::string& name);
 
-void write_setup_timing_graph_dot(std::string filename, SetupTimingInfo& timing_info, tatum::NodeId debug_node = tatum::NodeId::INVALID());
-void write_hold_timing_graph_dot(std::string filename, HoldTimingInfo& timing_info, tatum::NodeId debug_node = tatum::NodeId::INVALID());
+void write_setup_timing_graph_dot(const std::string& filename, const SetupTimingInfo& timing_info, tatum::NodeId debug_node = tatum::NodeId::INVALID());
+void write_hold_timing_graph_dot(const std::string& filename, HoldTimingInfo& timing_info, tatum::NodeId debug_node = tatum::NodeId::INVALID());
 
-#endif
+struct TimingStats {
+  private:
+    void writeHuman(std::ostream& output) const;
+    void writeJSON(std::ostream& output) const;
+    void writeXML(std::ostream& output) const;
+
+  public:
+    TimingStats(std::string prefix, double least_slack_cpd_delay, double fmax, double setup_worst_neg_slack, double setup_total_neg_slack, double setup_worst_skew, double critical_path_skew, std::string critical_path_category);
+
+    enum OutputFormat {
+        HumanReadable,
+        JSON,
+        XML
+    };
+
+    double least_slack_cpd_delay;
+    double fmax;
+    double setup_worst_neg_slack;
+    double setup_total_neg_slack;
+    double setup_worst_skew;
+    double critical_path_skew;
+    /// @brief The category (e.g. reg2reg) of the critical path, or empty if it has no clock skew.
+    std::string critical_path_category;
+    std::string prefix;
+
+    void write(OutputFormat fmt, std::ostream& output) const;
+};
+
+//Write a useful summary of timing information to JSON file
+void write_setup_timing_summary(std::string_view timing_summary_filename, const TimingStats& stats);

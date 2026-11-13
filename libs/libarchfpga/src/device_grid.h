@@ -1,0 +1,415 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <cmath>
+#include "vtr_bimap.h"
+#include "vtr_ndmatrix.h"
+#include "physical_types.h"
+#include "vtr_geometry.h"
+
+/**
+ * @brief s_grid_tile is the minimum tile of the fpga
+ * @note This struct shouldn't be directly accessed by other functions. Use the helper functions in DeviceGrid instead.
+ */
+struct t_grid_tile {
+    t_physical_tile_type_ptr type = nullptr; ///<Pointer to type descriptor, NULL for illegal
+    int width_offset = 0;                    ///<Number of grid tiles reserved based on width (right) of a block
+    int height_offset = 0;                   ///<Number of grid tiles reserved based on height (top) of a block
+    const t_metadata_dict* meta = nullptr;
+};
+
+// A unique identifier for a die on device (Including 3D stacked dice and interposer-connected dice)
+// Used in multi-die 2.5D and 3D architectures
+struct general_die_id_tag {};
+typedef vtr::StrongId<struct general_die_id_tag, short> DeviceDieId;
+
+/**
+ * @brief Die regions are (x, y, layer) positions with one position for an entire die.
+ * As an example, imagine a 3D device with two layers: the first layer having one horizontal and one vertical interposer cut and the second layer
+ * having one horizontal interposer cut. The following die regions would exist:
+ *     Layer 1:
+ *         +-----------+-----------+
+ *         |           |           |
+ *         |  (0,1,0)  |  (1,1,0)  |
+ *         |           |           |
+ *         +-----------+-----------+
+ *         |           |           |
+ *         |  (0,0,0)  |  (1,0,0)  |
+ *         |           |           |
+ *         +-----------+-----------+
+ *
+ *     Layer 2:
+ *         +-----------------------+
+ *         |                       |
+ *         |        (0,1,1)        |
+ *         |                       |
+ *         +-----------------------+
+ *         |                       |
+ *         |        (0,0,1)        |
+ *         |                       |
+ *         +-----------------------+
+ */
+struct t_die_region {
+    short x_die;
+    short y_die;
+    short layer;
+
+    auto operator<=>(const t_die_region&) const = default;
+};
+
+//TODO: All of the functions that use helper functions of this class should pass the layer_num to the functions, and the default value of layer_num should be deleted eventually.
+/**
+ * @class DeviceGrid
+ * @brief Represents the FPGA fabric. It is used to get information about different layers and tiles.
+ */
+class DeviceGrid {
+  public:
+    DeviceGrid() = default;
+    DeviceGrid(const t_grid_def& grid_def,
+               vtr::NdMatrix<t_grid_tile, 3> grid);
+
+    DeviceGrid(const t_grid_def& grid_def,
+               vtr::NdMatrix<t_grid_tile, 3> grid,
+               std::vector<t_logical_block_type_ptr> limiting_res);
+
+    const std::string& name() const { return name_; }
+
+    ///@brief Return the number of layers(number of dies)
+    inline size_t get_num_layers() const {
+        return grid_.dim_size(0);
+    }
+    ///@brief Return the width of the grid at the specified layer
+    size_t width() const { return grid_.dim_size(1); }
+    ///@brief Return the height of the grid at the specified layer
+    size_t height() const { return grid_.dim_size(2); }
+    ///@brief Return the grid dimensions in (# of layers, width, height) format
+    std::tuple<size_t, size_t, size_t> dim_sizes() const {
+        return {grid_.dim_size(0), grid_.dim_size(1), grid_.dim_size(2)};
+    }
+
+    ///@brief Return the size of the flattened grid on the given layer
+    inline size_t grid_size() const {
+        return grid_.size();
+    }
+
+    ///@brief deallocate members of DeviceGrid
+    void clear();
+
+    /**
+     * @brief Return the number of instances of the specified tile type on the specified layer.
+     * If the layer_num is -1, return the total number of instances of the specified tile type on all layers.
+     * @note This function should be used if count_instances() is called in the constructor.
+     */
+    size_t num_instances(t_physical_tile_type_ptr type, int layer_num) const;
+
+    /**
+     * @brief Returns the block types which limits the device size (may be empty if
+     *        resource limits were not considered when selecting the device).
+     */
+    const std::vector<t_logical_block_type_ptr>& limiting_resources() const { return limiting_resources_; }
+
+    ///@brief Returns true if the grid dimensions are fixed by an externally provided RR graph.
+    bool fixed_by_rr_graph() const { return fixed_by_rr_graph_; }
+    ///@brief Marks the grid as fixed by an externally provided RR graph, preventing resizing.
+    void set_fixed_by_rr_graph(bool val) { fixed_by_rr_graph_ = val; }
+
+    ///@brief Return the t_physical_tile_type_ptr at the specified location
+    inline t_physical_tile_type_ptr get_physical_type(const t_physical_tile_loc& tile_loc) const {
+        return grid_[tile_loc.layer_num][tile_loc.x][tile_loc.y].type;
+    }
+
+    ///@brief Return the width offset of the tile at the specified location. The root location of the tile is where width_offset and height_offset are 0.
+    inline int get_width_offset(const t_physical_tile_loc& tile_loc) const {
+        return grid_[tile_loc.layer_num][tile_loc.x][tile_loc.y].width_offset;
+    }
+
+    ///@brief Return the height offset of the tile at the specified location. The root location of the tile is where width_offset and height_offset are 0
+    inline int get_height_offset(const t_physical_tile_loc& tile_loc) const {
+        return grid_[tile_loc.layer_num][tile_loc.x][tile_loc.y].height_offset;
+    }
+
+    ///@brief Returns true if the given location is within the bounds of the device grid (valid layer, x, and y).
+    inline bool is_valid_tile_loc(const t_physical_tile_loc& tile_loc) const {
+        return tile_loc.layer_num >= 0
+               && tile_loc.layer_num < (int)get_num_layers()
+               && tile_loc.x >= 0
+               && tile_loc.x < (int)width()
+               && tile_loc.y >= 0
+               && tile_loc.y < (int)height();
+    }
+
+    ///@brief Returns true if the given location is the root location (bottom left corner) of a tile.
+    inline bool is_root_location(const t_physical_tile_loc& tile_loc) const {
+        return get_width_offset(tile_loc) == 0 && get_height_offset(tile_loc) == 0;
+    }
+
+    ///@brief Given a location, return the root location (bottom-left corner) of the tile instance
+    inline t_physical_tile_loc get_root_location(const t_physical_tile_loc& tile_loc) const {
+        t_physical_tile_loc root_loc;
+        root_loc.layer_num = tile_loc.layer_num;
+        root_loc.x = tile_loc.x - get_width_offset(tile_loc);
+        root_loc.y = tile_loc.y - get_height_offset(tile_loc);
+        return root_loc;
+    }
+
+    ///@brief Returns a rectangle which represents the bounding box of the tile at the given location.
+    inline vtr::Rect<int> get_tile_bb(const t_physical_tile_loc& tile_loc) const {
+        t_physical_tile_type_ptr tile_type = get_physical_type(tile_loc);
+
+        int tile_xlow = tile_loc.x - get_width_offset(tile_loc);
+        int tile_ylow = tile_loc.y - get_height_offset(tile_loc);
+        int tile_xhigh = tile_xlow + tile_type->width - 1;
+        int tile_yhigh = tile_ylow + tile_type->height - 1;
+
+        return {{tile_xlow, tile_ylow}, {tile_xhigh, tile_yhigh}};
+    }
+
+    // Forward const-iterator over (layer, x, y)
+    class loc_const_iterator {
+      public:
+        using value_type = t_physical_tile_loc;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::forward_iterator_tag;
+
+        loc_const_iterator(const DeviceGrid* g, size_t layer, size_t x, size_t y)
+            : g_(g) {
+            loc_.layer_num = static_cast<int>(layer);
+            loc_.x = static_cast<int>(x);
+            loc_.y = static_cast<int>(y);
+        }
+
+        value_type operator*() const { return loc_; }
+
+        // pre-increment
+        loc_const_iterator& operator++() {
+            // advance y, then x, then layer
+            ++loc_.y;
+            if (loc_.y >= static_cast<int>(g_->height())) {
+                loc_.y = 0;
+                ++loc_.x;
+                if (loc_.x >= static_cast<int>(g_->width())) {
+                    loc_.x = 0;
+                    ++loc_.layer_num;
+                }
+            }
+            return *this;
+        }
+
+        bool operator==(const loc_const_iterator& o) const {
+            return loc_.x == o.loc_.x
+                   && loc_.y == o.loc_.y
+                   && loc_.layer_num == o.loc_.layer_num
+                   && g_ == o.g_;
+        }
+        bool operator!=(const loc_const_iterator& o) const { return !(*this == o); }
+
+      private:
+        const DeviceGrid* g_ = nullptr;
+        t_physical_tile_loc loc_{0, 0, 0};
+    };
+
+    /// Iterate every (layer, x, y) location
+    inline auto all_locations() const {
+        return vtr::make_range(
+            loc_const_iterator(this, /*layer*/ 0, /*x*/ 0, /*y*/ 0),
+            loc_const_iterator(this, /*layer*/ get_num_layers(), /*x*/ 0, /*y*/ 0) // end sentinel
+        );
+    }
+
+    // Forward const-iterator over all die regions in the device. See t_die_region for information on what a die region is.
+    class die_const_iterator {
+      public:
+        using value_type = t_die_region;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::forward_iterator_tag;
+
+        die_const_iterator(const DeviceGrid* g, size_t layer, size_t x_die, size_t y_die)
+            : g_(g) {
+            die_region_.layer = static_cast<short>(layer);
+            die_region_.x_die = static_cast<short>(x_die);
+            die_region_.y_die = static_cast<short>(y_die);
+        }
+
+        value_type operator*() const { return die_region_; }
+
+        // pre-increment
+        die_const_iterator& operator++() {
+            // advance x_die, then y_die, then layer
+            ++die_region_.x_die;
+            if (die_region_.x_die > static_cast<short>(g_->get_vertical_interposer_cuts()[die_region_.layer].size())) {
+                die_region_.x_die = 0;
+                ++die_region_.y_die;
+                if (die_region_.y_die > static_cast<short>(g_->get_horizontal_interposer_cuts()[die_region_.layer].size())) {
+                    die_region_.y_die = 0;
+                    ++die_region_.layer;
+                }
+            }
+            return *this;
+        }
+
+        bool operator==(const die_const_iterator& o) const {
+            return die_region_.x_die == o.die_region_.x_die
+                   && die_region_.y_die == o.die_region_.y_die
+                   && die_region_.layer == o.die_region_.layer
+                   && g_ == o.g_;
+        }
+
+        bool operator!=(const die_const_iterator& o) const { return !(*this == o); }
+
+      private:
+        const DeviceGrid* g_ = nullptr;
+        t_die_region die_region_{0, 0, 0};
+    };
+
+    inline auto all_die_regions() const {
+        return vtr::make_range(
+            die_const_iterator(this, /*layer*/ 0, /*x*/ 0, /*y*/ 0),
+            die_const_iterator(this, /*layer*/ get_num_layers(), /*x*/ 0, /*y*/ 0) // end sentinel
+        );
+    }
+
+    ///@brief Return the metadata of the tile at the specified location
+    inline const t_metadata_dict* get_metadata(const t_physical_tile_loc& tile_loc) const {
+        return grid_[tile_loc.layer_num][tile_loc.x][tile_loc.y].meta;
+    }
+
+    ///@brief Given t_grid_tile, return the x coordinate of the tile on the given layer - Used by serializer functions
+    inline int get_grid_loc_x(const t_grid_tile*& grid_loc) const {
+        int layer_num = std::floor(static_cast<int>(grid_loc - &grid_.get(0)) / (width() * height()));
+        auto diff = grid_loc - &grid_.get(layer_num * height() * width());
+
+        return diff / grid_.dim_size(2);
+    }
+
+    ///@brief Given t_grid_tile, return the y coordinate of the tile on the given layer - Used by serializer functions
+    inline int get_grid_loc_y(const t_grid_tile*& grid_loc) const {
+        int layer_num = std::floor(static_cast<int>(grid_loc - &grid_.get(0)) / (width() * height()));
+        auto diff = grid_loc - &grid_.get(layer_num * height() * width());
+
+        return diff % grid_.dim_size(2);
+    }
+
+    ///@brief Given t_grid_tile, return the layer number of the tile - Used by serializer functions
+    inline int get_grid_loc_layer(const t_grid_tile*& grid_loc) const {
+        int layer_num = std::floor(static_cast<int>(grid_loc - &grid_.get(0)) / (width() * height()));
+        return layer_num;
+    }
+
+    ///@brief Return the nth t_grid_tile on the given layer of the flattened grid - Used by serializer functions
+    inline const t_grid_tile* get_grid_locs_grid_loc(int n) const {
+        return &grid_.get(n);
+    }
+
+    /// Returns the list of horizontal interposer cut locations for each layer,
+    /// i.e. y value of the tile row just below each cut
+    /// Accessed as [layer][cut_idx]. Cuts in each layer are sorted in ascending order.
+    inline const std::vector<std::vector<int>>& get_horizontal_interposer_cuts() const {
+        return horizontal_interposer_cuts_;
+    }
+
+    /// Returns the list of vertical interposer cut locations for each layer,
+    /// i.e. x value of the tile column just to the left each cut
+    /// Accessed as [layer][cut_idx]. Cuts in each layer are sorted in ascending order.
+    inline const std::vector<std::vector<int>>& get_vertical_interposer_cuts() const {
+        return vertical_interposer_cuts_;
+    }
+
+    /// Returns if the grid has any interposer cuts. You should use this function instead of
+    /// checking if get_horizontal/vertical_interposer_cuts is empty, since the return value
+    /// of those functions might look something like this: {{}} which is technically not empty.
+    bool has_interposer_cuts() const;
+
+    /**
+     * @brief Returns if two locations loc_a and loc_b are on the same die, usable on 2D, 2.5D and 3D architectures.
+     */
+    bool are_locs_on_same_die(t_physical_tile_loc loc_a, t_physical_tile_loc loc_b) const;
+
+    /**
+     * @brief Returns true if the straight line between loc_a and loc_b crosses a vertical interposer cut.
+     */
+    bool do_locs_cross_vertical_cut(t_physical_tile_loc loc_a, t_physical_tile_loc loc_b) const;
+
+    /**
+     * @brief Returns true if the straight line between loc_a and loc_b crosses a horizontal interposer cut.
+     */
+    bool do_locs_cross_horizontal_cut(t_physical_tile_loc loc_a, t_physical_tile_loc loc_b) const;
+
+    /**
+     * @brief Get the die identifier of a location. In 2.5D and 3D architectures each die has its own unique identifier.
+     * 
+     * @param loc (x, y, layer) position that you want the id of.
+     * @return DeviceDieId ID of the given location
+     */
+    DeviceDieId get_loc_die_id(t_physical_tile_loc loc) const;
+
+    /**
+     * @brief Get the total number of dice in the device. 2.5D and 3D architectures consist of multiple dice.
+     */
+    size_t get_die_count() const;
+
+    /**
+     * @brief Get the die identifier of a given die region. See the comment above t_die_region for information on what a die region is.
+     */
+    DeviceDieId get_die_region_id(t_die_region die_region) const;
+
+  private:
+    /// @brief Counts the number of each tile type on each layer and store it in instance_counts_.
+    /// It is called in the constructor.
+    void count_instances();
+
+    /**
+     * @brief Initialize the data structures used in multi-die FPGAs, such as the die_id_matrix_ or die_region_map_.
+     * These structures must be initialized before using are_locs_on_same_die, get_loc_die_id, get_die_count and get_die_region_id.
+     */
+    void initialize_multi_die_data_structures();
+
+    std::string name_;
+
+    /**
+     * @brief grid_ is a 3D matrix that represents the grid of the FPGA chip.
+     * @note The first dimension is the layer number (grid_[0] corresponds to the bottom layer),
+     *       the second dimension is the x coordinate, and the third dimension is the y coordinate.
+     * @note Note that vtr::Matrix operator[] returns and intermediate type
+     * @note which can be used for indexing in the second dimension, allowing
+     * @note traditional 2-d indexing to be used
+     */
+    vtr::NdMatrix<t_grid_tile, 3> grid_; //This stores the grid of complex blocks. It is a 3D matrix: [0..num_layers-1][0..grid.width()-1][0..grid_height()-1]
+
+    ///@brief instance_counts_ stores the number of each tile type on each layer. It is initialized in count_instances().
+    std::vector<std::map<t_physical_tile_type_ptr, size_t>> instance_counts_; /* [layer_num][physical_tile_type_ptr] */
+
+    std::vector<t_logical_block_type_ptr> limiting_resources_;
+
+    /// Horizontal interposer cut locations in each layer,
+    /// i.e. y value of the tile row just below each cut
+    /// Accessed as [layer][cut_idx]
+    std::vector<std::vector<int>> horizontal_interposer_cuts_;
+    /// Vertical interposer cut location in each layer,
+    /// i.e. x value of the tile column just to the left each cut
+    /// Accessed as [layer][cut_idx]
+    std::vector<std::vector<int>> vertical_interposer_cuts_;
+
+    /**
+     * @brief Vector of matrices that contain a unique ID for each die of the device per grid location
+     * For example in a 4x4 grid, if you have an interposer cut at y = 2, the matrix would look like this:
+     * 1 1 1 1
+     * 1 1 1 1
+     * 0 0 0 0
+     * 0 0 0 0
+     *
+     * Accessed as [layer][x][y]. die_id_matrix_[layer][x][y] returns the ID of the die at location (x, y, layer)
+     */
+    std::vector<vtr::NdMatrix<DeviceDieId, 2>> die_id_matrix_;
+
+    /// @brief Two way map between die identifiers and die regions.
+    vtr::bimap<DeviceDieId, t_die_region> die_region_map_;
+
+    /// @brief True if the device has any interposer cuts. Cached for speed.
+    bool has_interposer_cuts_;
+
+    /// @brief True if the grid dimensions are fixed by an externally provided RR graph.
+    /// When set, device grid creator returns this grid unchanged rather than
+    /// resizing from resource counts, preventing both expansion and shrinkage.
+    bool fixed_by_rr_graph_ = false;
+};

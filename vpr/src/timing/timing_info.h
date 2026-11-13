@@ -1,30 +1,19 @@
-#ifndef VPR_TIMING_INFO_H
-#define VPR_TIMING_INFO_H
+#pragma once
+
 #include <memory>
 
+#include "atom_netlist_fwd.h"
+#include "tatum/TimingConstraints.hpp"
+#include "tatum/analyzers/HoldTimingAnalyzer.hpp"
+#include "tatum/analyzers/SetupHoldTimingAnalyzer.hpp"
+#include "tatum/analyzers/SetupTimingAnalyzer.hpp"
+#include "tatum/analyzers/TimingAnalyzer.hpp"
+#include "tatum/delay_calc/DelayCalculator.hpp"
+#include "tatum/report/TimingPath.hpp"
 #include "timing_info_fwd.h"
-#include "tatum/analyzer_factory.hpp"
-#include "tatum/timing_paths.hpp"
-#include "timing_util.h"
+#include "vtr_range.h"
 
-//Create a SetupTimingInfo for the given delay calculator
-template<class DelayCalc>
-std::unique_ptr<SetupTimingInfo> make_setup_timing_info(std::shared_ptr<DelayCalc> delay_calculator);
-
-//Create a HoldTimingInfo for the given delay calculator
-template<class DelayCalc>
-std::unique_ptr<HoldTimingInfo> make_hold_timing_info(std::shared_ptr<DelayCalc> delay_calculator);
-
-//Create a SetupHoldTimingInfo for the given delay calculator
-template<class DelayCalc>
-std::unique_ptr<SetupHoldTimingInfo> make_setup_hold_timing_info(std::shared_ptr<DelayCalc> delay_calculator);
-
-//Create a timing info object which does no timing analysis, and returns
-//place-holder values. This is useful to running timing driven algorithms
-//with timing disabled
-std::unique_ptr<SetupHoldTimingInfo> make_no_op_timing_info();
-
-//Generic inteface which provides functionality to update (but not
+//Generic interface which provides functionality to update (but not
 //access) timing information.
 //
 //This is useful for algorithms which know they need to update timing
@@ -79,7 +68,7 @@ class SetupTimingInfo : public virtual TimingInfo {
     //Return the critical path with the least slack
     virtual tatum::TimingPathInfo least_slack_critical_path() const = 0;
 
-    //Return the critical path the the longest absolute delay
+    //Return the critical path the longest absolute delay
     virtual tatum::TimingPathInfo longest_critical_path() const = 0;
 
     //Return the set of critical paths between all clock domain pairs
@@ -139,15 +128,15 @@ class HoldTimingInfo : public virtual TimingInfo {
 //Generic interface which provides both setup and hold related timing information
 //
 //This is useful for algorithms which require access to both setup and hold timing
-//information (e.g. simulatneously optimizing setup and hold)
+//information (e.g. simultaneously optimizing setup and hold)
 //
 //This class supports both the SetupTimingInfo and HoldTimingInfo interfaces and
 //can be used in place of them in any algorithm requiring setup or hold related
 //information.
 //
 //Implementation Note:
-//  This class uses multiple inheritence, which is OK in this case for the following reasons:
-//      * The inheritance is virtual avoiding the diamon problem (i.e. there is only
+//  This class uses multiple inheritance, which is OK in this case for the following reasons:
+//      * The inheritance is virtual avoiding the diamond problem (i.e. there is only
 //        one base TimingInfo class instance)
 //      * Both SetupTimingInfo and HoldTimingInfo are purely abstract classes so there
 //        is no data to be duplicated
@@ -155,57 +144,3 @@ class SetupHoldTimingInfo : public SetupTimingInfo, public HoldTimingInfo {
   public:
     virtual std::shared_ptr<const tatum::SetupHoldTimingAnalyzer> setup_hold_analyzer() const = 0;
 };
-
-#include "concrete_timing_info.h"
-
-template<class DelayCalc>
-std::unique_ptr<SetupTimingInfo> make_setup_timing_info(std::shared_ptr<DelayCalc> delay_calculator, e_timing_update_type update_type) {
-    auto& timing_ctx = g_vpr_ctx.timing();
-
-    std::shared_ptr<tatum::SetupTimingAnalyzer> analyzer;
-
-    if (update_type == e_timing_update_type::FULL || update_type == e_timing_update_type::AUTO) {
-        analyzer = tatum::AnalyzerFactory<tatum::SetupAnalysis, tatum::ParallelWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    } else {
-        VTR_ASSERT(update_type == e_timing_update_type::INCREMENTAL);
-        analyzer = tatum::AnalyzerFactory<tatum::SetupAnalysis, tatum::SerialIncrWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    }
-
-    return std::make_unique<ConcreteSetupTimingInfo<DelayCalc>>(timing_ctx.graph, timing_ctx.constraints, delay_calculator, analyzer);
-}
-
-template<class DelayCalc>
-std::unique_ptr<HoldTimingInfo> make_hold_timing_info(std::shared_ptr<DelayCalc> delay_calculator, e_timing_update_type update_type) {
-    auto& timing_ctx = g_vpr_ctx.timing();
-
-    std::shared_ptr<tatum::HoldTimingAnalyzer> analyzer;
-    if (update_type == e_timing_update_type::FULL || update_type == e_timing_update_type::AUTO) {
-        analyzer = tatum::AnalyzerFactory<tatum::HoldAnalysis, tatum::ParallelWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    } else {
-        VTR_ASSERT(update_type == e_timing_update_type::INCREMENTAL);
-        analyzer = tatum::AnalyzerFactory<tatum::HoldAnalysis, tatum::SerialIncrWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    }
-
-    return std::make_unique<ConcreteHoldTimingInfo<DelayCalc>>(timing_ctx.graph, timing_ctx.constraints, delay_calculator, analyzer);
-}
-
-template<class DelayCalc>
-std::unique_ptr<SetupHoldTimingInfo> make_setup_hold_timing_info(std::shared_ptr<DelayCalc> delay_calculator, e_timing_update_type update_type) {
-    auto& timing_ctx = g_vpr_ctx.timing();
-
-    std::shared_ptr<tatum::SetupHoldTimingAnalyzer> analyzer;
-    if (update_type == e_timing_update_type::FULL || update_type == e_timing_update_type::AUTO) {
-        analyzer = tatum::AnalyzerFactory<tatum::SetupHoldAnalysis, tatum::ParallelWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    } else {
-        VTR_ASSERT(update_type == e_timing_update_type::INCREMENTAL);
-        analyzer = tatum::AnalyzerFactory<tatum::SetupHoldAnalysis, tatum::SerialIncrWalker>::make(*timing_ctx.graph, *timing_ctx.constraints, *delay_calculator);
-    }
-
-    return std::make_unique<ConcreteSetupHoldTimingInfo<DelayCalc>>(timing_ctx.graph, timing_ctx.constraints, delay_calculator, analyzer);
-}
-
-inline std::unique_ptr<SetupHoldTimingInfo> make_constant_timing_info(const float criticality) {
-    return std::make_unique<ConstantTimingInfo>(criticality);
-}
-
-#endif

@@ -1,60 +1,91 @@
-#include "../src/base/partition_region.h"
-#include "catch.hpp"
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <vector>
 
-#include "vpr_constraints.h"
+#include "../src/base/partition_region.h"
+
+#include "catch2/catch_test_macros.hpp"
+#include "catch2/matchers/catch_matchers_string.hpp"
+
+#include "globals.h"
+#include "user_place_constraints.h"
+#include "user_relative_macros.h"
+#include "relative_macro_packing.h"
 #include "partition.h"
 #include "region.h"
+#include "place_constraints.h"
+#include "vpr_constraints_serializer.h"
+#include "vpr_constraints_uxsdcxx.h"
 
 /**
  * This file contains unit tests that check the functionality of all classes related to vpr constraints. These classes include
- * VprConstraints, Region, PartitionRegions, and Partition.
+ * UserPlaceConstraints, Region, PartitionRegions, and Partition.
  */
+
+namespace Catch {
+template<typename T>
+struct StringMaker<vtr::Rect<T>> {
+    static std::string convert(vtr::Rect<T> const& value) {
+        std::ostringstream oss;
+        oss << "Rectangle: (" << value.xmin() << ", " << value.ymin() << ") to (" << value.xmax() << ", " << value.ymax() << ")";
+        return oss.str();
+    }
+};
+} // namespace Catch
 
 //Test Region class accessors and mutators
 TEST_CASE("Region", "[vpr]") {
     Region r1;
-
-    r1.set_region_rect(1, 2, 3, 4);
+    r1 = Region(1, 2, 3, 4, 5);
     r1.set_sub_tile(2);
-
-    vtr::Rect<int> rect;
-    rect = r1.get_region_rect();
-
-    REQUIRE(rect.xmin() == 1);
-    REQUIRE(rect.ymin() == 2);
-    REQUIRE(rect.xmax() == 3);
-    REQUIRE(rect.ymax() == 4);
+    REQUIRE(r1.get_rect() == vtr::Rect<int>(1, 2, 3, 4));
+    REQUIRE(r1.get_layer_range() == std::make_pair(5, 5));
     REQUIRE(r1.get_sub_tile() == 2);
 
-    //checking that default constructor creates an empty rectangle (-1,-1,-1,-1)
-    Region def_region;
-    bool is_def_empty = false;
+    r1 = Region(6, 7, 8, 9, 10, 11);
+    r1.set_sub_tile(12);
+    REQUIRE(r1.get_rect() == vtr::Rect<int>(6, 7, 8, 9));
+    REQUIRE(r1.get_layer_range() == std::make_pair(10, 11));
+    REQUIRE(r1.get_sub_tile() == 12);
 
-    vtr::Rect<int> def_rect = def_region.get_region_rect();
-    is_def_empty = def_rect.empty();
+    //checking that default constructor creates an empty rectangle (999, 999,-1,-1)
+    Region def_region;
+    bool is_def_empty = def_region.empty();
     REQUIRE(is_def_empty == true);
-    REQUIRE(def_rect.xmin() == -1);
+    REQUIRE(def_region.get_rect().xmin() == std::numeric_limits<int>::max());
+    REQUIRE(def_region.get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(def_region.get_sub_tile() == -1);
 }
 
 //Test PartitionRegion class accessors and mutators
 TEST_CASE("PartitionRegion", "[vpr]") {
     Region r1;
+    Region r2;
 
-    r1.set_region_rect(2, 3, 6, 7);
+    r1 = Region(2, 3, 6, 7, 0);
     r1.set_sub_tile(3);
+
+    r2 = Region(14, 20, 18, 44, 0, 2);
+    r2.set_sub_tile(2);
 
     PartitionRegion pr1;
 
     pr1.add_to_part_region(r1);
+    pr1.add_to_part_region(r2);
 
-    std::vector<Region> pr_regions = pr1.get_partition_region();
+    const std::vector<Region>& pr_regions = pr1.get_regions();
+    REQUIRE(pr_regions.size() == 2);
     REQUIRE(pr_regions[0].get_sub_tile() == 3);
-    vtr::Rect<int> rect;
-    rect = pr_regions[0].get_region_rect();
-    REQUIRE(rect.xmin() == 2);
-    REQUIRE(rect.ymin() == 3);
-    REQUIRE(rect.xmax() == 6);
-    REQUIRE(rect.ymax() == 7);
+    REQUIRE(pr_regions[1].get_sub_tile() == 2);
+
+    REQUIRE(pr_regions[0].get_rect() == vtr::Rect<int>(2, 3, 6, 7));
+    REQUIRE(pr_regions[0].get_layer_range() == std::make_pair(0, 0));
+
+    REQUIRE(pr_regions[1].get_rect() == vtr::Rect<int>(14, 20, 18, 44));
+    REQUIRE(pr_regions[1].get_layer_range() == std::make_pair(0, 2));
 }
 
 //Test Partition class accessors and mutators
@@ -66,27 +97,34 @@ TEST_CASE("Partition", "[vpr]") {
 
     //create region and partitionregions objects to test functions of the Partition class
     Region r1;
-    r1.set_region_rect(2, 3, 7, 8);
+    r1 = Region(2, 3, 7, 8, 0);
     r1.set_sub_tile(3);
+
+    Region r2;
+    r2 = Region(10, 10, 25, 30, 1, 2);
+    r2.set_sub_tile(0);
 
     PartitionRegion part_reg;
     part_reg.add_to_part_region(r1);
+    part_reg.add_to_part_region(r2);
 
     part.set_part_region(part_reg);
-    PartitionRegion part_reg_2 = part.get_part_region();
-    std::vector<Region> regions = part_reg_2.get_partition_region();
+    const PartitionRegion& part_reg_2 = part.get_part_region();
+    const std::vector<Region>& regions = part_reg_2.get_regions();
 
+    REQUIRE(regions.size() == 2);
     REQUIRE(regions[0].get_sub_tile() == 3);
-    vtr::Rect<int> rect;
-    rect = regions[0].get_region_rect();
-    REQUIRE(rect.xmin() == 2);
-    REQUIRE(rect.ymin() == 3);
-    REQUIRE(rect.xmax() == 7);
-    REQUIRE(rect.ymax() == 8);
+    REQUIRE(regions[1].get_sub_tile() == 0);
+
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(2, 3, 7, 8));
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+
+    REQUIRE(regions[1].get_rect() == vtr::Rect<int>(10, 10, 25, 30));
+    REQUIRE(regions[1].get_layer_range() == std::make_pair(1, 2));
 }
 
-//Test VprConstraints class accessors and mutators
-TEST_CASE("VprConstraints", "[vpr]") {
+//Test UserPlaceConstraints class accessors and mutators
+TEST_CASE("UserPlaceConstraints", "[vpr]") {
     PartitionId part_id(0);
     PartitionId part_id_2(1);
     AtomBlockId atom_id(6);
@@ -94,7 +132,7 @@ TEST_CASE("VprConstraints", "[vpr]") {
     AtomBlockId atom_id_3(8);
     AtomBlockId atom_id_4(9);
 
-    VprConstraints vprcon;
+    UserPlaceConstraints vprcon;
 
     vprcon.add_constrained_atom(atom_id, part_id);
     vprcon.add_constrained_atom(atom_id_2, part_id);
@@ -113,8 +151,7 @@ TEST_CASE("VprConstraints", "[vpr]") {
 
     vprcon.add_partition(part);
 
-    Partition got_part;
-    got_part = vprcon.get_partition(part_id);
+    const Partition& got_part = vprcon.get_partition(part_id);
     REQUIRE(got_part.get_name() == "part_name");
 
     std::vector<AtomBlockId> partition_atoms;
@@ -129,64 +166,77 @@ TEST_CASE("RegionIntersect", "[vpr]") {
     Region region1;
     Region region2;
 
-    region1.set_region_rect(1, 2, 3, 5);
-    region2.set_region_rect(2, 3, 4, 6);
+    region1 = Region(1, 2, 3, 5, 0);
+    region2 = Region(2, 3, 4, 6, 0);
 
-    Region int_reg;
+    const Region int_reg = intersection(region1, region2);
+    REQUIRE(int_reg.get_rect() == vtr::Rect<int>(2, 3, 3, 5));
+    REQUIRE(int_reg.get_layer_range() == std::make_pair(0, 0));
 
-    int_reg = intersection(region1, region2);
-    vtr::Rect<int> rect = int_reg.get_region_rect();
+    //Test multi-layer partial intersection
+    Region region1_ml;
+    Region region2_ml;
 
-    REQUIRE(rect.xmin() == 2);
-    REQUIRE(rect.ymin() == 3);
-    REQUIRE(rect.xmax() == 3);
-    REQUIRE(rect.ymax() == 5);
+    region1_ml = Region(1, 2, 3, 5, 0, 1);
+    region2_ml = Region(2, 3, 4, 6, 1, 2);
+
+    const Region int_reg_ml = intersection(region1_ml, region2_ml);
+    REQUIRE(int_reg_ml.get_rect() == vtr::Rect<int>(2, 3, 3, 5));
+    REQUIRE(int_reg_ml.get_layer_range() == std::make_pair(1, 1));
 
     //Test full overlap
     Region region3;
     Region region4;
 
-    region3.set_region_rect(5, 1, 8, 6);
-    region4.set_region_rect(6, 3, 8, 6);
+    region3 = Region(5, 1, 8, 6, 0);
+    region4 = Region(6, 3, 8, 6, 0);
 
-    Region int_reg_2;
+    const Region int_reg_2 = intersection(region3, region4);
+    REQUIRE(int_reg_2.get_rect() == vtr::Rect<int>(6, 3, 8, 6));
+    REQUIRE(int_reg_2.get_layer_range() == std::make_pair(0, 0));
 
-    int_reg_2 = intersection(region3, region4);
-    vtr::Rect<int> rect_2 = int_reg_2.get_region_rect();
+    //Test multi-layer full overlap
+    Region region3_ml;
+    Region region4_ml;
 
-    REQUIRE(rect_2.xmin() == 6);
-    REQUIRE(rect_2.ymin() == 3);
-    REQUIRE(rect_2.xmax() == 8);
-    REQUIRE(rect_2.ymax() == 6);
+    region3_ml = Region(5, 1, 8, 6, 0, 2);
+    region4_ml = Region(6, 3, 8, 6, 0, 2);
+
+    const Region int_reg_2_ml = intersection(region3_ml, region4_ml);
+    REQUIRE(int_reg_2_ml.get_rect() == vtr::Rect<int>(6, 3, 8, 6));
+    REQUIRE(int_reg_2_ml.get_layer_range() == std::make_pair(0, 2));
 
     //Test no intersection (rectangles don't overlap, intersect region will be returned empty)
-
-    Region int_reg_3;
-
-    int_reg_3 = intersection(region1, region3);
-
+    const Region int_reg_3 = intersection(region1, region3);
     REQUIRE(int_reg_3.empty() == TRUE);
+
+    //Test no intersection (rectangles don't overlap, intersect region will be returned empty)
+    const Region int_reg_3_ml = intersection(region1, region2_ml);
+    REQUIRE(int_reg_3_ml.empty() == TRUE);
 
     //Test no intersection (rectangles overlap but different subtiles are specified, intersect region will be returned empty)
     region1.set_sub_tile(5);
     region2.set_sub_tile(3);
+    const Region int_reg_4 = intersection(region1, region2);
+    REQUIRE(int_reg_4.empty());
 
-    Region int_reg_4;
-    int_reg_4 = intersection(region1, region2);
-
-    REQUIRE(int_reg_4.empty() == TRUE);
+    region1_ml.set_sub_tile(5);
+    region2_ml.set_sub_tile(3);
+    const Region int_reg_4_ml = intersection(region1_ml, region2_ml);
+    REQUIRE(int_reg_4_ml.empty());
 
     //Test intersection where subtiles are the same and equal to something other than the INVALID value
     region1.set_sub_tile(6);
     region2.set_sub_tile(6);
+    const Region int_reg_5 = intersection(region1, region2);
+    REQUIRE(int_reg_5.get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(int_reg_5.get_rect() == vtr::Rect<int>(2, 3, 3, 5));
 
-    Region int_reg_5;
-    int_reg_5 = intersection(region1, region2);
-    vtr::Rect<int> rect_5 = int_reg_5.get_region_rect();
-    REQUIRE(rect_5.xmin() == 2);
-    REQUIRE(rect_5.ymin() == 3);
-    REQUIRE(rect_5.xmax() == 3);
-    REQUIRE(rect_5.ymax() == 5);
+    region1_ml.set_sub_tile(6);
+    region2_ml.set_sub_tile(6);
+    const Region int_reg_5_ml = intersection(region1_ml, region2_ml);
+    REQUIRE(int_reg_5_ml.get_layer_range() == std::make_pair(1, 1));
+    REQUIRE(int_reg_5_ml.get_rect() == vtr::Rect<int>(2, 3, 3, 5));
 }
 
 //The following six test cases test the intersection function for PartitionRegions
@@ -199,23 +249,46 @@ TEST_CASE("PartRegionIntersect", "[vpr]") {
     Region r2;
     Region r3;
 
-    r1.set_region_rect(0, 0, 1, 1);
-    r2.set_region_rect(1, 1, 2, 2);
-    r3.set_region_rect(0, 0, 2, 2);
+    r1 = Region(0, 0, 1, 1, 0);
+    r2 = Region(1, 1, 2, 2, 0);
+    r3 = Region(0, 0, 2, 2, 0);
 
     pr1.add_to_part_region(r1);
     pr1.add_to_part_region(r2);
     pr2.add_to_part_region(r3);
 
-    PartitionRegion int_pr;
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
 
-    int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(0, 0, 1, 1));
+    REQUIRE(regions[1].get_rect() == vtr::Rect<int>(1, 1, 2, 2));
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[1].get_layer_range() == std::make_pair(0, 0));
+}
 
-    vtr::Rect<int> int_rect(0, 0, 1, 1);
-    vtr::Rect<int> int_rect_2(1, 1, 2, 2);
-    REQUIRE(regions[0].get_region_rect() == int_rect);
-    REQUIRE(regions[1].get_region_rect() == int_rect_2);
+TEST_CASE("PartRegionIntersectMultiLayer", "[vpr]") {
+    PartitionRegion pr1;
+    PartitionRegion pr2;
+
+    Region r1;
+    Region r2;
+    Region r3;
+
+    r1 = Region(0, 0, 1, 1, 0);
+    r2 = Region(1, 1, 2, 2, 1);
+    r3 = Region(0, 0, 2, 2, 0, 1);
+
+    pr1.add_to_part_region(r1);
+    pr1.add_to_part_region(r2);
+    pr2.add_to_part_region(r3);
+
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
+
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(0, 0, 1, 1));
+    REQUIRE(regions[1].get_rect() == vtr::Rect<int>(1, 1, 2, 2));
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[1].get_layer_range() == std::make_pair(1, 1));
 }
 
 //2x1 regions, 1 overlap
@@ -227,21 +300,44 @@ TEST_CASE("PartRegionIntersect2", "[vpr]") {
     Region r2;
     Region r3;
 
-    r1.set_region_rect(0, 0, 2, 2);
-    r2.set_region_rect(4, 4, 6, 6);
-    r3.set_region_rect(0, 0, 2, 2);
+    r1 = Region(0, 0, 2, 2, 0);
+    r2 = Region(4, 4, 6, 6, 0);
+    r3 = Region(0, 0, 2, 2, 0);
 
     pr1.add_to_part_region(r1);
     pr1.add_to_part_region(r2);
     pr2.add_to_part_region(r3);
 
-    PartitionRegion int_pr;
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
 
-    int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
-    vtr::Rect<int> int_rect(0, 0, 2, 2);
     REQUIRE(regions.size() == 1);
-    REQUIRE(regions[0].get_region_rect() == int_rect);
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(0, 0, 2, 2));
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+}
+
+TEST_CASE("PartRegionIntersect2Multilayer", "[vpr]") {
+    PartitionRegion pr1;
+    PartitionRegion pr2;
+
+    Region r1;
+    Region r2;
+    Region r3;
+
+    r1 = Region(0, 0, 2, 2, 0, 1);
+    r2 = Region(4, 4, 6, 6, 1);
+    r3 = Region(0, 0, 2, 2, 1);
+
+    pr1.add_to_part_region(r1);
+    pr1.add_to_part_region(r2);
+    pr2.add_to_part_region(r3);
+
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
+
+    REQUIRE(regions.size() == 1);
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(0, 0, 2, 2));
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(1, 1));
 }
 
 //2x2 regions, no overlaps
@@ -254,14 +350,14 @@ TEST_CASE("PartRegionIntersect3", "[vpr]") {
     Region r3;
     Region r4;
 
-    r1.set_region_rect(1, 2, 3, 5);
+    r1 = Region(1, 2, 3, 5, 0);
     r1.set_sub_tile(2);
 
-    r2.set_region_rect(4, 2, 6, 4);
+    r2 = Region(4, 2, 6, 4, 0);
 
-    r3.set_region_rect(4, 5, 5, 7);
+    r3 = Region(4, 5, 5, 7, 0);
 
-    r4.set_region_rect(1, 2, 3, 5);
+    r4 = Region(1, 2, 3, 5, 0);
     r4.set_sub_tile(4);
 
     pr1.add_to_part_region(r1);
@@ -269,12 +365,40 @@ TEST_CASE("PartRegionIntersect3", "[vpr]") {
     pr2.add_to_part_region(r3);
     pr2.add_to_part_region(r4);
 
-    PartitionRegion int_pr;
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
 
-    int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
+    REQUIRE(regions.empty());
+}
 
-    REQUIRE(regions.size() == 0);
+TEST_CASE("PartRegionIntersect3MultiLayer", "[vpr]") {
+    PartitionRegion pr1;
+    PartitionRegion pr2;
+
+    Region r1;
+    Region r2;
+    Region r3;
+    Region r4;
+
+    r1 = Region(1, 2, 3, 5, 0, 1);
+    r1.set_sub_tile(2);
+
+    r2 = Region(4, 2, 6, 4, 0, 1);
+
+    r3 = Region(4, 5, 5, 7, 0, 1);
+
+    r4 = Region(1, 2, 3, 5, 0, 1);
+    r4.set_sub_tile(4);
+
+    pr1.add_to_part_region(r1);
+    pr1.add_to_part_region(r2);
+    pr2.add_to_part_region(r3);
+    pr2.add_to_part_region(r4);
+
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
+
+    REQUIRE(regions.empty());
 }
 
 //2x2 regions, 1 overlap
@@ -287,14 +411,14 @@ TEST_CASE("PartRegionIntersect4", "[vpr]") {
     Region r3;
     Region r4;
 
-    r1.set_region_rect(1, 2, 3, 5);
+    r1 = Region(1, 2, 3, 5, 0);
     r1.set_sub_tile(2);
 
-    r2.set_region_rect(4, 2, 6, 4);
+    r2 = Region(4, 2, 6, 4, 0);
 
-    r3.set_region_rect(4, 5, 5, 7);
+    r3 = Region(4, 5, 5, 7, 0);
 
-    r4.set_region_rect(1, 2, 3, 4);
+    r4 = Region(1, 2, 3, 4, 0);
     r4.set_sub_tile(2);
 
     pr1.add_to_part_region(r1);
@@ -302,15 +426,45 @@ TEST_CASE("PartRegionIntersect4", "[vpr]") {
     pr2.add_to_part_region(r3);
     pr2.add_to_part_region(r4);
 
-    PartitionRegion int_pr;
-
-    int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
-
-    vtr::Rect<int> intersect(1, 2, 3, 4);
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
 
     REQUIRE(regions.size() == 1);
-    REQUIRE(regions[0].get_region_rect() == intersect);
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(1, 2, 3, 4));
+    REQUIRE(regions[0].get_sub_tile() == 2);
+}
+
+TEST_CASE("PartRegionIntersect4MultiLayer", "[vpr]") {
+    PartitionRegion pr1;
+    PartitionRegion pr2;
+
+    Region r1;
+    Region r2;
+    Region r3;
+    Region r4;
+
+    r1 = Region(1, 2, 3, 5, 0, 1);
+    r1.set_sub_tile(2);
+
+    r2 = Region(4, 2, 6, 4, 0, 1);
+
+    r3 = Region(4, 2, 5, 7, 2);
+
+    r4 = Region(1, 2, 3, 4, 1, 2);
+    r4.set_sub_tile(2);
+
+    pr1.add_to_part_region(r1);
+    pr1.add_to_part_region(r2);
+    pr2.add_to_part_region(r3);
+    pr2.add_to_part_region(r4);
+
+    PartitionRegion int_pr = intersection(pr1, pr2);
+    const std::vector<Region>& regions = int_pr.get_regions();
+
+    REQUIRE(regions.size() == 1);
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(1, 1));
+    REQUIRE(regions[0].get_rect() == vtr::Rect<int>(1, 2, 3, 4));
     REQUIRE(regions[0].get_sub_tile() == 2);
 }
 
@@ -324,13 +478,13 @@ TEST_CASE("PartRegionIntersect5", "[vpr]") {
     Region r3;
     Region r4;
 
-    r1.set_region_rect(1, 5, 5, 7);
+    r1 = Region(1, 5, 5, 7, 0);
 
-    r2.set_region_rect(6, 3, 8, 5);
+    r2 = Region(6, 3, 8, 5, 0);
 
-    r3.set_region_rect(2, 6, 4, 9);
+    r3 = Region(2, 6, 4, 9, 0);
 
-    r4.set_region_rect(6, 4, 8, 7);
+    r4 = Region(6, 4, 8, 7, 0);
 
     pr1.add_to_part_region(r1);
     pr1.add_to_part_region(r2);
@@ -340,14 +494,16 @@ TEST_CASE("PartRegionIntersect5", "[vpr]") {
     PartitionRegion int_pr;
 
     int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
+    const std::vector<Region>& regions = int_pr.get_regions();
 
     vtr::Rect<int> int_r1r3(2, 6, 4, 7);
     vtr::Rect<int> int_r2r4(6, 4, 8, 5);
 
     REQUIRE(regions.size() == 2);
-    REQUIRE(regions[0].get_region_rect() == int_r1r3);
-    REQUIRE(regions[1].get_region_rect() == int_r2r4);
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[1].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[0].get_rect() == int_r1r3);
+    REQUIRE(regions[1].get_rect() == int_r2r4);
 }
 
 //2x2 regions, 4 overlap
@@ -360,13 +516,13 @@ TEST_CASE("PartRegionIntersect6", "[vpr]") {
     Region r3;
     Region r4;
 
-    r1.set_region_rect(2, 3, 4, 7);
+    r1 = Region(2, 3, 4, 7, 0);
 
-    r2.set_region_rect(5, 3, 7, 8);
+    r2 = Region(5, 3, 7, 8, 0);
 
-    r3.set_region_rect(2, 2, 7, 4);
+    r3 = Region(2, 2, 7, 4, 0);
 
-    r4.set_region_rect(2, 6, 7, 8);
+    r4 = Region(2, 6, 7, 8, 0);
 
     pr1.add_to_part_region(r1);
     pr1.add_to_part_region(r2);
@@ -376,7 +532,7 @@ TEST_CASE("PartRegionIntersect6", "[vpr]") {
     PartitionRegion int_pr;
 
     int_pr = intersection(pr1, pr2);
-    std::vector<Region> regions = int_pr.get_partition_region();
+    const std::vector<Region>& regions = int_pr.get_regions();
 
     vtr::Rect<int> int_r1r3(2, 3, 4, 4);
     vtr::Rect<int> int_r1r4(2, 6, 4, 7);
@@ -384,40 +540,530 @@ TEST_CASE("PartRegionIntersect6", "[vpr]") {
     vtr::Rect<int> int_r2r4(5, 6, 7, 8);
 
     REQUIRE(regions.size() == 4);
-    REQUIRE(regions[0].get_region_rect() == int_r1r3);
-    REQUIRE(regions[1].get_region_rect() == int_r1r4);
-    REQUIRE(regions[2].get_region_rect() == int_r2r3);
-    REQUIRE(regions[3].get_region_rect() == int_r2r4);
+    REQUIRE(regions[0].get_rect() == int_r1r3);
+    REQUIRE(regions[1].get_rect() == int_r1r4);
+    REQUIRE(regions[2].get_rect() == int_r2r3);
+    REQUIRE(regions[3].get_rect() == int_r2r4);
+
+    REQUIRE(regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[1].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[2].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(regions[3].get_layer_range() == std::make_pair(0, 0));
 }
 
-//Test the locked member function of the Region class
-TEST_CASE("RegionLocked", "[vpr]") {
-    Region r1;
-    bool is_r1_locked = false;
+//Test calculation of macro constraints
+/* Checks that the PartitionRegion of a macro member is updated properly according
+ * to the head member's PartitionRegion that is passed in.
+ */
+TEST_CASE("MacroConstraints", "[vpr]") {
+    t_pl_macro pl_macro;
+    PartitionRegion head_pr;
+    t_pl_offset offset(2, 1, 0, 0);
 
-    //set the region to a specific x, y, subtile location - region is locked
-    r1.set_region_rect(2, 3, 2, 3); //point (2,3) to point (2,3) - locking to specific x, y location
-    r1.set_sub_tile(3);             //locking down to subtile 3
+    Region reg;
+    reg = Region(5, 2, 9, 6, 0);
 
-    is_r1_locked = r1.locked();
+    head_pr.add_to_part_region(reg);
 
-    REQUIRE(is_r1_locked == true);
+    Region grid_reg;
+    grid_reg = Region(0, 0, 20, 20, 0);
+    PartitionRegion grid_pr;
+    grid_pr.add_to_part_region(grid_reg);
 
-    //do not set region to specific x, y location - region is not locked even if a subtile is specified
-    r1.set_region_rect(2, 3, 5, 6); //point (2,3) to point (5,6) - not locking to specific x, y location
-    r1.set_sub_tile(3);             //locking down to subtile 3
+    PartitionRegion macro_pr = update_macro_member_pr(head_pr, offset, pl_macro, grid_pr);
 
-    is_r1_locked = r1.locked();
+    const std::vector<Region>& mac_regions = macro_pr.get_regions();
 
-    REQUIRE(is_r1_locked == false);
-
-    //do not specify a subtile for the region - region is not locked even if it is set at specific x, y location
-    Region r2;
-    bool is_r2_locked = true;
-
-    r2.set_region_rect(2, 3, 2, 3);
-
-    is_r2_locked = r2.locked();
-
-    REQUIRE(is_r2_locked == false);
+    const vtr::Rect<int>& mac_first_reg_coord = mac_regions[0].get_rect();
+    REQUIRE(mac_regions[0].get_layer_range() == std::make_pair(0, 0));
+    REQUIRE(mac_first_reg_coord.xmin() == 7);
+    REQUIRE(mac_first_reg_coord.ymin() == 3);
+    REQUIRE(mac_first_reg_coord.xmax() == 11);
+    REQUIRE(mac_first_reg_coord.ymax() == 7);
 }
+
+// Check group compatibility for chains that span multiple clusters.
+TEST_CASE("RelativeMacroLongChainOwnership", "[vpr]") {
+    const UserRelativeGroupId unowned;
+    const UserRelativeGroupId group_g(0);
+    const UserRelativeGroupId group_h(2);
+
+    SECTION("a cluster with no long chain accepts anything") {
+        REQUIRE(long_chain_ownership_allows(false, unowned, unowned, false, unowned));
+        REQUIRE(long_chain_ownership_allows(false, unowned, group_g, false, unowned));
+        REQUIRE(long_chain_ownership_allows(true, unowned, unowned, false, unowned));
+        REQUIRE(long_chain_ownership_allows(true, group_g, group_g, false, unowned));
+    }
+
+    SECTION("unconstrained long chains are mutually compatible") {
+        // Unowned chains pass this check. The packer's separate limit of one
+        // long chain per cluster still applies.
+        REQUIRE(long_chain_ownership_allows(true, unowned, unowned, true, unowned));
+    }
+
+    SECTION("a long chain may not join a cluster hosting a different group") {
+        REQUIRE_FALSE(long_chain_ownership_allows(true, unowned, group_g, false, unowned));
+        REQUIRE_FALSE(long_chain_ownership_allows(true, group_h, group_g, false, unowned));
+        // The chain may join its own group.
+        REQUIRE(long_chain_ownership_allows(true, group_g, group_g, false, unowned));
+    }
+
+    SECTION("long chains with different owners may not share a cluster") {
+        REQUIRE_FALSE(long_chain_ownership_allows(true, group_g, unowned, true, group_h));
+        REQUIRE_FALSE(long_chain_ownership_allows(true, unowned, unowned, true, group_g));
+        REQUIRE_FALSE(long_chain_ownership_allows(true, group_g, unowned, true, unowned));
+        // Chains with the same owner are compatible.
+        REQUIRE(long_chain_ownership_allows(true, group_g, group_g, true, group_g));
+    }
+
+    SECTION("a group may not move into a cluster whose long chain it does not own") {
+        REQUIRE_FALSE(long_chain_ownership_allows(false, unowned, group_g, true, unowned));
+        REQUIRE_FALSE(long_chain_ownership_allows(false, unowned, group_g, true, group_h));
+        // The owning group may join the cluster.
+        REQUIRE(long_chain_ownership_allows(false, unowned, group_g, true, group_g));
+        // An unconstrained molecule may join without adopting the chain's group.
+        REQUIRE(long_chain_ownership_allows(false, unowned, unowned, true, group_g));
+    }
+}
+
+// Test the UserRelativeMacros storage class: macro and group storage and the
+// atom -> group reverse lookup
+TEST_CASE("UserRelativeMacros", "[vpr]") {
+    UserRelativeMacros relative_macros;
+    REQUIRE(relative_macros.get_num_macros() == 0);
+
+    // An atom that belongs to no macro resolves to an invalid group
+    REQUIRE(!relative_macros.get_atom_group(AtomBlockId(42)).is_valid());
+
+    // Build a macro: reference group (2 atoms), one relative group (1 atom)
+    std::vector<t_user_relative_group> macro1_groups;
+
+    t_user_relative_group ref_group;
+    ref_group.atoms = {AtomBlockId(0), AtomBlockId(1)};
+    // No atom of this macro is locked to a site, but there is still one (empty)
+    // site path per atom
+    ref_group.atom_site_paths = {"", ""};
+    ref_group.offset = t_pl_offset(0, 0, 0, 0);
+    macro1_groups.push_back(ref_group);
+
+    t_user_relative_group rel_group;
+    rel_group.atoms = {AtomBlockId(2)};
+    rel_group.atom_site_paths = {""};
+    rel_group.offset = t_pl_offset(1, -2, 0, 0);
+    macro1_groups.push_back(rel_group);
+
+    UserRelativeMacroId macro1_id = relative_macros.add_macro("macro1", macro1_groups);
+    REQUIRE(relative_macros.get_num_macros() == 1);
+
+    // Stored macro matches what was added
+    const t_user_relative_macro& stored_macro = relative_macros.get_macro(macro1_id);
+    REQUIRE(stored_macro.name == "macro1");
+    REQUIRE(stored_macro.groups.size() == 2);
+    REQUIRE(relative_macros.get_num_groups() == 2);
+    const t_user_relative_group& stored_ref_group = relative_macros.get_group(stored_macro.groups[0]);
+    const t_user_relative_group& stored_rel_group = relative_macros.get_group(stored_macro.groups[1]);
+    REQUIRE(stored_ref_group.macro_id == macro1_id);
+    REQUIRE(stored_rel_group.macro_id == macro1_id);
+    REQUIRE(stored_ref_group.offset == t_pl_offset(0, 0, 0, 0));
+    REQUIRE(stored_rel_group.offset == t_pl_offset(1, -2, 0, 0));
+
+    // Reverse lookup: each atom maps to its group
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(0)) == stored_macro.groups[0]);
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(1)) == stored_macro.groups[0]);
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(2)) == stored_macro.groups[1]);
+
+    // A second macro gets a distinct id and its atoms resolve to it
+    std::vector<t_user_relative_group> macro2_groups;
+    t_user_relative_group ref_group2;
+    ref_group2.atoms = {AtomBlockId(3)};
+    ref_group2.atom_site_paths = {""};
+    macro2_groups.push_back(ref_group2);
+    t_user_relative_group rel_group2;
+    rel_group2.atoms = {AtomBlockId(4)};
+    rel_group2.atom_site_paths = {""};
+    rel_group2.offset = t_pl_offset(0, 3, 0, 0);
+    macro2_groups.push_back(rel_group2);
+
+    UserRelativeMacroId macro2_id = relative_macros.add_macro("macro2", macro2_groups);
+    REQUIRE(relative_macros.get_num_macros() == 2);
+    REQUIRE(macro2_id != macro1_id);
+    const t_user_relative_macro& stored_macro2 = relative_macros.get_macro(macro2_id);
+    REQUIRE(relative_macros.get_num_groups() == 4);
+    // Group ids are unique across macros
+    REQUIRE(stored_macro2.groups[0] != stored_macro.groups[0]);
+    REQUIRE(relative_macros.get_group(stored_macro2.groups[0]).macro_id == macro2_id);
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(3)) == stored_macro2.groups[0]);
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(4)) == stored_macro2.groups[1]);
+
+    // Atoms of the first macro are unaffected
+    REQUIRE(relative_macros.get_atom_group(AtomBlockId(2)) == stored_macro.groups[1]);
+
+    // Atoms of macros authored without site information are unlocked
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(0)).empty());
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(2)).empty());
+
+    // A third macro pins some of its atoms to primitive sites, given as the
+    // hierarchical path of the primitive inside the cluster; atom_site_paths[i]
+    // is the site of atoms[i], and an empty path leaves that atom free
+    const std::string site_a = "clb[0][default]/lab[0][default]/fle[0][n1_lut6]/ble6[0][default]/lut6[0]";
+    const std::string site_b = "clb[0][default]/lab[0][default]/fle[3][n1_lut6]/ble6[0][default]/lut6[0]";
+    std::vector<t_user_relative_group> macro3_groups;
+    t_user_relative_group ref_group3;
+    ref_group3.atoms = {AtomBlockId(5), AtomBlockId(6)};
+    ref_group3.atom_site_paths = {site_a, ""};
+    macro3_groups.push_back(ref_group3);
+    t_user_relative_group rel_group3;
+    rel_group3.atoms = {AtomBlockId(7)};
+    rel_group3.atom_site_paths = {site_b};
+    rel_group3.offset = t_pl_offset(0, 1, 0, 0);
+    macro3_groups.push_back(rel_group3);
+
+    UserRelativeMacroId macro3_id = relative_macros.add_macro("macro3", macro3_groups);
+    REQUIRE(relative_macros.get_num_macros() == 3);
+
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(5)) == site_a);
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(6)).empty());
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(7)) == site_b);
+
+    // The site paths are stored on the group, parallel to its atoms
+    const t_user_relative_macro& stored_macro3 = relative_macros.get_macro(macro3_id);
+    REQUIRE(relative_macros.get_group(stored_macro3.groups[0]).atom_site_paths == std::vector<std::string>{site_a, ""});
+    REQUIRE(relative_macros.get_group(stored_macro3.groups[1]).atom_site_paths == std::vector<std::string>{site_b});
+
+    // Adding a macro with sites does not pin the atoms of the earlier macros
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(0)).empty());
+
+    // An atom outside every macro is unlocked
+    REQUIRE(relative_macros.get_atom_locked_site_path(AtomBlockId(42)).empty());
+}
+
+namespace {
+
+// Load a constraints file holding the given <relative_macro_list> body through
+// the same uxsdcxx path as --read_vpr_constraints, and return what was read.
+// The XML goes through a real file because uxsdcxx reopens it to compute the
+// line number it reports with an error.
+VprConstraints load_relative_macro_constraints(const std::string& macro_list_body) {
+    const char* filename = "test_relative_macro_constraints.xml";
+    {
+        std::ofstream xml(filename);
+        xml << "<vpr_constraints tool_name=\"vpr\">\n"
+            << "<relative_macro_list>\n"
+            << macro_list_body
+            << "</relative_macro_list>\n"
+            << "</vpr_constraints>\n";
+    }
+
+    VprConstraintsSerializer reader;
+    std::ifstream xml(filename);
+    void* context = nullptr;
+    try {
+        uxsd::load_vpr_constraints_xml(reader, context, filename, xml);
+    } catch (...) {
+        std::remove(filename);
+        throw;
+    }
+    std::remove(filename);
+    return reader.constraints_;
+}
+
+// Fill the global atom netlist with atoms of the given names, so the loader's
+// name patterns have something to resolve against.
+void setup_test_atom_netlist(const std::vector<std::string>& atom_names) {
+    AtomNetlist& netlist = g_vpr_ctx.mutable_atom().mutable_netlist();
+    netlist = AtomNetlist("test_netlist", "");
+    for (const std::string& atom_name : atom_names) {
+        netlist.create_block(atom_name, LogicalModelId::INVALID());
+    }
+}
+
+} // namespace
+
+// Test the relative placement macro loader: how a <relative_macro_list> is
+// turned into UserRelativeMacros, and which malformed inputs are rejected
+TEST_CASE("RelativeMacroConstraintsLoader", "[vpr]") {
+    using Catch::Matchers::ContainsSubstring;
+
+    setup_test_atom_netlist({"dsp0_out_0", "lb_0", "lb_1", "lb_2", "lb_3", "lb_4", "ff_a", "ff_b"});
+    const AtomNetlist& netlist = g_vpr_ctx.atom().netlist();
+    AtomBlockId dsp0 = netlist.find_block("dsp0_out_0");
+    AtomBlockId lb_0 = netlist.find_block("lb_0");
+    AtomBlockId lb_1 = netlist.find_block("lb_1");
+    AtomBlockId lb_2 = netlist.find_block("lb_2");
+    AtomBlockId lb_3 = netlist.find_block("lb_3");
+    AtomBlockId lb_4 = netlist.find_block("lb_4");
+    AtomBlockId ff_b = netlist.find_block("ff_b");
+
+    SECTION("groups, offsets and atom lookups") {
+        VprConstraints constraints = load_relative_macro_constraints(R"(
+            <relative_macro name="m1">
+                <reference_group>
+                    <add_atom name_pattern="dsp0_out_0"/>
+                </reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0">
+                    <add_atom name_pattern="^lb_[0-2]$" is_regex="true"/>
+                </relative_group>
+                <relative_group x_offset="-1" y_offset="2" sub_tile_offset="1" layer_offset="0">
+                    <add_atom name_pattern="lb_3"/>
+                    <add_atom name_pattern="lb_4"/>
+                    <add_atom name_pattern="lb_3"/>
+                </relative_group>
+            </relative_macro>
+            <relative_macro name="m2">
+                <reference_group>
+                    <add_atom name_pattern="ff_a"/>
+                </reference_group>
+                <relative_group x_offset="0" y_offset="1" sub_tile_offset="0">
+                    <add_atom name_pattern="ff_b"/>
+                    <add_atom name_pattern="no_such_atom"/>
+                </relative_group>
+            </relative_macro>
+        )");
+        const UserRelativeMacros& macros = constraints.relative_macros();
+        REQUIRE(macros.get_num_macros() == 2);
+        UserRelativeMacroId m1_id(0);
+        UserRelativeMacroId m2_id(1);
+
+        const t_user_relative_macro& m1 = macros.get_macro(m1_id);
+        REQUIRE(m1.name == "m1");
+        REQUIRE(m1.groups.size() == 3);
+        const t_user_relative_group& m1_g0 = macros.get_group(m1.groups[0]);
+        const t_user_relative_group& m1_g1 = macros.get_group(m1.groups[1]);
+        const t_user_relative_group& m1_g2 = macros.get_group(m1.groups[2]);
+        REQUIRE(m1_g0.macro_id == m1_id);
+        // groups[0] is the reference group at the implicit zero offset
+        REQUIRE(m1_g0.offset == t_pl_offset(0, 0, 0, 0));
+        REQUIRE(m1_g0.atoms == std::vector<AtomBlockId>{dsp0});
+        REQUIRE(m1_g1.offset == t_pl_offset(1, 0, 0, 0));
+        REQUIRE(m1_g1.atoms == std::vector<AtomBlockId>{lb_0, lb_1, lb_2});
+        REQUIRE(m1_g2.offset == t_pl_offset(-1, 2, 1, 0));
+        // lb_3 is matched twice by the same group and stored once
+        REQUIRE(m1_g2.atoms == std::vector<AtomBlockId>{lb_3, lb_4});
+        // no site_path anywhere: one unlocked entry per atom
+        REQUIRE(m1_g2.atom_site_paths == std::vector<std::string>{"", ""});
+
+        const t_user_relative_macro& m2 = macros.get_macro(m2_id);
+        REQUIRE(m2.name == "m2");
+        REQUIRE(m2.groups.size() == 2);
+        REQUIRE(macros.get_group(m2.groups[1]).macro_id == m2_id);
+        // the pattern that matched nothing is skipped, the group survives
+        REQUIRE(macros.get_group(m2.groups[1]).atoms == std::vector<AtomBlockId>{ff_b});
+
+        // reverse lookups
+        REQUIRE(macros.get_atom_group(dsp0) == m1.groups[0]);
+        REQUIRE(macros.get_atom_group(lb_2) == m1.groups[1]);
+        REQUIRE(macros.get_atom_group(lb_3) == m1.groups[2]);
+        REQUIRE(macros.get_atom_group(ff_b) == m2.groups[1]);
+        REQUIRE(macros.get_atom_locked_site_path(lb_3).empty());
+    }
+
+    SECTION("groups and macros that match no atom are dropped") {
+        VprConstraints constraints = load_relative_macro_constraints(R"(
+            <relative_macro name="keeps_one_group">
+                <reference_group>
+                    <add_atom name_pattern="lb_0"/>
+                </reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0">
+                    <add_atom name_pattern="no_such_atom"/>
+                </relative_group>
+                <relative_group x_offset="2" y_offset="0" sub_tile_offset="0">
+                    <add_atom name_pattern="lb_1"/>
+                </relative_group>
+            </relative_macro>
+            <relative_macro name="no_relative_group_left">
+                <reference_group>
+                    <add_atom name_pattern="lb_2"/>
+                </reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0">
+                    <add_atom name_pattern="no_such_atom"/>
+                </relative_group>
+            </relative_macro>
+            <relative_macro name="nothing_matched">
+                <reference_group>
+                    <add_atom name_pattern="no_such_atom"/>
+                </reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0">
+                    <add_atom name_pattern="no_such_atom_either"/>
+                </relative_group>
+            </relative_macro>
+        )");
+        const UserRelativeMacros& macros = constraints.relative_macros();
+        REQUIRE(macros.get_num_macros() == 1);
+        const t_user_relative_macro& macro = macros.get_macro(UserRelativeMacroId(0));
+        REQUIRE(macro.name == "keeps_one_group");
+        REQUIRE(macro.groups.size() == 2);
+        REQUIRE(macros.get_group(macro.groups[1]).offset == t_pl_offset(2, 0, 0, 0));
+        REQUIRE(macros.get_group(macro.groups[1]).atoms == std::vector<AtomBlockId>{lb_1});
+        // atoms of a dropped macro are left unconstrained
+        REQUIRE(!macros.get_atom_group(lb_2).is_valid());
+    }
+
+    SECTION("malformed macros are rejected with a specific error") {
+        // duplicate macro name
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_2"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_3"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("Relative macro name 'm' is used more than once"));
+
+        // cross-layer macros are not supported
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0" layer_offset="1"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("layer_offset must be 0"));
+
+        // a relative group on top of the reference group
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="0" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("a relative_group is at offset (0, 0, sub_tile 0), the reference group's location"));
+
+        // two relative groups at the same offset, reported by offset even though
+        // an empty group before them was dropped
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="no_such_atom"/></relative_group>
+                <relative_group x_offset="2" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+                <relative_group x_offset="2" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_2"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("two relative groups are at the same offset (2, 0, sub_tile 0)"));
+
+        // an atom in two groups of one macro
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="^lb_[0-1]$" is_regex="true"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("atom 'lb_0' appears in the reference group and in the relative_group at offset (1, 0, sub_tile 0)"));
+
+        // an atom in two macros
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m1">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+            <relative_macro name="m2">
+                <reference_group><add_atom name_pattern="lb_1"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_2"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("Atom 'lb_1' appears in relative macro 'm2' and in relative macro 'm1'"));
+
+        // a reference group that matches nothing while a relative group does
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="no_such_atom"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("The macro has no anchor"));
+
+        // an invalid regular expression
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_[" is_regex="true"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("invalid atom name_pattern regex 'lb_['"));
+
+        // a present but empty site_path
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0" site_path=""/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("reference group: the site_path of atom pattern 'lb_0' is '', which is empty or contains whitespace"));
+
+        // a site_path naming no primitive
+        REQUIRE_THROWS_WITH(load_relative_macro_constraints(R"(
+            <relative_macro name="m">
+                <reference_group><add_atom name_pattern="lb_0"/></reference_group>
+                <relative_group x_offset="1" y_offset="0" sub_tile_offset="0"><add_atom name_pattern="lb_1" site_path="no_such_type[0][default]/nope[0]"/></relative_group>
+            </relative_macro>
+        )"),
+                            ContainsSubstring("relative_group at offset (1, 0, sub_tile 0): the site_path 'no_such_type[0][default]/nope[0]' of atom pattern 'lb_1' does not name a primitive of any logical block type"));
+    }
+
+    // leave the global atom netlist as other tests expect to find it
+    g_vpr_ctx.mutable_atom().mutable_netlist() = AtomNetlist();
+}
+
+#if 0
+static constexpr const char kArchFile[] = "test_read_arch_metadata.xml";
+
+// Test that place constraints are not changed during placement
+TEST_CASE("PlaceConstraintsIntegrity", "[vpr]") {
+    auto options = t_options();
+    auto arch = t_arch();
+    auto vpr_setup = t_vpr_setup();
+
+    vpr_initialize_logging();
+
+    // Command line arguments
+    //
+    // parameters description:
+    //      - place_static_move_prob: Timing Feasible Region move type is always selected.
+    //      - RL_agent_placement: disabled. This way the desired move type is selected.
+    const char* argv[] = {
+        "test_vpr",
+        kArchFile,
+        "wire.eblif",
+        "--fix_clusters", "wire.constraints",
+        "--place_static_move_prob", "0", "0", "0", "0", "0", "100", "0",
+        "--RL_agent_placement", "off"};
+    vpr_init(sizeof(argv) / sizeof(argv[0]), argv,
+             &options, &vpr_setup, &arch);
+
+    vpr_pack_flow(vpr_setup, arch);
+    vpr_create_device(vpr_setup, arch);
+    vpr_place_flow(vpr_setup, arch);
+
+    auto& cluster_ctx = g_vpr_ctx.clustering();
+    auto& place_ctx = g_vpr_ctx.placement();
+
+    // Check if constraints are preserved
+
+    // Input block
+    ClusterBlockId input_blk_id = cluster_ctx.clb_nlist.find_block("di");
+    int input_x = 2;
+    int input_y = 1;
+    int input_sub_tile = 5;
+
+    auto input_loc = place_ctx.block_locs[input_blk_id].loc;
+
+    REQUIRE(input_x == input_loc.x);
+    REQUIRE(input_y == input_loc.y);
+    REQUIRE(input_sub_tile == input_loc.sub_tile);
+
+    // Output block
+    ClusterBlockId output_blk_id = cluster_ctx.clb_nlist.find_block("out:do");
+    int output_x = 2;
+    int output_y = 1;
+    int output_sub_tile = 1;
+
+    auto output_loc = place_ctx.block_locs[output_blk_id].loc;
+
+    REQUIRE(output_x == output_loc.x);
+    REQUIRE(output_y == output_loc.y);
+    REQUIRE(output_sub_tile == output_loc.sub_tile);
+
+    vpr_free_all(arch, vpr_setup);
+}
+#endif

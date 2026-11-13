@@ -1,24 +1,21 @@
+#pragma once
+
 #include "rr_graph_fwd.h"
-#include "vtr_assert.h"
 
 #include <set>
-#include <list>
 #include <vector>
 
-#ifndef _PATH_MANAGER_H
-#    define _PATH_MANAGER_H
-
-/* Extra path data needed by RCV, seperated from t_heap struct for performance reasons
+/* Extra path data needed by RCV, separated from RTExploredNode struct for performance reasons
  * Can be accessed by a pointer, won't be initialized unless by RCV
  * Use PathManager class to handle this structure's allocation and deallocation
  *
  * path_rr: The entire partial path up until the route tree with the first node being the SOURCE,
- *          or a part of the route tree that already exists for this net 
- * 
+ *          or a part of the route tree that already exists for this net
+ *
  * edge: A list of edges from each node in the partial path to reach the next node
- * 
+ *
  * backward_delay: The delay of the partial path plus the path from route tree to source
- * 
+ *
  * backward_cong: The congestion estimate of the partial path plus the path from route tree to source */
 struct t_heap_path {
     std::vector<RRNodeId> path_rr;
@@ -28,29 +25,29 @@ struct t_heap_path {
 };
 
 // Forward declaration of RoutingContext needed for traceback insertion
-class RoutingContext;
+struct RoutingContext;
 
 /* A class to manage the extra data required for RCV
  * It manages a set containing all the nodes that currently exist in the route tree
  * This class also manages the extra memory allocation required for the t_heap_path structure
- * 
+ *
  * When RCV is enabled, the router will not always be looking for minimal cost routing
  * This means nodes that already exist in the current path, or current route tree could be expanded twice.
  * This would result in electrically illegal loops (example below)
- * 
+ *
  * OPIN--|----|             |-----------Sink 1
  *       |    |--------X----|     <--- The branch intersects with a previous routing
  *       |             |
  *       |-------------|                              Sink 2
- * 
+ *
  * To stop this, we keep track of the route tree (route_tree_nodes_), and each node keeps track of it's current partial routing up to the route tree
  * Before expanding a node, we check to see if it exists in either the route tree, or the current partial path to eliminate these scenarios
- * 
- * 
- * The t_heap_path structure was created to isolate the RCV specific data from the t_heap struct
- * Having these in t_heap creates significant performance issues when RCV is disabled
- * A t_heap_path pointer is instead stored in t_heap, which is selectively allocated only when RCV is enabled
- * 
+ *
+ *
+ * The t_heap_path structure was created to isolate the RCV specific data from the RTExploredNode struct
+ * Having these in RTExploredNode creates significant performance issues when RCV is disabled
+ * A t_heap_path pointer is instead stored in RTExploredNode, which is selectively allocated only when RCV is enabled
+ *
  * If the _is_enabled flag is true, alloc_path_struct allocates t_heap_path structures, otherwise will be a NOOP */
 class PathManager {
   public:
@@ -61,7 +58,7 @@ class PathManager {
     // This is needed for RCV as the non minimum distance pathfinding can lead to illegal loops
     // By keeping a set of the current route tree for a net, as well as checking the current path we can prevent this
     bool node_exists_in_tree(t_heap_path* path_data,
-                             RRNodeId& to_node);
+                             RRNodeId to_node);
 
     // Insert a node into the current route tree set indicating that it's currently in routing
     // Use this whenever updating the route tree
@@ -92,7 +89,6 @@ class PathManager {
 
     // Put all currently allocated structures into the free_nodes list
     // This currently does NOT invalidate them
-    // Ideally used before a t_heap empty_heap() call
     void empty_heap();
 
     // Clear the route tree nodes set, before moving onto the next net
@@ -116,5 +112,3 @@ class PathManager {
     // Required by RCV so the router doesn't expand already visited nodes
     std::set<RRNodeId> route_tree_nodes_;
 };
-
-#endif

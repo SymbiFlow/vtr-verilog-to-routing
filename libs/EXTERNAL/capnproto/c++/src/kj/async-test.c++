@@ -22,6 +22,17 @@
 #include "async.h"
 #include "debug.h"
 #include <kj/compat/gtest.h>
+#include "mutex.h"
+#include "thread.h"
+
+#if !KJ_USE_FIBERS && !_WIN32
+#include <pthread.h>
+#endif
+
+#if KJ_USE_FIBERS && __linux__
+#include <errno.h>
+#include <ucontext.h>
+#endif
 
 namespace kj {
 namespace {
@@ -30,6 +41,36 @@ namespace {
 // TODO(msvc): GetFunctorStartAddress is not supported on MSVC currently, so skip the test.
 TEST(Async, GetFunctorStartAddress) {
   EXPECT_TRUE(nullptr != _::GetFunctorStartAddress<>::apply([](){return 0;}));
+}
+#endif
+
+#if KJ_USE_FIBERS
+bool isLibcContextHandlingKnownBroken() {
+  // manylinux2014-x86's libc implements getcontext() to fail with ENOSYS. This is flagrantly
+  // against spec: getcontext() is not a syscall and is documented as never failing. Our configure
+  // script cannot detect this problem because it would require actually executing code to see
+  // what happens, which wouldn't work when cross-compiling. It would have been so much better if
+  // they had removed the symbol from libc entirely. But as a work-around, we will skip the tests
+  // when libc is broken.
+#if __linux__
+  static bool result = ([]() {
+    ucontext_t context;
+    if (getcontext(&context) < 0 && errno == ENOSYS) {
+      KJ_LOG(WARNING,
+          "This platform's libc is broken. Its getcontext() errors with ENOSYS. Fibers will not "
+          "work, so we'll skip the tests, but libkj was still built with fiber support, which "
+          "is broken. Please tell your libc maitnainer to remove the getcontext() function "
+          "entirely rather than provide an intentionally-broken version -- that way, the "
+          "configure script will detect that it should build libkj without fiber support.");
+      return true;
+    } else {
+      return false;
+    }
+  })();
+  return result;
+#else
+  return false;
+#endif
 }
 #endif
 
@@ -186,9 +227,9 @@ TEST(Async, DeepChain) {
 
   // Create a ridiculous chain of promises.
   for (uint i = 0; i < 1000; i++) {
-    promise = evalLater(mvCapture(promise, [](Promise<void> promise) {
+    promise = evalLater([promise=kj::mv(promise)]() mutable {
       return kj::mv(promise);
-    }));
+    });
   }
 
   loop.run();
@@ -223,9 +264,9 @@ TEST(Async, DeepChain2) {
 
   // Create a ridiculous chain of promises.
   for (uint i = 0; i < 1000; i++) {
-    promise = evalLater(mvCapture(promise, [](Promise<void> promise) {
+    promise = evalLater([promise=kj::mv(promise)]() mutable {
       return kj::mv(promise);
-    }));
+    });
   }
 
   promise.wait(waitScope);
@@ -262,9 +303,9 @@ TEST(Async, DeepChain3) {
 
 Promise<void> makeChain2(uint i, Promise<void> promise) {
   if (i > 0) {
-    return evalLater(mvCapture(promise, [i](Promise<void>&& promise) -> Promise<void> {
+    return evalLater([i, promise=kj::mv(promise)]() mutable -> Promise<void> {
       return makeChain2(i - 1, kj::mv(promise));
-    }));
+    });
   } else {
     return kj::mv(promise);
   }
@@ -364,11 +405,29 @@ TEST(Async, SeparateFulfillerDiscarded) {
   EventLoop loop;
   WaitScope waitScope(loop);
 
-  auto pair = newPromiseAndFulfiller<int>();
+  auto pair = newPromiseAndFulfiller<void>();
   pair.fulfiller = nullptr;
 
-  EXPECT_ANY_THROW(pair.promise.wait(waitScope));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "PromiseFulfiller was destroyed without fulfilling the promise",
+      pair.promise.wait(waitScope));
 }
+
+#if !KJ_NO_EXCEPTIONS
+TEST(Async, SeparateFulfillerDiscardedDuringUnwind) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto pair = newPromiseAndFulfiller<int>();
+  kj::runCatchingExceptions([&]() {
+    auto fulfillerToDrop = kj::mv(pair.fulfiller);
+    kj::throwFatalException(KJ_EXCEPTION(FAILED, "test exception"));
+  });
+
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE(
+      "test exception", pair.promise.wait(waitScope));
+}
+#endif
 
 TEST(Async, SeparateFulfillerMemoryLeak) {
   auto paf = kj::newPromiseAndFulfiller<void>();
@@ -379,57 +438,75 @@ TEST(Async, Ordering) {
   EventLoop loop;
   WaitScope waitScope(loop);
 
-  int counter = 0;
-  Promise<void> promises[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  class ErrorHandlerImpl: public TaskSet::ErrorHandler {
+  public:
+    void taskFailed(kj::Exception&& exception) override {
+      KJ_FAIL_EXPECT(exception);
+    }
+  };
 
-  promises[1] = evalLater([&]() {
+  int counter = 0;
+  ErrorHandlerImpl errorHandler;
+  kj::TaskSet tasks(errorHandler);
+
+  tasks.add(evalLater([&]() {
     EXPECT_EQ(0, counter++);
 
     {
       // Use a promise and fulfiller so that we can fulfill the promise after waiting on it in
       // order to induce depth-first scheduling.
       auto paf = kj::newPromiseAndFulfiller<void>();
-      promises[2] = paf.promise.then([&]() {
+      tasks.add(paf.promise.then([&]() {
         EXPECT_EQ(1, counter++);
-      }).eagerlyEvaluate(nullptr);
+      }));
       paf.fulfiller->fulfill();
     }
 
     // .then() is scheduled breadth-first if the promise has already resolved, but depth-first
     // if the promise resolves later.
-    promises[3] = Promise<void>(READY_NOW).then([&]() {
+    tasks.add(Promise<void>(READY_NOW).then([&]() {
       EXPECT_EQ(4, counter++);
     }).then([&]() {
       EXPECT_EQ(5, counter++);
-    }).eagerlyEvaluate(nullptr);
+      tasks.add(kj::evalLast([&]() {
+        EXPECT_EQ(7, counter++);
+        tasks.add(kj::evalLater([&]() {
+          EXPECT_EQ(8, counter++);
+        }));
+      }));
+    }));
 
     {
       auto paf = kj::newPromiseAndFulfiller<void>();
-      promises[4] = paf.promise.then([&]() {
+      tasks.add(paf.promise.then([&]() {
         EXPECT_EQ(2, counter++);
-      }).eagerlyEvaluate(nullptr);
+        tasks.add(kj::evalLast([&]() {
+          EXPECT_EQ(9, counter++);
+          tasks.add(kj::evalLater([&]() {
+            EXPECT_EQ(10, counter++);
+          }));
+        }));
+      }));
       paf.fulfiller->fulfill();
     }
 
     // evalLater() is like READY_NOW.then().
-    promises[5] = evalLater([&]() {
+    tasks.add(evalLater([&]() {
       EXPECT_EQ(6, counter++);
-    }).eagerlyEvaluate(nullptr);
-  }).eagerlyEvaluate(nullptr);
+    }));
+  }));
 
-  promises[0] = evalLater([&]() {
+  tasks.add(evalLater([&]() {
     EXPECT_EQ(3, counter++);
 
-    // Making this a chain should NOT cause it to preempt promises[1].  (This was a problem at one
-    // point.)
+    // Making this a chain should NOT cause it to preempt the first promise.  (This was a problem
+    // at one point.)
     return Promise<void>(READY_NOW);
-  }).eagerlyEvaluate(nullptr);
+  }));
 
-  for (auto i: indices(promises)) {
-    kj::mv(promises[i]).wait(waitScope);
-  }
+  tasks.onEmpty().wait(waitScope);
 
-  EXPECT_EQ(7, counter);
+  EXPECT_EQ(11, counter);
 }
 
 TEST(Async, Fork) {
@@ -440,14 +517,28 @@ TEST(Async, Fork) {
 
   auto fork = promise.fork();
 
+#if __GNUC__ && !__clang__ && __GNUC__ >= 7
+// GCC 7 decides the open-brace below is "misleadingly indented" as if it were guarded by the `for`
+// that appears in the implementation of KJ_REQUIRE(). Shut up shut up shut up.
+#pragma GCC diagnostic ignored "-Wmisleading-indentation"
+#endif
+  KJ_ASSERT(!fork.hasBranches());
+  {
+    auto cancelBranch = fork.addBranch();
+    KJ_ASSERT(fork.hasBranches());
+  }
+  KJ_ASSERT(!fork.hasBranches());
+
   auto branch1 = fork.addBranch().then([](int i) {
     EXPECT_EQ(123, i);
     return 456;
   });
+  KJ_ASSERT(fork.hasBranches());
   auto branch2 = fork.addBranch().then([](int i) {
     EXPECT_EQ(123, i);
     return 789;
   });
+  KJ_ASSERT(fork.hasBranches());
 
   {
     auto releaseFork = kj::mv(fork);
@@ -489,6 +580,34 @@ TEST(Async, ForkRef) {
   EXPECT_EQ(456, branch1.wait(waitScope));
   EXPECT_EQ(789, branch2.wait(waitScope));
 }
+
+TEST(Async, ForkMaybeRef) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  Promise<Maybe<Own<RefcountedInt>>> promise = evalLater([&]() {
+    return Maybe<Own<RefcountedInt>>(refcounted<RefcountedInt>(123));
+  });
+
+  auto fork = promise.fork();
+
+  auto branch1 = fork.addBranch().then([](Maybe<Own<RefcountedInt>>&& i) {
+    EXPECT_EQ(123, KJ_REQUIRE_NONNULL(i)->i);
+    return 456;
+  });
+  auto branch2 = fork.addBranch().then([](Maybe<Own<RefcountedInt>>&& i) {
+    EXPECT_EQ(123, KJ_REQUIRE_NONNULL(i)->i);
+    return 789;
+  });
+
+  {
+    auto releaseFork = kj::mv(fork);
+  }
+
+  EXPECT_EQ(456, branch1.wait(waitScope));
+  EXPECT_EQ(789, branch2.wait(waitScope));
+}
+
 
 TEST(Async, Split) {
   EventLoop loop;
@@ -548,36 +667,134 @@ TEST(Async, ExclusiveJoin) {
 }
 
 TEST(Async, ArrayJoin) {
-  EventLoop loop;
-  WaitScope waitScope(loop);
+  for (auto specificJoinPromisesOverload: {
+    +[](kj::Array<kj::Promise<int>> promises) { return joinPromises(kj::mv(promises)); },
+    +[](kj::Array<kj::Promise<int>> promises) { return joinPromisesFailFast(kj::mv(promises)); }
+  }) {
+    EventLoop loop;
+    WaitScope waitScope(loop);
 
-  auto builder = heapArrayBuilder<Promise<int>>(3);
-  builder.add(123);
-  builder.add(456);
-  builder.add(789);
+    auto builder = heapArrayBuilder<Promise<int>>(3);
+    builder.add(123);
+    builder.add(456);
+    builder.add(789);
 
-  Promise<Array<int>> promise = joinPromises(builder.finish());
+    Promise<Array<int>> promise = specificJoinPromisesOverload(builder.finish());
 
-  auto result = promise.wait(waitScope);
+    auto result = promise.wait(waitScope);
 
-  ASSERT_EQ(3u, result.size());
-  EXPECT_EQ(123, result[0]);
-  EXPECT_EQ(456, result[1]);
-  EXPECT_EQ(789, result[2]);
+    ASSERT_EQ(3u, result.size());
+    EXPECT_EQ(123, result[0]);
+    EXPECT_EQ(456, result[1]);
+    EXPECT_EQ(789, result[2]);
+  }
 }
 
 TEST(Async, ArrayJoinVoid) {
+  for (auto specificJoinPromisesOverload: {
+    +[](kj::Array<kj::Promise<void>> promises) { return joinPromises(kj::mv(promises)); },
+    +[](kj::Array<kj::Promise<void>> promises) { return joinPromisesFailFast(kj::mv(promises)); }
+  }) {
+    EventLoop loop;
+    WaitScope waitScope(loop);
+
+    auto builder = heapArrayBuilder<Promise<void>>(3);
+    builder.add(READY_NOW);
+    builder.add(READY_NOW);
+    builder.add(READY_NOW);
+
+    Promise<void> promise = specificJoinPromisesOverload(builder.finish());
+
+    promise.wait(waitScope);
+  }
+}
+
+struct Pafs {
+  kj::Array<Promise<void>> promises;
+  kj::Array<Own<PromiseFulfiller<void>>> fulfillers;
+};
+
+Pafs makeCompletionCountingPafs(uint count, uint& tasksCompleted) {
+  auto promisesBuilder = heapArrayBuilder<Promise<void>>(count);
+  auto fulfillersBuilder = heapArrayBuilder<Own<PromiseFulfiller<void>>>(count);
+
+  for (auto KJ_UNUSED value: zeroTo(count)) {
+    auto paf = newPromiseAndFulfiller<void>();
+    promisesBuilder.add(paf.promise.then([&tasksCompleted]() {
+      ++tasksCompleted;
+    }));
+    fulfillersBuilder.add(kj::mv(paf.fulfiller));
+  }
+
+  return { promisesBuilder.finish(), fulfillersBuilder.finish() };
+}
+
+TEST(Async, ArrayJoinException) {
   EventLoop loop;
   WaitScope waitScope(loop);
 
-  auto builder = heapArrayBuilder<Promise<void>>(3);
-  builder.add(READY_NOW);
-  builder.add(READY_NOW);
-  builder.add(READY_NOW);
+  uint tasksCompleted = 0;
+  auto pafs = makeCompletionCountingPafs(5, tasksCompleted);
+  auto& fulfillers = pafs.fulfillers;
+  Promise<void> promise = joinPromises(kj::mv(pafs.promises));
 
-  Promise<void> promise = joinPromises(builder.finish());
+  {
+    uint i = 0;
+    KJ_EXPECT(tasksCompleted == 0);
 
-  promise.wait(waitScope);
+    // Joined tasks are not completed early.
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == 0);
+
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == 0);
+
+    // Rejected tasks do not fail-fast.
+    fulfillers[i++]->reject(KJ_EXCEPTION(FAILED, "Test exception"));
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == 0);
+
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == 0);
+
+    // The final fulfillment makes the promise ready.
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("Test exception", promise.wait(waitScope));
+    KJ_EXPECT(tasksCompleted == 4);
+  }
+}
+
+TEST(Async, ArrayJoinFailFastException) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  uint tasksCompleted = 0;
+  auto pafs = makeCompletionCountingPafs(5, tasksCompleted);
+  auto& fulfillers = pafs.fulfillers;
+  Promise<void> promise = joinPromisesFailFast(kj::mv(pafs.promises));
+
+  {
+    uint i = 0;
+    KJ_EXPECT(tasksCompleted == 0);
+
+    // Joined tasks are completed eagerly, not waiting until the join node is awaited.
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == i);
+
+    fulfillers[i++]->fulfill();
+    KJ_EXPECT(!promise.poll(waitScope));
+    KJ_EXPECT(tasksCompleted == i);
+
+    fulfillers[i++]->reject(KJ_EXCEPTION(FAILED, "Test exception"));
+
+    // The first rejection makes the promise ready.
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("Test exception", promise.wait(waitScope));
+    KJ_EXPECT(tasksCompleted == i - 1);
+  }
 }
 
 TEST(Async, Canceler) {
@@ -601,6 +818,16 @@ TEST(Async, Canceler) {
   now.wait(waitScope);
   KJ_EXPECT_THROW_MESSAGE("foobar", neverI.wait(waitScope));
   KJ_EXPECT(nowI.wait(waitScope) == 123u);
+}
+
+TEST(Async, CancelerDoubleWrap) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  // This used to crash.
+  Canceler canceler;
+  auto promise = canceler.wrap(canceler.wrap(kj::Promise<void>(kj::NEVER_DONE)));
+  canceler.cancel("whoops");
 }
 
 class ErrorHandlerImpl: public TaskSet::ErrorHandler {
@@ -643,6 +870,83 @@ TEST(Async, TaskSet) {
   EXPECT_EQ(1u, errorHandler.exceptionCount);
 }
 
+#if KJ_USE_FIBERS || !_WIN32
+// This test requires either fibers or pthreads in order to limit the stack size. Currently we
+// don't have a version that works on Windows without fibers, so skip the test there.
+
+TEST(Async, LargeTaskSetDestruction) {
+  static constexpr size_t stackSize = 200 * 1024;
+
+  static auto testBody = [] {
+
+    ErrorHandlerImpl errorHandler;
+    TaskSet tasks(errorHandler);
+
+    for (int i = 0; i < stackSize / sizeof(void*); i++) {
+      tasks.add(kj::NEVER_DONE);
+    }
+  };
+
+#if KJ_USE_FIBERS
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  startFiber(stackSize,
+      [](WaitScope&) mutable {
+    testBody();
+  }).wait(waitScope);
+
+#else
+  pthread_attr_t attr;
+  KJ_REQUIRE(0 == pthread_attr_init(&attr));
+  KJ_DEFER(KJ_REQUIRE(0 == pthread_attr_destroy(&attr)));
+
+  KJ_REQUIRE(0 == pthread_attr_setstacksize(&attr, stackSize));
+  pthread_t thread;
+  KJ_REQUIRE(0 == pthread_create(&thread, &attr, [](void*) -> void* {
+    EventLoop loop;
+    WaitScope waitScope(loop);
+    testBody();
+    return nullptr;
+  }, nullptr));
+  KJ_REQUIRE(0 == pthread_join(thread, nullptr));
+#endif
+}
+
+#endif  // KJ_USE_FIBERS || !_WIN32
+
+TEST(Async, TaskSet) {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  bool destroyed = false;
+
+  {
+    ErrorHandlerImpl errorHandler;
+    TaskSet tasks(errorHandler);
+
+    tasks.add(kj::Promise<void>(kj::NEVER_DONE)
+        .attach(kj::defer([&]() {
+      // During cancellation, append another task!
+      // It had better be canceled too!
+      tasks.add(kj::Promise<void>(kj::READY_NOW)
+          .then([]() { KJ_FAIL_EXPECT("shouldn't get here"); },
+                [](auto) { KJ_FAIL_EXPECT("shouldn't get here"); })
+          .attach(kj::defer([&]() {
+        destroyed = true;
+      })));
+    })));
+  }
+
+  KJ_EXPECT(destroyed);
+
+  // Give a chance for the "shouldn't get here" asserts to execute, if the event is still running,
+  // which it shouldn't be.
+  waitScope.poll();
+}
+
 TEST(Async, TaskSetOnEmpty) {
   EventLoop loop;
   WaitScope waitScope(loop);
@@ -665,6 +969,52 @@ TEST(Async, TaskSetOnEmpty) {
   KJ_ASSERT(promise.poll(waitScope));
   KJ_EXPECT(tasks.isEmpty());
   promise.wait(waitScope);
+}
+
+KJ_TEST("TaskSet::clear()") {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  class ClearOnError: public TaskSet::ErrorHandler {
+  public:
+    TaskSet* tasks;
+    void taskFailed(kj::Exception&& exception) override {
+      KJ_EXPECT(exception.getDescription().endsWith("example TaskSet failure"));
+      tasks->clear();
+    }
+  };
+
+  ClearOnError errorHandler;
+  TaskSet tasks(errorHandler);
+  errorHandler.tasks = &tasks;
+
+  auto doTest = [&](auto&& causeClear) {
+    KJ_EXPECT(tasks.isEmpty());
+
+    uint count = 0;
+    tasks.add(kj::Promise<void>(kj::READY_NOW).attach(kj::defer([&]() { ++count; })));
+    tasks.add(kj::Promise<void>(kj::NEVER_DONE).attach(kj::defer([&]() { ++count; })));
+    tasks.add(kj::Promise<void>(kj::NEVER_DONE).attach(kj::defer([&]() { ++count; })));
+
+    auto onEmpty = tasks.onEmpty();
+    KJ_EXPECT(!onEmpty.poll(waitScope));
+    KJ_EXPECT(count == 1);
+    KJ_EXPECT(!tasks.isEmpty());
+
+    causeClear();
+    KJ_EXPECT(tasks.isEmpty());
+    onEmpty.wait(waitScope);
+    KJ_EXPECT(count == 3);
+  };
+
+  // Try it where we just call clear() directly.
+  doTest([&]() { tasks.clear(); });
+
+  // Try causing clear() inside taskFailed(), ensuring that this is permitted.
+  doTest([&]() {
+    tasks.add(KJ_EXCEPTION(FAILED, "example TaskSet failure"));
+    waitScope.poll();
+  });
 }
 
 class DestructorDetector {
@@ -807,6 +1157,590 @@ TEST(Async, Poll) {
   paf.fulfiller->fulfill();
   KJ_ASSERT(paf.promise.poll(waitScope));
   paf.promise.wait(waitScope);
+}
+
+KJ_TEST("Maximum turn count during wait scope poll is enforced") {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+  ErrorHandlerImpl errorHandler;
+  TaskSet tasks(errorHandler);
+
+  auto evaluated1 = false;
+  tasks.add(evalLater([&]() {
+    evaluated1 = true;
+  }));
+
+  auto evaluated2 = false;
+  tasks.add(evalLater([&]() {
+    evaluated2 = true;
+  }));
+
+  auto evaluated3 = false;
+  tasks.add(evalLater([&]() {
+    evaluated3 = true;
+  }));
+
+  uint count;
+
+  // Check that only events up to a maximum are resolved:
+  count = waitScope.poll(2);
+  KJ_ASSERT(count == 2);
+  KJ_EXPECT(evaluated1);
+  KJ_EXPECT(evaluated2);
+  KJ_EXPECT(!evaluated3);
+
+  // Get the last remaining event in the queue:
+  count = waitScope.poll(1);
+  KJ_ASSERT(count == 1);
+  KJ_EXPECT(evaluated3);
+
+  // No more events:
+  count = waitScope.poll(1);
+  KJ_ASSERT(count == 0);
+}
+
+KJ_TEST("exclusiveJoin both events complete simultaneously") {
+  // Previously, if both branches of an exclusiveJoin() completed simultaneously, then the parent
+  // event could be armed twice. This is an error, but the exact results of this error depend on
+  // the parent PromiseNode type. One case where it matters is ArrayJoinPromiseNode, which counts
+  // events and decides it is done when it has received exactly the number of events expected.
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto builder = kj::heapArrayBuilder<kj::Promise<uint>>(2);
+  builder.add(kj::Promise<uint>(123).exclusiveJoin(kj::Promise<uint>(456)));
+  builder.add(kj::NEVER_DONE);
+  auto joined = kj::joinPromises(builder.finish());
+
+  KJ_EXPECT(!joined.poll(waitScope));
+}
+
+#if KJ_USE_FIBERS
+KJ_TEST("start a fiber") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto paf = newPromiseAndFulfiller<int>();
+
+  Promise<StringPtr> fiber = startFiber(65536,
+      [promise = kj::mv(paf.promise)](WaitScope& fiberScope) mutable {
+    int i = promise.wait(fiberScope);
+    KJ_EXPECT(i == 123);
+    return "foo"_kj;
+  });
+
+  KJ_EXPECT(!fiber.poll(waitScope));
+
+  paf.fulfiller->fulfill(123);
+
+  KJ_ASSERT(fiber.poll(waitScope));
+  KJ_EXPECT(fiber.wait(waitScope) == "foo");
+}
+
+KJ_TEST("fiber promise chaining") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto paf = newPromiseAndFulfiller<int>();
+  bool ran = false;
+
+  Promise<int> fiber = startFiber(65536,
+      [promise = kj::mv(paf.promise), &ran](WaitScope& fiberScope) mutable {
+    ran = true;
+    return kj::mv(promise);
+  });
+
+  KJ_EXPECT(!ran);
+  KJ_EXPECT(!fiber.poll(waitScope));
+  KJ_EXPECT(ran);
+
+  paf.fulfiller->fulfill(123);
+
+  KJ_ASSERT(fiber.poll(waitScope));
+  KJ_EXPECT(fiber.wait(waitScope) == 123);
+}
+
+KJ_TEST("throw from a fiber") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  auto paf = newPromiseAndFulfiller<void>();
+
+  Promise<void> fiber = startFiber(65536,
+      [promise = kj::mv(paf.promise)](WaitScope& fiberScope) mutable {
+    promise.wait(fiberScope);
+    KJ_FAIL_EXPECT("wait() should have thrown");
+  });
+
+  KJ_EXPECT(!fiber.poll(waitScope));
+
+  paf.fulfiller->reject(KJ_EXCEPTION(FAILED, "test exception"));
+
+  KJ_ASSERT(fiber.poll(waitScope));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("test exception", fiber.wait(waitScope));
+}
+
+#if !__MINGW32__ || __MINGW64__
+// This test fails on MinGW 32-bit builds due to a compiler bug with exceptions + fibers:
+//     https://sourceforge.net/p/mingw-w64/bugs/835/
+KJ_TEST("cancel a fiber") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  // When exceptions are disabled we can't wait() on a non-void promise that throws.
+  auto paf = newPromiseAndFulfiller<void>();
+
+  bool exited = false;
+  bool canceled = false;
+
+  {
+    Promise<StringPtr> fiber = startFiber(65536,
+        [promise = kj::mv(paf.promise), &exited, &canceled](WaitScope& fiberScope) mutable {
+      KJ_DEFER(exited = true);
+      try {
+        promise.wait(fiberScope);
+      } catch (kj::CanceledException) {
+        canceled = true;
+        throw;
+      }
+      return "foo"_kj;
+    });
+
+    KJ_EXPECT(!fiber.poll(waitScope));
+    KJ_EXPECT(!exited);
+    KJ_EXPECT(!canceled);
+  }
+
+  KJ_EXPECT(exited);
+  KJ_EXPECT(canceled);
+}
+#endif
+
+KJ_TEST("fiber pool") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+  FiberPool pool(65536);
+
+  int* i1_local = nullptr;
+  int* i2_local = nullptr;
+
+  auto run = [&]() mutable {
+    auto paf1 = newPromiseAndFulfiller<int>();
+    auto paf2 = newPromiseAndFulfiller<int>();
+
+    {
+      Promise<int> fiber1 = pool.startFiber([&, promise = kj::mv(paf1.promise)](WaitScope& scope) mutable {
+        int i = promise.wait(scope);
+        KJ_EXPECT(i == 123);
+        if (i1_local == nullptr) {
+          i1_local = &i;
+        } else {
+#if !KJ_HAS_COMPILER_FEATURE(address_sanitizer)
+          // Verify that the stack variable is in the exact same spot as before.
+          // May not work under ASAN as the instrumentation to detect stack-use-after-return can
+          // change the address.
+          KJ_ASSERT(i1_local == &i);
+#endif
+        }
+        return i;
+      });
+      {
+        Promise<int> fiber2 = pool.startFiber([&, promise = kj::mv(paf2.promise)](WaitScope& scope) mutable {
+          int i = promise.wait(scope);
+          KJ_EXPECT(i == 456);
+          if (i2_local == nullptr) {
+            i2_local = &i;
+          } else {
+#if !KJ_HAS_COMPILER_FEATURE(address_sanitizer)
+            KJ_ASSERT(i2_local == &i);
+#endif
+          }
+          return i;
+        });
+
+        KJ_EXPECT(!fiber1.poll(waitScope));
+        KJ_EXPECT(!fiber2.poll(waitScope));
+
+        KJ_EXPECT(pool.getFreelistSize() == 0);
+
+        paf2.fulfiller->fulfill(456);
+
+        KJ_EXPECT(!fiber1.poll(waitScope));
+        KJ_ASSERT(fiber2.poll(waitScope));
+        KJ_EXPECT(fiber2.wait(waitScope) == 456);
+
+        KJ_EXPECT(pool.getFreelistSize() == 1);
+      }
+
+      paf1.fulfiller->fulfill(123);
+
+      KJ_ASSERT(fiber1.poll(waitScope));
+      KJ_EXPECT(fiber1.wait(waitScope) == 123);
+
+      KJ_EXPECT(pool.getFreelistSize() == 2);
+    }
+  };
+  run();
+  KJ_ASSERT(i1_local != nullptr);
+  KJ_ASSERT(i2_local != nullptr);
+  // run the same thing and reuse the fibers
+  run();
+}
+
+bool onOurStack(char* p) {
+  // If p points less than 64k away from a random stack variable, then it must be on the same
+  // stack, since we never allocate stacks smaller than 64k.
+#if KJ_HAS_COMPILER_FEATURE(address_sanitizer)
+  // The stack-use-after-return detection mechanism breaks our ability to check this, so don't.
+  return true;
+#else
+  char c;
+  ptrdiff_t diff = p - &c;
+  return diff < 65536 && diff > -65536;
+#endif
+}
+
+bool notOnOurStack(char* p) {
+  // Opposite of onOurStack(), except returns true if the check can't be performed.
+#if KJ_HAS_COMPILER_FEATURE(address_sanitizer)
+  // The stack-use-after-return detection mechanism breaks our ability to check this, so don't.
+  return true;
+#else
+  return !onOurStack(p);
+#endif
+}
+
+KJ_TEST("fiber pool runSynchronously()") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  FiberPool pool(65536);
+
+  {
+    char c;
+    KJ_EXPECT(onOurStack(&c));  // sanity check...
+  }
+
+  char* ptr1 = nullptr;
+  char* ptr2 = nullptr;
+
+  pool.runSynchronously([&]() {
+    char c;
+    ptr1 = &c;
+  });
+  KJ_ASSERT(ptr1 != nullptr);
+
+  pool.runSynchronously([&]() {
+    char c;
+    ptr2 = &c;
+  });
+  KJ_ASSERT(ptr2 != nullptr);
+
+#if !KJ_HAS_COMPILER_FEATURE(address_sanitizer)
+  // Should have used the same stack both times, so local var would be in the same place.
+  // Under ASAN, the stack-use-after-return detection correctly fires on this, so we skip the check.
+  KJ_EXPECT(ptr1 == ptr2);
+#endif
+
+  // Should have been on a different stack from the main stack.
+  KJ_EXPECT(notOnOurStack(ptr1));
+
+  KJ_EXPECT_THROW_MESSAGE("test exception",
+      pool.runSynchronously([&]() { KJ_FAIL_ASSERT("test exception"); }));
+}
+
+KJ_TEST("fiber pool limit") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  FiberPool pool(65536);
+
+  pool.setMaxFreelist(1);
+
+  kj::MutexGuarded<uint> state;
+
+  char* ptr1;
+  char* ptr2;
+
+  // Run some code that uses two stacks in separate threads at the same time.
+  {
+    kj::Thread thread([&]() noexcept {
+      auto lock = state.lockExclusive();
+      lock.wait([](uint val) { return val == 1; });
+
+      pool.runSynchronously([&]() {
+        char c;
+        ptr2 = &c;
+
+        *lock = 2;
+        lock.wait([](uint val) { return val == 3; });
+      });
+    });
+
+    ([&]() noexcept {
+      auto lock = state.lockExclusive();
+
+      pool.runSynchronously([&]() {
+        char c;
+        ptr1 = &c;
+
+        *lock = 1;
+        lock.wait([](uint val) { return val == 2; });
+      });
+
+      *lock = 3;
+    })();
+  }
+
+  KJ_EXPECT(pool.getFreelistSize() == 1);
+
+  // We expect that if we reuse a stack from the pool, it will be the last one that exited, which
+  // is the one from the thread.
+  pool.runSynchronously([&]() {
+    KJ_EXPECT(onOurStack(ptr2));
+    KJ_EXPECT(notOnOurStack(ptr1));
+
+    KJ_EXPECT(pool.getFreelistSize() == 0);
+  });
+
+  KJ_EXPECT(pool.getFreelistSize() == 1);
+
+  // Note that it would NOT work to try to allocate two stacks at the same time again and verify
+  // that the second stack doesn't match the previously-deleted stack, because there's a high
+  // likelihood that the new stack would be allocated in the same location.
+}
+
+#if __GNUC__ >= 12 && !__clang__
+// The test below intentionally takes a pointer to a stack variable and stores it past the end
+// of the function. This seems to trigger a warning in newer GCCs.
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
+
+KJ_TEST("run event loop on freelisted stacks") {
+  if (isLibcContextHandlingKnownBroken()) return;
+
+  FiberPool pool(65536);
+
+  class MockEventPort: public EventPort {
+  public:
+    bool wait() override {
+      char c;
+      waitStack = &c;
+      KJ_IF_MAYBE(f, fulfiller) {
+        f->get()->fulfill();
+        fulfiller = nullptr;
+      }
+      return false;
+    }
+    bool poll() override {
+      char c;
+      pollStack = &c;
+      KJ_IF_MAYBE(f, fulfiller) {
+        f->get()->fulfill();
+        fulfiller = nullptr;
+      }
+      return false;
+    }
+
+    char* waitStack = nullptr;
+    char* pollStack = nullptr;
+
+    kj::Maybe<kj::Own<PromiseFulfiller<void>>> fulfiller;
+  };
+
+  MockEventPort port;
+  EventLoop loop(port);
+  WaitScope waitScope(loop);
+  waitScope.runEventCallbacksOnStackPool(pool);
+
+  {
+    auto paf = newPromiseAndFulfiller<void>();
+    port.fulfiller = kj::mv(paf.fulfiller);
+
+    char* ptr1 = nullptr;
+    char* ptr2 = nullptr;
+    kj::evalLater([&]() {
+      char c;
+      ptr1 = &c;
+      return kj::mv(paf.promise);
+    }).then([&]() {
+      char c;
+      ptr2 = &c;
+    }).wait(waitScope);
+
+    KJ_EXPECT(ptr1 != nullptr);
+    KJ_EXPECT(ptr2 != nullptr);
+    KJ_EXPECT(port.waitStack != nullptr);
+    KJ_EXPECT(port.pollStack == nullptr);
+
+    // The event callbacks should have run on a different stack, but the wait should have been on
+    // the main stack.
+    KJ_EXPECT(notOnOurStack(ptr1));
+    KJ_EXPECT(notOnOurStack(ptr2));
+    KJ_EXPECT(onOurStack(port.waitStack));
+
+    pool.runSynchronously([&]() {
+      // This should run on the same stack where the event callbacks ran.
+      KJ_EXPECT(onOurStack(ptr1));
+      KJ_EXPECT(onOurStack(ptr2));
+      KJ_EXPECT(notOnOurStack(port.waitStack));
+    });
+  }
+
+  port.waitStack = nullptr;
+  port.pollStack = nullptr;
+
+  // Now try poll() instead of wait(). Note that since poll() doesn't block, we let it run on the
+  // event stack.
+  {
+    auto paf = newPromiseAndFulfiller<void>();
+    port.fulfiller = kj::mv(paf.fulfiller);
+
+    char* ptr1 = nullptr;
+    char* ptr2 = nullptr;
+    auto promise = kj::evalLater([&]() {
+      char c;
+      ptr1 = &c;
+      return kj::mv(paf.promise);
+    }).then([&]() {
+      char c;
+      ptr2 = &c;
+    });
+
+    KJ_EXPECT(promise.poll(waitScope));
+
+    KJ_EXPECT(ptr1 != nullptr);
+    KJ_EXPECT(ptr2 == nullptr);  // didn't run because of lazy continuation evaluation
+    KJ_EXPECT(port.waitStack == nullptr);
+    KJ_EXPECT(port.pollStack != nullptr);
+
+    // The event callback should have run on a different stack, and poll() should have run on
+    // a separate stack too.
+    KJ_EXPECT(notOnOurStack(ptr1));
+    KJ_EXPECT(notOnOurStack(port.pollStack));
+
+    pool.runSynchronously([&]() {
+      // This should run on the same stack where the event callbacks ran.
+      KJ_EXPECT(onOurStack(ptr1));
+      KJ_EXPECT(onOurStack(port.pollStack));
+    });
+  }
+}
+#endif
+
+KJ_TEST("retryOnDisconnect") {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  {
+    uint i = 0;
+    auto promise = retryOnDisconnect([&]() -> Promise<int> {
+      i++;
+      return 123;
+    });
+    KJ_EXPECT(i == 0);
+    KJ_EXPECT(promise.wait(waitScope) == 123);
+    KJ_EXPECT(i == 1);
+  }
+
+  {
+    uint i = 0;
+    auto promise = retryOnDisconnect([&]() -> Promise<int> {
+      if (i++ == 0) {
+        return KJ_EXCEPTION(DISCONNECTED, "test disconnect");
+      } else {
+        return 123;
+      }
+    });
+    KJ_EXPECT(i == 0);
+    KJ_EXPECT(promise.wait(waitScope) == 123);
+    KJ_EXPECT(i == 2);
+  }
+
+
+  {
+    uint i = 0;
+    auto promise = retryOnDisconnect([&]() -> Promise<int> {
+      if (i++ <= 1) {
+        return KJ_EXCEPTION(DISCONNECTED, "test disconnect", i);
+      } else {
+        return 123;
+      }
+    });
+    KJ_EXPECT(i == 0);
+    KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("test disconnect; i = 2",
+        promise.ignoreResult().wait(waitScope));
+    KJ_EXPECT(i == 2);
+  }
+
+  {
+    // Test passing a reference to a function.
+    struct Func {
+      uint i = 0;
+      Promise<int> operator()() {
+        if (i++ == 0) {
+          return KJ_EXCEPTION(DISCONNECTED, "test disconnect");
+        } else {
+          return 123;
+        }
+      }
+    };
+    Func func;
+
+    auto promise = retryOnDisconnect(func);
+    KJ_EXPECT(func.i == 0);
+    KJ_EXPECT(promise.wait(waitScope) == 123);
+    KJ_EXPECT(func.i == 2);
+  }
+}
+
+#if (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 17)  || (__MINGW32__ && !__MINGW64__)
+// manylinux2014-x86 doesn't seem to respect `alignas(16)`. I am guessing this is a glibc issue
+// but I don't really know. It uses glibc 2.17, so testing for that and skipping the test makes
+// CI work.
+//
+// MinGW 32-bit also mysteriously fails this test but I am not going to spend time figuring out
+// why.
+#else
+KJ_TEST("capture weird alignment in continuation") {
+  struct alignas(16) WeirdAlign {
+    ~WeirdAlign() {
+      KJ_EXPECT(reinterpret_cast<uintptr_t>(this) % 16 == 0);
+    }
+    int i;
+  };
+
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  kj::Promise<void> p = kj::READY_NOW;
+
+  WeirdAlign value = { 123 };
+  WeirdAlign value2 = { 456 };
+  auto p2 = p.then([value, value2]() -> WeirdAlign {
+    return { value.i + value2.i };
+  });
+
+  KJ_EXPECT(p2.wait(waitScope).i == 579);
+}
+#endif
+
+KJ_TEST("constPromise") {
+  EventLoop loop;
+  WaitScope waitScope(loop);
+
+  Promise<int> p = constPromise<int, 123>();
+  int i = p.wait(waitScope);
+  KJ_EXPECT(i == 123);
 }
 
 }  // namespace

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-    Module for running regression tests
+Module for running regression tests
 """
+
 from pathlib import Path
 import sys
 import argparse
@@ -9,7 +10,6 @@ import textwrap
 import subprocess
 from collections import OrderedDict
 from prettytable import PrettyTable
-
 
 # pylint: disable=wrong-import-position, import-error
 sys.path.insert(0, str(Path(__file__).resolve().parent / "vtr_flow/scripts/python_libs"))
@@ -22,15 +22,12 @@ BASIC_VERBOSITY = 1
 
 
 def vtr_command_argparser(prog=None):
-    """ Parses the arguments of run_reg_test """
+    """Parses the arguments of run_reg_test"""
 
-    description = textwrap.dedent(
-        """
+    description = textwrap.dedent("""
                     Runs one or more VTR regression tests.
-                    """
-    )
-    epilog = textwrap.dedent(
-        """
+                    """)
+    epilog = textwrap.dedent("""
                 Examples
                 --------
 
@@ -46,18 +43,22 @@ def vtr_command_argparser(prog=None):
                     with 8 parallel workers:
 
                         %(prog)s vtr_reg_basic vtr_reg_strong -j8
-                """
-    )
+                """)
 
     parser = argparse.ArgumentParser(
-        prog=prog, description=description, epilog=epilog, formatter_class=RawDefaultHelpFormatter,
+        prog=prog,
+        description=description,
+        epilog=epilog,
+        formatter_class=RawDefaultHelpFormatter,
     )
 
     #
     # Major arguments
     #
     parser.add_argument(
-        "reg_test", nargs="+", help="Regression tests to be run",
+        "reg_test",
+        nargs="+",
+        help="Regression tests to be run",
     )
 
     parser.add_argument(
@@ -75,7 +76,10 @@ def vtr_command_argparser(prog=None):
     )
 
     parser.add_argument(
-        "-parse", default=False, action="store_true", help="Only run the parse tests.",
+        "-parse",
+        default=False,
+        action="store_true",
+        help="Only run the parse tests.",
     )
 
     parser.add_argument(
@@ -92,7 +96,10 @@ def vtr_command_argparser(prog=None):
     )
 
     parser.add_argument(
-        "-skip_qor", default=False, action="store_true", help="Skips running the Qor tests",
+        "-skip_qor",
+        default=False,
+        action="store_true",
+        help="Skips running the Qor tests",
     )
 
     parser.add_argument(
@@ -118,7 +125,10 @@ def vtr_command_argparser(prog=None):
     )
 
     parser.add_argument(
-        "-long_task_names", default=False, action="store_true", help="Display long task names",
+        "-long_task_names",
+        default=False,
+        action="store_true",
+        help="Display long task names",
     )
 
     return parser
@@ -137,12 +147,9 @@ def vtr_command_main(arg_list, prog=None):
     for reg_test in args.reg_test:
         num_func_failures = 0
         num_qor_failures = 0
-        if args.parse:
+        if args.parse or args.check_golden:
             tests_run = True
             num_qor_failures = parse_single_test(collect_task_list(reg_test))
-        elif args.check_golden:
-            tests_run = True
-            num_qor_failures = parse_single_test(collect_task_list(reg_test), check=True)
         elif args.create_golden:
             # Create golden results
             num_qor_failures = 0
@@ -153,6 +160,8 @@ def vtr_command_main(arg_list, prog=None):
             parse_single_test(collect_task_list(reg_test), calculate=True)
         elif args.display_qor:
             num_qor_failures = display_qor(reg_test)
+        elif reg_test.startswith("parmys"):
+            total_num_func_failures += run_parmys_test(args, reg_test)
         elif reg_test.startswith("odin"):
             total_num_func_failures += run_odin_test(args, reg_test)
         else:
@@ -187,18 +196,20 @@ def vtr_command_main(arg_list, prog=None):
     elif tests_run and total_num_func_failures != 0 or total_num_qor_failures != 0:
         print("Error: {} tests failed".format(total_num_func_failures + total_num_qor_failures))
 
-    sys.exit(total_num_func_failures + total_num_qor_failures)
+    # If the QoR parsing script throws an exception, it returns -1.
+    # This could potentially cancel a run failure and result in a false negative.
+    # Absolute value is taken to avoid that.
+    sys.exit(abs(total_num_func_failures) + abs(total_num_qor_failures))
 
 
 def display_qor(reg_test):
-    """ Display the qor tests script files to be run outside of this script """
+    """Display the qor tests script files to be run outside of this script"""
     test_dir = paths.regression_tests_path / reg_test
     if not (test_dir / "qor_geomean.txt").is_file():
         print("QoR results do not exist ({}/qor_geomean.txt)".format(str(test_dir)))
         return 1
     print_header("{} QoR Results".format(reg_test))
     with (test_dir / "qor_geomean.txt").open("r") as results:
-
         # create list of desired values, their unit and how to display them.
         data = OrderedDict()
         data["revision"] = ["", "{}"]
@@ -235,8 +246,52 @@ def display_qor(reg_test):
     return 0
 
 
+def run_parmys_test(args, test_name):
+    """Run Parmys test with given test name"""
+    parmys_reg_script = [
+        str(paths.parmys_verify_path),
+        "--clean",
+        "-C",
+        str(paths.parmys_output_on_error_path),
+        "--nb_of_process",
+        str(args.j),
+        "--test",
+        "{}/regression_test/benchmark/".format(str(paths.parmys_path)),
+    ]
+    if test_name == "parmys_reg_full":
+        parmys_reg_script[-1] += "suite/full_suite"
+    elif test_name == "parmys_reg_syntax":
+        parmys_reg_script[-1] += "task/syntax"
+    elif test_name == "parmys_reg_arch":
+        parmys_reg_script[-1] += "task/arch_sweep"
+    elif test_name == "parmys_reg_operators":
+        parmys_reg_script[-1] += "task/operators"
+    elif test_name == "parmys_reg":
+        parmys_reg_script[-1] += "task/full"
+    elif test_name == "parmys_reg_basic":
+        parmys_reg_script[-1] += "suite/light_suite"
+    elif test_name == "parmys_reg_strong":
+        parmys_reg_script[-1] += "suite/heavy_suite"
+    else:
+        raise IOError("Test does not exist: {}".format(test_name))
+
+    parmys_root = str(Path(parmys_reg_script[0]).resolve().parent)
+
+    result = subprocess.call(parmys_reg_script, cwd=parmys_root)
+
+    assert result is not None
+    if result != 0:
+        # Error
+        print("FAILED test '{}'".format(test_name))
+        return 1
+
+    # Pass
+    print("PASSED test '{}'".format(test_name))
+    return 0
+
+
 def run_odin_test(args, test_name):
-    """ Run ODIN II test with given test name """
+    """Run ODIN II test with given test name"""
     odin_reg_script = [
         str(paths.odin_verify_path),
         "--clean",
@@ -255,12 +310,12 @@ def run_odin_test(args, test_name):
         odin_reg_script[-1] += "task/arch_sweep"
     elif test_name == "odin_reg_operators":
         odin_reg_script[-1] += "task/operators"
-    elif test_name == "odin_reg_large":
-        odin_reg_script[-1] += "task/large"
     elif test_name == "odin_reg":
         odin_reg_script[-1] += "task/full"
-    elif test_name == "odin_reg_micro":
+    elif test_name == "odin_reg_basic":
         odin_reg_script[-1] += "suite/light_suite"
+    elif test_name == "odin_reg_strong":
+        odin_reg_script[-1] += "suite/heavy_suite"
     else:
         raise IOError("Test does not exist: {}".format(test_name))
 
@@ -280,7 +335,7 @@ def run_odin_test(args, test_name):
 
 
 def collect_task_list(reg_test):
-    """ create a list of task files """
+    """create a list of task files"""
     task_list_filepath = paths.tasks_path / "regression_tests" / reg_test / "task_list.txt"
     if not task_list_filepath.is_file():
         raise IOError("Test does not exist: {}".format(reg_test))
@@ -302,7 +357,7 @@ def run_tasks(args, task_lists):
 
 
 def parse_single_test(task_lists, check=True, calculate=True, create=False):
-    """ parse the test results """
+    """parse the test results"""
     vtr_task_cmd = ["-l"] + [task_lists]
     if check:
         vtr_task_cmd += ["-check_golden"]
@@ -316,7 +371,7 @@ def parse_single_test(task_lists, check=True, calculate=True, create=False):
 
 
 def print_header(heading, divider="=", print_first_line=True):
-    """ Print heading formated in the center of two lines """
+    """Print heading formatted in the center of two lines"""
     if print_first_line:
         print(divider * len(heading) * 2)
     print(" " * int((len(heading) / 2)), end="")

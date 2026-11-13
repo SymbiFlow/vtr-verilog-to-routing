@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.9)
+cmake_minimum_required(VERSION 3.16)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules)
 include(HeadersToIncludeDirs)
 
@@ -13,7 +13,7 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 #Flex and Bison are used to generate the parser
-find_package(BISON REQUIRED 3.0)
+find_package(BISON REQUIRED 3.3)
 find_package(FLEX REQUIRED)
 
 file(GLOB_RECURSE LIB_SOURCES src/blif*.cpp)
@@ -45,6 +45,10 @@ add_library(libblifparse STATIC
 target_include_directories(libblifparse PUBLIC ${LIB_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR})
 set_target_properties(libblifparse PROPERTIES PREFIX "") #Avoid extra 'lib' prefix
 
+# Set the read buffer size in the generated lexers. This reduces the number of
+# syscalls since the default is only 1kB.
+target_compile_definitions(libblifparse PRIVATE YY_READ_BUF_SIZE=1048576)
+
 #Create the test executable
 add_executable(blifparse_test src/main.cpp)
 target_link_libraries(blifparse_test libblifparse)
@@ -57,7 +61,7 @@ if (USES_IPO)
         CHECK_CXX_COMPILER_FLAG(${flag} CXX_COMPILER_SUPPORTS_${flag})
         if(CXX_COMPILER_SUPPORTS_${flag})
             #Flag supported, so enable it
-            set_target_properties(blifparse_test PROPERTIES LINK_FLAGS ${flag})
+            set_property(TARGET blifparse_test APPEND PROPERTY LINK_FLAGS ${flag})
         endif()
     endforeach()
 endif()
@@ -69,4 +73,4 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test/test_parser.sh ${CMAKE_CURRENT_SOURCE_DIR}/test/*/*.blif ${CMAKE_CURRENT_SOURCE_DIR}/test/*/*.eblif)
 endif()
 
-install(TARGETS libblifparse blifparse_test DESTINATION bin)
+install(TARGETS libblifparse DESTINATION bin)

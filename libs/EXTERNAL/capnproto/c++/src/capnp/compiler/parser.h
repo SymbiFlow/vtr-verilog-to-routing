@@ -21,21 +21,19 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #include <capnp/compiler/grammar.capnp.h>
 #include <capnp/compiler/lexer.capnp.h>
 #include <kj/parse/common.h>
 #include <kj/arena.h>
 #include "error-reporter.h"
 
+CAPNP_BEGIN_HEADER
+
 namespace capnp {
 namespace compiler {
 
 void parseFile(List<Statement>::Reader statements, ParsedFile::Builder result,
-               ErrorReporter& errorReporter);
+               ErrorReporter& errorReporter, bool requiresId);
 // Parse a list of statements to build a ParsedFile.
 //
 // If any errors are reported, then the output is not usable.  However, it may be passed on through
@@ -66,7 +64,7 @@ public:
 
   ~CapnpParser() noexcept(false);
 
-  KJ_DISALLOW_COPY(CapnpParser);
+  KJ_DISALLOW_COPY_AND_MOVE(CapnpParser);
 
   using ParserInput = kj::parse::IteratorInput<Token::Reader, List<Token>::Reader::Iterator>;
   struct DeclParserResult;
@@ -144,5 +142,10 @@ private:
   Parsers parsers;
 };
 
+kj::String expressionString(Expression::Reader name);
+// Stringify the expression as code.
+
 }  // namespace compiler
 }  // namespace capnp
+
+CAPNP_END_HEADER

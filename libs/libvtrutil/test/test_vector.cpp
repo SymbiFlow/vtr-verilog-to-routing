@@ -1,12 +1,11 @@
-#include "catch.hpp"
+#include "catch2/catch_test_macros.hpp"
 
 #include "vtr_vector.h"
 #include "vtr_strong_id.h"
 
 #include <ostream>
 
-struct test_tag;
-typedef vtr::StrongId<test_tag> TestId;
+typedef vtr::StrongId<struct test_tag> TestId;
 
 std::ostream& operator<<(std::ostream& os, const TestId id);
 

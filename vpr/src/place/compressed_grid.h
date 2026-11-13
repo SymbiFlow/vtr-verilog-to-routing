@@ -1,43 +1,195 @@
-#ifndef VPR_COMPRESSED_GRID_H
-#define VPR_COMPRESSED_GRID_H
+#pragma once
 
+#include <algorithm>
+#include "arch_types.h"
 #include "physical_types.h"
 
-#include "vtr_geometry.h"
+#include "vtr_assert.h"
 #include "vtr_flat_map.h"
-
-struct t_type_loc {
-    int x = OPEN;
-    int y = OPEN;
-
-    t_type_loc(int x_val, int y_val)
-        : x(x_val)
-        , y(y_val) {}
-
-    //Returns true if this type location has valid x/y values
-    operator bool() const {
-        return !(x == OPEN || y == OPEN);
-    }
-};
+#include "vpr_types.h"
 
 struct t_compressed_block_grid {
+    // The compressed grid of a block type stores only the coordinates that are occupied by that particular block type.
+    // For instance, if a DSP block exists only in the 2nd, 3rd, and 5th columns, the compressed grid of X axis will solely store the values 2, 3, and 5.
+    // Consequently, the compressed to_grid_x will contain only three members. The same approach is applicable to other compressed directions.
+    // This compressed data structure helps to move blocks in a more efficient way. For instance, if I need to move a DSP block to the next compatible column, I can simply get
+    // the next compatible column number by accessing the next element in the compressed grid instead of iterating over all columns to find the next compatible column.
     //If 'cx' is an index in the compressed grid space, then
     //'compressed_to_grid_x[cx]' is the corresponding location in the
     //full (uncompressed) device grid.
-    std::vector<int> compressed_to_grid_x;
-    std::vector<int> compressed_to_grid_y;
+    std::vector<std::vector<int>> compressed_to_grid_x; // [0...num_layers-1][0...num_columns-1] -> uncompressed x
+    std::vector<std::vector<int>> compressed_to_grid_y; // [0...num_layers-1][0...num_rows-1] -> uncompressed y
+    std::vector<int> compressed_to_grid_layer;          // [0...num_layers-1] -> uncompressed layer
 
     //The grid is stored with a full/dense x-dimension (since only
     //x values which exist are considered), while the y-dimension is
     //stored sparsely, since we may not have full columns of blocks.
     //This makes it easy to check whether there exist
-    std::vector<vtr::flat_map2<int, t_type_loc>> grid;
+    std::vector<std::vector<vtr::flat_map2<int, t_physical_tile_loc>>> grid;
 
     //The sub type compatibility for a given physical tile and a compressed block grid
     //corresponding to the possible placement location for a given logical block
     //  - key: physical tile index
     //  - value: vector of compatible sub tiles for the physical tile/logical block pair
     std::unordered_map<int, std::vector<int>> compatible_sub_tiles_for_tile;
+
+    inline size_t get_num_columns(int layer_num) const {
+        return compressed_to_grid_x[layer_num].size();
+    }
+
+    inline size_t get_num_rows(int layer_num) const {
+        return compressed_to_grid_y[layer_num].size();
+    }
+
+    /**
+     * @brief Converts an uncompressed grid location to compressed grid location.
+     * Returns an invalid location if grid_loc is not compatible with the compressed grid type.
+     * This can be checked using t_physical_tile_loc::is_valid()
+     * 
+     * @param grid_loc uncompressed grid location
+     * @return t_physical_tile_loc compressed grid location.
+     */
+    inline t_physical_tile_loc grid_loc_to_compressed_loc(t_physical_tile_loc grid_loc) const {
+        int cx = UNDEFINED;
+        int cy = UNDEFINED;
+        int layer_num = grid_loc.layer_num;
+
+        auto itr_x = std::ranges::lower_bound(compressed_to_grid_x[layer_num], grid_loc.x);
+        auto itr_y = std::ranges::lower_bound(compressed_to_grid_y[layer_num], grid_loc.y);
+
+        if (itr_x == compressed_to_grid_x[layer_num].end() || *itr_x != grid_loc.x
+            || itr_y == compressed_to_grid_y[layer_num].end() || *itr_y != grid_loc.y) {
+            // grid_loc is not compatible with the type of the compressed grid, returning undefined.
+            return t_physical_tile_loc{ARCH_FPGA_UNDEFINED_VAL, ARCH_FPGA_UNDEFINED_VAL, ARCH_FPGA_UNDEFINED_VAL};
+        }
+
+        cx = std::distance(compressed_to_grid_x[layer_num].begin(), itr_x);
+        cy = std::distance(compressed_to_grid_y[layer_num].begin(), itr_y);
+
+        return {cx, cy, layer_num};
+    }
+
+    /**
+     * @brief Converts a grid location to its corresponding compressed location, rounding up where necessary.
+     *
+     * This function takes a physical tile location in the grid and converts it to the corresponding
+     * compressed location. The conversion approximates by rounding up to the nearest valid compressed location.
+     * If all the compressed locations are less than the grid location, the function will return the last compressed location.
+     *
+     * @param grid_loc The physical tile location in the grid.
+     * @return The corresponding compressed location with the same layer number.
+     */
+    inline t_physical_tile_loc grid_loc_to_compressed_loc_approx_round_up(t_physical_tile_loc grid_loc) const {
+        auto find_compressed_index = [](const std::vector<int>& compressed, int value) -> int {
+            // Get the first element that is not less than the value
+            auto itr = std::ranges::lower_bound(compressed, value);
+            if (itr == compressed.end()) {
+                // If all the compressed locations are less than the grid location, return the last compressed location
+                return compressed.size() - 1;
+            } else {
+                // Return the index of the first element that is not less than the value
+                return std::distance(compressed.begin(), itr);
+            }
+        };
+
+        int layer_num = grid_loc.layer_num;
+        int cx = find_compressed_index(compressed_to_grid_x[layer_num], grid_loc.x);
+        int cy = find_compressed_index(compressed_to_grid_y[layer_num], grid_loc.y);
+
+        return {cx, cy, layer_num};
+    }
+
+    /**
+     * @brief Converts a grid location to its corresponding compressed location, rounding down where necessary.
+     *
+     * This function takes a physical tile location in the grid and converts it to the corresponding
+     * compressed location. The conversion approximates by rounding down to the nearest valid compressed location.
+     * If all the compressed locations are bigger than the grid location, the function will return the first compressed location.
+     *
+     * @param grid_loc The physical tile location in the grid.
+     * @return The corresponding compressed location with the same layer number.
+     */
+    inline t_physical_tile_loc grid_loc_to_compressed_loc_approx_round_down(t_physical_tile_loc grid_loc) const {
+        auto find_compressed_index = [](const std::vector<int>& compressed, int value) -> int {
+            // Get the first element that is strictly bigger than the value
+            auto itr = std::ranges::upper_bound(compressed, value);
+            if (itr == compressed.begin()) {
+                // If all the compressed locations are bigger than the grid location, return the first compressed location
+                return 0;
+            } else {
+                // Return the index of the first element that is less than or equal to the value
+                return std::distance(compressed.begin(), itr - 1);
+            }
+        };
+
+        int layer_num = grid_loc.layer_num;
+        int cx = find_compressed_index(compressed_to_grid_x[layer_num], grid_loc.x);
+        int cy = find_compressed_index(compressed_to_grid_y[layer_num], grid_loc.y);
+
+        return {cx, cy, layer_num};
+    }
+
+    /**
+     * @brief  find the nearest location in the compressed grid.
+     *
+     * Useful when the point is of a different block type from coords.
+     *
+     *   @param grid_loc non-compressed physical tile location in the grid
+     *   @return Nearest x and y compressed locations in the grid (in the same layer),
+     *           or OPEN if a location does not exist.
+     */
+    inline t_physical_tile_loc grid_loc_to_compressed_loc_approx(t_physical_tile_loc grid_loc) const {
+        auto find_closest_compressed_point = [](int loc, const std::vector<int>& compressed_grid_dim) -> int {
+            // If the compressed grid dim's size is 0, this means that there are
+            // no compatible locations for a block of the given type. Returns OPEN
+            // in that case.
+            if (compressed_grid_dim.size() == 0) {
+                return UNDEFINED;
+            }
+
+            // Find the first element not less than loc
+            auto itr = std::ranges::lower_bound(compressed_grid_dim, loc);
+
+            if (itr == compressed_grid_dim.begin()) {
+                // If all the compressed locations are bigger that or equal to loc, return the first compressed location
+                return 0;
+            } else if (itr == compressed_grid_dim.end()) {
+                // If all the compressed locations are less than loc, return the last compressed location
+                return compressed_grid_dim.size() - 1;
+            } else {
+                // Find the nearest compressed location.
+                int dist_prev = loc - *(itr - 1);
+                int dist_next = *itr - loc;
+                VTR_ASSERT_DEBUG(dist_prev >= 0 && dist_next >= 0);
+                return (dist_prev <= dist_next) ? (std::distance(compressed_grid_dim.begin(), itr - 1)) : (std::distance(compressed_grid_dim.begin(), itr));
+            }
+        };
+
+        const int layer_num = grid_loc.layer_num;
+        const int cx = find_closest_compressed_point(grid_loc.x, compressed_to_grid_x[layer_num]);
+        const int cy = find_closest_compressed_point(grid_loc.y, compressed_to_grid_y[layer_num]);
+
+        return {cx, cy, layer_num};
+    }
+
+    inline t_physical_tile_loc compressed_loc_to_grid_loc(t_physical_tile_loc compressed_loc) const {
+        int layer_num = compressed_loc.layer_num;
+        return {compressed_to_grid_x[layer_num][compressed_loc.x], compressed_to_grid_y[layer_num][compressed_loc.y], layer_num};
+    }
+
+    inline const std::vector<int>& compatible_sub_tile_num(int physical_type_index) const {
+        return compatible_sub_tiles_for_tile.at(physical_type_index);
+    }
+
+    inline const vtr::flat_map2<int, t_physical_tile_loc>& get_column_block_map(int cx, int layer_num) const {
+        VTR_ASSERT_SAFE(layer_num < (int)grid.size());
+        VTR_ASSERT_SAFE(cx < (int)grid[layer_num].size());
+        return grid[layer_num][cx];
+    }
+
+    inline const std::vector<int>& get_layer_nums() const {
+        return compressed_to_grid_layer;
+    }
 };
 
 //Compressed grid space for each block type
@@ -47,7 +199,11 @@ typedef std::vector<t_compressed_block_grid> t_compressed_block_grids;
 
 std::vector<t_compressed_block_grid> create_compressed_block_grids();
 
-t_compressed_block_grid create_compressed_block_grid(const std::vector<vtr::Point<int>>& locations);
-
-int grid_to_compressed(const std::vector<int>& coords, int point);
-#endif
+/**
+ * @brief  print the contents of the compressed grids to an echo file
+ *
+ *   @param filename the name of the file to print to
+ *   @param comp_grids the compressed grids that are used during placement
+ *
+ */
+void echo_compressed_grids(const char* filename, const std::vector<t_compressed_block_grid>& comp_grids);

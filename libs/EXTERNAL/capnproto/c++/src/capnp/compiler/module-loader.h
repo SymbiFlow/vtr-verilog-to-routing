@@ -21,16 +21,14 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #include "compiler.h"
 #include "error-reporter.h"
 #include <kj/memory.h>
 #include <kj/array.h>
 #include <kj/string.h>
 #include <kj/filesystem.h>
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 namespace compiler {
@@ -40,7 +38,7 @@ public:
   explicit ModuleLoader(GlobalErrorReporter& errorReporter);
   // Create a ModuleLoader that reports error messages to the given reporter.
 
-  KJ_DISALLOW_COPY(ModuleLoader);
+  KJ_DISALLOW_COPY_AND_MOVE(ModuleLoader);
 
   ~ModuleLoader() noexcept(false);
 
@@ -51,6 +49,10 @@ public:
   // Tries to load a module with the given path inside the given directory. Returns nullptr if the
   // file doesn't exist.
 
+  void setFileIdsRequired(bool value);
+  // Same as SchemaParser::setFileIdsRequired(). If set false, files will not be required to have
+  // a top-level file ID; if missing a random one will be assigned.
+
 private:
   class Impl;
   kj::Own<Impl> impl;
@@ -60,3 +62,5 @@ private:
 
 }  // namespace compiler
 }  // namespace capnp
+
+CAPNP_END_HEADER

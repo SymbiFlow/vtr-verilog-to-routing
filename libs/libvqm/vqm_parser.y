@@ -21,7 +21,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 //#include <crtdbg.h>
+#ifndef __APPLE__
 #include <malloc.h>
+#endif
 #include <string.h>
 #include <assert.h>
 #include "vqm_dll.h"
@@ -36,11 +38,11 @@ extern int yylex(void);
 
 %union
 {
-	uintptr_t value;
-	char *string;
+    uintptr_t value;
+    char *string;
 }
 %parse-param {t_parse_info* parse_info}
-%error-verbose
+%define parse.error verbose
 /********************************************************/
 /**** DEFINE TOKENS *************************************/
 /********************************************************/
@@ -84,7 +86,7 @@ modules:	/* Empty */ {}
 			|	modules module {}
 			;
 
-module:		header declarations statements footer
+module:		header body footer
 			{
                 if(parse_info->pass_type == COUNT_PASS) {
                     parse_info->number_of_modules++;
@@ -126,10 +128,16 @@ header:		TOKEN_MODULE TOKEN_REGULARID '(' IdentifierList ')' ';'
 			}
 			;
 
-
-declarations:	/* Empty */ {}
-			|	declarations declaration {}
+body:           /* Empty */ {}
+			|	body declaration_statement {} /* the body consists of a mix of declarations and statements */
 			;
+
+
+declaration_statement:	        declaration
+			|
+                                statement  
+			;
+
 
 declaration:	PinType IdentifierList ';'
 				{
@@ -158,9 +166,7 @@ declaration:	PinType IdentifierList ';'
 footer:		TOKEN_ENDMODULE	{}
 			;
 
-statements:	/* Empty */ {}
-			| statements statement {}
-			;
+
 
 statement:		AssignStatement {}
 			|	TriStatement {}
@@ -203,7 +209,7 @@ AssignStatement:	TOKEN_ASSIGN Identifier '=' RValue ';'
                                     {
                                         target_wire_index = target_id->index;
                                     }
-                                    /* Iterate through all wires. The trick here is count the wire indicies
+                                    /* Iterate through all wires. The trick here is count the wire indices
                                      * from left to right (either in increasing or decreasing order as may be the case). */
                                     for(	wire_index = pin->left;
                                             ((pin->left > pin->right) ? (wire_index >= pin->right) : (wire_index <= pin->right));
@@ -529,7 +535,7 @@ Connection:			'.' TOKEN_REGULARID '(' Identifier ')'
                             array_of_connections->array_size = 0;
                             array_of_connections->allocated_size = 0;
 
-                            port_associations = associate_identifier_with_port_name(ident, $2, -1);
+                            port_associations = associate_identifier_with_port_name(ident, $2, 0);
                             if (port_associations != NULL)
                             {
                                 for(index = 0; index < port_associations->array_size; index++)
@@ -568,7 +574,7 @@ Connection:			'.' TOKEN_REGULARID '(' Identifier ')'
                             array_of_connections->array_size = 0;
                             array_of_connections->allocated_size = 0;
 
-                            port_associations = associate_identifier_with_port_name(ident, $2, -1);
+                            port_associations = associate_identifier_with_port_name(ident, $2, 0);
                             if (port_associations != NULL)
                             {
                                 for(index = 0; index < port_associations->array_size; index++)
@@ -673,7 +679,16 @@ IdentifierList:		Identifier
 					}
 				;
 
-Identifier:		TOKEN_ESCAPEDID
+Identifier:	TOKEN_ESCAPEDID '[' TOKEN_INTCONSTANT ']'
+				{
+                    if(parse_info->pass_type == COUNT_PASS) {
+                        //pass
+                    } else {
+                        /* Allocate space for an identifier. Specify index used */
+                        $$ = (uintptr_t) allocate_identifier($1, T_TRUE, $3);
+                    }
+				}
+			|	TOKEN_ESCAPEDID
 				{
                     if(parse_info->pass_type == COUNT_PASS) {
                         //pass
@@ -732,7 +747,7 @@ PinType:	TOKEN_INPUT	{ $$ = $1; }
 
 int yyerror(t_parse_info* parse_info, const char *s)
 {
-	sprintf(most_recent_error, "%s occured at line %i: %s\r\n", s, yylineno, yytext);
+	sprintf(most_recent_error, "%s occurred at line %i: %s\r\n", s, yylineno, yytext);
 	return 0;
 }
 

@@ -178,7 +178,9 @@ A list value is encoded as a pointer to a flat array of values.
         5 = 8 bytes (non-pointer)
         6 = 8 bytes (pointer)
         7 = composite (see below)
-    D (29 bits) = Number of elements in the list, except when C is 7
+    D (29 bits) = Size of the list:
+        when C <> 7: Number of elements in the list.
+        when C = 7: Number of words in the list, not counting the tag word
         (see below).
 
 The pointed-to values are tightly-packed.  In particular, `Bool`s are packed bit-by-bit in
@@ -266,7 +268,7 @@ A capability pointer, then, simply contains an index into the separate capabilit
     C (32 bits) = Index of the capability in the message's capability
         table.
 
-In [rpc.capnp](https://github.com/sandstorm-io/capnproto/blob/master/c++/src/capnp/rpc.capnp), the
+In [rpc.capnp](https://github.com/capnproto/capnproto/blob/master/c++/src/capnp/rpc.capnp), the
 capability table is encoded as a list of `CapDescriptors`, appearing along-side the message content
 in the `Payload` struct.  However, some use cases may call for different approaches.  A message
 that is built and consumed within the same process need not encode the capability table at all
@@ -372,7 +374,10 @@ A canonical Cap'n Proto message must adhere to the following rules:
 * Similarly, for a struct list, if a trailing word in a section of all structs in the list is zero,
   then it must be truncated from all structs in the list. (All structs in a struct list must have
   equal sizes, hence a trailing zero can only be removed if it is zero in all elements.)
-* Any struct pointer pointing to a zero-sized struct should have an offset of -1.
+* Any struct pointer pointing to a zero-sized struct should have an
+  offset of -1.
+  * Note that this applies _only_ to structs; other zero-sized values should have offsets
+    allocated in preorder, as normal.
 * Canonical messages are not packed. However, packing can still be applied for transmission
   purposes; the message must simply be unpacked before checking signatures.
 
@@ -410,7 +415,7 @@ different limit if desired. Another reasonable strategy is to set the limit to s
 the original message size; however, most applications should place limits on overall message sizes
 anyway, so it makes sense to have one check cover both.
 
-**List amplification:** A list of `Void` values or zero-size structs can have a very large element count while taking constant space on the wire. If the receiving application expects a list of structs, it will see these zero-sized elements as valid structs set to their default values. If it iterates through the list processing each element, it could spend a large amount of CPU time or other resources despite the message being small. To defend against this, the "traversal limit" should count a list of zero-sized elements as if each element were one word instead. This rule was introduced in the C++ implementation in [commit 1048706](https://github.com/sandstorm-io/capnproto/commit/104870608fde3c698483fdef6b97f093fc15685d).
+**List amplification:** A list of `Void` values or zero-size structs can have a very large element count while taking constant space on the wire. If the receiving application expects a list of structs, it will see these zero-sized elements as valid structs set to their default values. If it iterates through the list processing each element, it could spend a large amount of CPU time or other resources despite the message being small. To defend against this, the "traversal limit" should count a list of zero-sized elements as if each element were one word instead. This rule was introduced in the C++ implementation in [commit 1048706](https://github.com/capnproto/capnproto/commit/104870608fde3c698483fdef6b97f093fc15685d).
 
 ### Stack overflow DoS attack
 

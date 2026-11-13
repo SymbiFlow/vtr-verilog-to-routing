@@ -6,7 +6,6 @@
 using namespace std;
 
 #include "vtr_error.h"
-#include "vtr_memory.h"
 #include "vtr_log.h"
 
 #include "tatum/error.hpp"
@@ -17,10 +16,10 @@ using namespace std;
 
 #include "globals.h"
 
-#include "net_delay.h"
-#include "RoutingDelayCalculator.h"
-
 #include "fasm.h"
+
+#include "post_routing_pb_pin_fixup.h"
+#include "sync_netlists_to_routing_flat.h"
 
 /*
  * Exit codes to signal success/failure to scripts
@@ -34,14 +33,14 @@ constexpr int INTERRUPTED_EXIT_CODE = 3; //VPR was interrupted by the user (e.g.
 /*
  * Writes FASM file based on the netlist name by walking the netlist.
  */
-static bool write_fasm() {
+static bool write_fasm(bool is_flat) {
   auto& device_ctx = g_vpr_ctx.device();
   auto& atom_ctx = g_vpr_ctx.atom();
 
-  std::string fasm_filename = atom_ctx.nlist.netlist_name() + ".fasm";
+  std::string fasm_filename = atom_ctx.netlist().netlist_name() + ".fasm";
   vtr::printf("Writing Implementation FASM: %s\n", fasm_filename.c_str());
   std::ofstream fasm_os(fasm_filename);
-  fasm::FasmWriterVisitor visitor(&device_ctx.arch->strings, fasm_os);
+  fasm::FasmWriterVisitor visitor(&device_ctx.arch->strings, fasm_os, is_flat);
   NetlistWalker nl_walker(visitor);
   nl_walker.walk();
 
@@ -70,17 +69,34 @@ int main(int argc, const char **argv) {
         /* Read options, architecture, and circuit netlist */
         vpr_init(argc, argv, &Options, &vpr_setup, &Arch);
 
-        vpr_setup.PackerOpts.doPacking    = STAGE_LOAD;
-        vpr_setup.PlacerOpts.doPlacement  = STAGE_LOAD;
-        vpr_setup.RouterOpts.doRouting    = STAGE_LOAD;
+        vpr_setup.PackerOpts.doPacking             = e_stage_action::LOAD;
+        vpr_setup.PlacerOpts.do_placement          = e_stage_action::LOAD;
+        vpr_setup.APOpts.doAP                      = e_stage_action::SKIP;
+        vpr_setup.RouterOpts.doRouting             = e_stage_action::LOAD;
         vpr_setup.RouterOpts.read_rr_edge_metadata = true;
-        vpr_setup.AnalysisOpts.doAnalysis = STAGE_SKIP;
+        vpr_setup.AnalysisOpts.doAnalysis          = e_stage_action::SKIP;
 
         bool flow_succeeded = false;
         flow_succeeded = vpr_flow(vpr_setup, Arch);
 
+        /* Sync netlist to the actual routing (necessary if there are block
+           ports with equivalent pins) */
+        bool is_flat = vpr_setup.RouterOpts.flat_routing;
+        if (flow_succeeded) {
+            if(is_flat) {
+                sync_netlists_to_routing_flat();
+            } else {
+                sync_netlists_to_routing((const Netlist<>&) g_vpr_ctx.clustering().clb_nlist,
+                                         g_vpr_ctx.device(),
+                                         g_vpr_ctx.mutable_atom(),
+                                         g_vpr_ctx.mutable_clustering(),
+                                         g_vpr_ctx.placement(),
+                                         vpr_setup.PackerOpts.pack_verbosity > 2);
+            }
+        }
+
         /* Actually write output FASM file. */
-        flow_succeeded = write_fasm();
+        flow_succeeded = write_fasm(is_flat);
         if (!flow_succeeded) {
             return UNIMPLEMENTABLE_EXIT_CODE;
         }
@@ -92,6 +108,7 @@ int main(int argc, const char **argv) {
 
         /* free data structures */
         vpr_free_all(Arch, vpr_setup);
+
 
     } catch (const tatum::Error& tatum_error) {
         vtr::printf_error(__FILE__, __LINE__, "STA Engine: %s\n", tatum_error.what());

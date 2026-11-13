@@ -225,7 +225,7 @@ For example, in the following:
     .model top
     .inputs a b x y z clk
     .outputs c c_reg cout[0] sum[0]
-    
+
     .names a b c
     11 1
 
@@ -304,7 +304,7 @@ Consider the following:
 
     .latch g h re clk 0
 
-The ``.names``' pin names are:
+The ``.names`` pin names are:
 
 - ``f.in[0]`` (driven by net ``a``)
 - ``f.in[1]`` (driven by net ``b``)
@@ -327,7 +327,7 @@ since the ``.names`` and ``.latch`` primitives are named ``f`` and ``h`` :ref:`b
 
 Extended BLIF (.eblif)
 ----------------------
-VPR also supports several extentions to :ref:`structural BLIF <vpr_blif_file>` to address some of its limitations.
+VPR also supports several extensions to :ref:`structural BLIF <vpr_blif_file>` to address some of its limitations.
 
 .. note:: By default VPR assumes file with ``.eblif`` are in extneded BLIF format. The format can be controlled with :option:`vpr --circuit_format`.
 
@@ -391,16 +391,35 @@ The ``.param`` statement allows parameters (e.g. primitive modes) to be tagged o
 
 .. note:: ``.param`` statements apply to the previous primitive instantiation.
 
+Parameters can have one of the three available types. Type is inferred from the format in which a parameter is provided.
+
+ * **string**
+    Whenever a parameter value is quoted it is considered to be a string. BLIF parser does not allow escaped characters hence those are illegal and will cause syntax errors.
+
+ * **binary word**
+    Binary words are specified using strings of characters ``0`` and ``1``. No other characters are allowed. Number of characters denotes the word length.
+
+ * **real number**
+    Real numbers are stored as decimals where the dot ``.`` character separates the integer and fractional part. Presence of the dot character implies that the value is to be treated as a real number.
+
 For example:
 
 .. code-block:: none
 
-    .subckt dsp a=a_in b=b_in cin=c_in cout=c_out s=sum_out
-    .param mode adder
+    .subckt pll clk_in=gclk clk_out=pclk
+    .param feedback "internal"
+    .param multiplier 0.50
+    .param power 001101
 
-Would set the parameter ``mode`` of the above ``dsp`` ``.subckt`` to ``adder``.
+Would set the parameters ``feedback``, ``multiplier`` and ``power``  of the above ``pll`` ``.subckt`` to ``"internal"``, ``0.50`` and ``001101`` respectively.
+
+.. warning:: Integers in notation other than binary (e.g. decimal, hexadecimal) are not supported. Occurrence of params with digits other than 1 and 0 for binary words, not quoted (strings) or not separated with dot ``.`` (real numbers) are considered to be illegal.
+
+Interpretation of parameter values is out of scope of the BLIF format extension.
 
 ``.param`` statements propagate to ``<parameter>`` elements in the packed netlist.
+
+Paramerer values propagate also to the post-route Verilog netlist, if it is generated. Strings and real numbers are passed directly while binary words are prepended with the ``<N>'b`` prefix where ``N`` denotes a binary word length.
 
 .attr
 ~~~~~
@@ -480,7 +499,7 @@ A ``block`` tag has the following attributes:
     In all other situations, the name is arbitrary.
 
  * ``instance``
-    The phyiscal block in the FPGA architecture that the current block represents.
+    The physical block in the FPGA architecture that the current block represents.
     Should be of format: architecture_instance_name[instance #].
     For example, the 5th index BLE in a CLB should have ``instance="ble[5]"``
 
@@ -496,7 +515,7 @@ The names of these connections use the following format:
 
 #. Unused pins are identified with the keyword open.
 #. The name of an input pin to a complex logic block is the same as the name of the net using that pin.
-#. The name of an output pin of a primitve (leaf block) is the same as the name of the net using that pin.
+#. The name of an output pin of a primitive (leaf block) is the same as the name of the net using that pin.
 #. The names of all other pins are specified by describing their immediate drivers.  This format is ``[name_of_immediate_driver_block].[port_name][pin#]->interconnect_name``.
 
 For primitives with equivalent inputs VPR may rotate the input pins.
@@ -521,9 +540,9 @@ For example, consider a netlist contains a 2-input LUT named ``c``, which is imp
     </block>
     ...
 
-In the original netlist the two LUT inputs were connected to pins at indicies 0 and 1 (the only input pins).
-However during clustering the inputs were rotated, and those nets now connect to the pins at indicies 2 and 4 (line 4).
-The ``<port_rotation_map>`` tag specified the port name it applies to (``name`` attribute), and its contents lists the pin indicies each pin in the port list is associated with in the original netlist (i.e. the pins ``lut5.in[2]->direct:lut5`` and ``lut5.in[4]->direct:lut5`` respectively correspond to indicies 1 and 0 in the original netlist).
+In the original netlist the two LUT inputs were connected to pins at indices 0 and 1 (the only input pins).
+However during clustering the inputs were rotated, and those nets now connect to the pins at indices 2 and 4 (line 4).
+The ``<port_rotation_map>`` tag specified the port name it applies to (``name`` attribute), and its contents lists the pin indices each pin in the port list is associated with in the original netlist (i.e. the pins ``lut5.in[2]->direct:lut5`` and ``lut5.in[4]->direct:lut5`` respectively correspond to indices 1 and 0 in the original netlist).
 
 .. note:: Use :option:`vpr --net_file` to override the default net file name.
 
@@ -589,37 +608,46 @@ The io pad is set to inpad mode and is driven by the inpad:
           - After packing is completed, the packing results will be outputted. The ``.net`` file can be loaded as an input for placer, router and analyzer. Note that the file may **not** represent the final packing results as the analyzer will apply synchronization between packing and routing results.
           - After analysis is completed, updated packing results will be outputted. This is due to that VPR router may swap pin mapping in packing results for optimizations. In such cases, packing results are synchronized with routing results. The outputted ``.net`` file will have a postfix of ``.post_routing`` as compared to the original packing results. It could happen that VPR router does not apply any pin swapping and the two ``.net`` files are the same. In both cases, the post-analysis ``.net`` file should be considered to be **the final packing results** for downstream tools, e.g., bitstream generator. Users may load the post-routing ``.net`` file in VPR's analysis flow to sign-off the final results.
 
-.. warning:: Currently, the packing result synchronization is only applicable to input pins which may be remapped to different nets during routing optimization. If your architecture defines `link_instance_pin_xml_syntax_` equivalence for output pins, the packing results still mismatch the routing results! 
+.. warning:: Currently, the packing result synchronization is only applicable to input pins which may be remapped to different nets during routing optimization. If your architecture defines `link_instance_pin_xml_syntax_` equivalence for output pins, the packing results still mismatch the routing results!
 
-.. _link_instance_pin_xml_syntax: https://docs.verilogtorouting.org/en/latest/arch/reference/#tag-%3Coutputname= 
+.. _link_instance_pin_xml_syntax: https://docs.verilogtorouting.org/en/latest/arch/reference/#tag-%3Coutputname=
 
 .. _vpr_place_file:
 
 Placement File Format (.place)
 ------------------------------
+The placement file format is used to specify the position of cluster-level blocks in an FPGA design. It includes information about the netlist and architecture files, the size of the logic block array, and the placement details of each block in the CLB netlist..
+
 The first line of the placement file lists the netlist (.net) and architecture (.xml) files used to create this placement.
-This information is used to ensure you are warned if you accidentally route this placement with a different architecture or netlist file later.
+This information is used to ensure you are warned if you accidentally route this placement with a different architecture or netlist file later. 
 The second line of the file gives the size of the logic block array used by this placement.
-All the following lines have the format::
 
-    block_name    x        y   subtile_number
+All subsequent lines follow this format:
 
-The ``block_name`` is the name of this block, as given in the input .net formatted netlist.
-``x`` and ``y`` are the row and column in which the block is placed, respectively.
+    block_name    x    y    subblk    [layer_number]    [#block_number]
+
+- **block_name**: Refers to either:
+  - The name of a clustered block, as given in the input .net formatted netlist.
+  - The name of a primitive within a clustered block.
+
+- **x** and **y**: Represent the row and column in which the block is placed, respectively.
+
+- **subblk**: Specifies which of several possible subtile locations in row **x** and column **y** contains this block, which is useful when the tile capacity is greater than 1. The subtile number should be in the range `0` to `(grid[i][j].capacity - 1)`. The subtile numbers for a particular **x, y** location do not have to be used in order.
+
+- **layer_number**: Indicates the layer (or die) on which the block is placed. If omitted, the block is assumed to be placed on layer `0` (a single die system). In 3D FPGA architectures, multiple dies can be stacked, with the bottom die considered as layer `0`.
+
+The placement files output by VPR also include (as a comment) an extra field: the id (number) of the block in the CLB netlist. This is the internal index used by VPR to identify a CLB level block -- it may be useful to know this index if you are modifying VPR and trying to debug something.
 
 .. note:: The blocks in a placement file can be listed in any order.
 
-Since we can have more than one block in a row or column when the block capacity is set to be greater than 1 in the architecture file, the subtile number specifies which of the several possible subtile locations in row x and column y contains this block.
-Note that the subtile number used should be in the range 0 to (grid[i][j].capacity - 1). The subtile numbers for a particular x,y location do not have to be used in order.
 
-The placement files output by VPR also include (as a comment) a fifth field:  the block number.
-This is the internal index used by VPR to identify a block -- it may be useful to know this index if you are modifying VPR and trying to debug something.
+.. note:: A `#` character on a line indicates that all text after the `#` to the end of a line is a comment.
 
 .. _fig_fpga_coord_system:
 
 .. figure:: fpga_coordinate_system.*
 
-    FPGA co-ordinate system.
+    FPGA coordinate system.
 
 :numref:`fig_fpga_coord_system` shows the coordinate system used by VPR for a small 2 x 2 CLB FPGA.
 The number of CLBs in the x and y directions are denoted by ``nx`` and ``ny``, respectively.
@@ -630,10 +658,10 @@ All pads either have x equal to ``0`` or ``nx + 1`` or y equal to ``0`` or ``ny 
 
 Placement File Format Example
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-An example placement file is:
+
 
 .. code-block:: none
-    :caption: Example placement file.
+    :caption: Example 2D Placement File
     :linenos:
 
     Netlist file: xor5.net   Architecture file: sample.xml
@@ -650,6 +678,77 @@ An example placement file is:
     xor5        1       2       0       #6
     [1]         1       1       0       #7
 
+.. code-block:: none
+    :caption: Example 3D Placement File with Layer Column
+    :linenos:
+
+    Netlist file: xor5.net   Architecture file: sample.xml
+    Array size: 2 x 2 logic blocks
+
+    #block name x       y       subblk  layer  block number
+    #---------- --      --      ------- ------ -----------
+    a           0       1       0       0      #0  -- NB: block number is a comment.
+    b           1       0       0       1      #1
+    c           0       2       1       0      #2
+    d           1       3       0       1      #3
+    e           1       3       1       0      #4
+    out:xor5    0       2       0       1      #5
+    xor5        1       2       0       0      #6
+    [1]         1       1       0       1      #7
+
+.. _vpr_flat_place_file:
+
+Flat Placement File Format (.fplace)
+------------------------------------
+The flat placement file is a text file where each line describes the location of
+an atom. Each line in the flat placement file should have the following syntax:
+
+.. code-block:: none
+
+        <atom_name : str> <x : float> <y : float> <layer : float> <atom_sub_tile : int>
+
+For example:
+
+    .. code-block:: none
+
+        n523  6 8 0 0
+        n522  6 8 0 0
+        n520  6 9 0 0
+        n518  6 9 0 0
+
+The position of the atom on the FPGA is given by 3 floating point values
+(``x``, ``y``, ``layer``). We allow x and y locations to be off-grid since
+this flat placement will be fed into the packer and placer, which will snap
+the positions to grid locations. For 2D FPGA architectures, the ``layer`` should be 0.
+
+The ``sub_tile`` is a clustered placement construct: which cluster-level
+location at a given (x, y, layer) should these atoms go at (relevant when
+multiple clusters can be stacked there). A sub-tile of -1 may be used when
+the sub-tile of an atom is unknown (allowing the packing algorithm to choose
+any sub-tile at the given (x, y, layer) location).
+
+Lines written by VPR (:option:`vpr --write_flat_place`) carry additional annotation
+after ``<atom_sub_tile>``, introduced by a pound symbol (``#``). Everything from the
+``#`` onwards is a comment: VPR does not parse it when the file is read back, it is
+only there to help a user understand and interpret the file. How much annotation is
+written is controlled by :option:`vpr --flat_place_verbosity`. By default the cluster
+block number the atom was packed into and the primitive type it was placed on are
+appended; at verbosity ``2`` the path of that primitive is appended as well:
+
+.. code-block:: none
+
+        <atom_name> <x> <y> <layer> <atom_sub_tile> #<clb_blk_id> <atom_pb_type> <site_path>
+
+        n523  6 8 0 0 #12 lut6 clb[0][default]/lab[0][default]/fle[3][n1_lut6]/ble6[0][default]/lut6[0]
+
+``site_path`` is the hierarchical path of the primitive the atom was placed on within its
+cluster (``t_pb_graph_node::hierarchical_type_name()``), including the mode selected at each
+level.
+
+When used with ``flat-recon`` full legalizer (see :option:`vpr --ap_full_legalizer`),
+each atom in a molecule should have compatible location information. It is legal to
+leave some molecules unconstrained; the reconstruction phase will choose where
+to place them but does not attempt to optimize these locations.
 
 .. _vpr_route_file:
 
@@ -724,20 +823,22 @@ An example listing for a global net is given below.
 Routing Resource Graph File Format (.xml)
 -----------------------------------------
 The routing resource graph (rr graph) file is an XML file that describes the routing resources within the FPGA.
-This file is generated through the last stage of the rr graph generation during routing with the final channel width.
-When reading in rr graph from an external file, the rr graph is used during the placement and routing section of VPR.
+VPR can generate a rr graph that matches your architecture specifications (from the architecture xml file), or it can read in an externally generated rr graph.
+When this file is written by VPR, the rr graph written out is the rr graph generated before routing with a final channel width 
+(even if multiple routings at different channel widths are performed during a binary search for the minimum channel width). 
+When reading in rr graph from an external file, the rr graph is used during both the placement and routing phases of VPR.
 The file is constructed using tags. The top level is the ``rr_graph`` tag.
 This tag contains all the channel, switches, segments, block, grid, node, and edge information of the FPGA.
 It is important to keep all the values as high precision as possible. Sensitive values include capacitance and Tdel. As default, these values are printed out with a precision of 30 digits.
 Each of these sections are separated into separate tags as described below.
 
-.. note:: Use :option:`vpr --read_rr_graph` to specify an RR graph file to be load.
+.. note:: Use :option:`vpr --read_rr_graph` to specify an RR graph file to be loaded.
 .. note:: Use :option:`vpr --write_rr_graph` to specify where the RR graph should be written.
 
 Top Level Tags
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The first tag in all rr graph files is the ``<rr_graph>`` tag that contains detailed subtags for each catagory in the rr graph.
+The first tag in all rr graph files is the ``<rr_graph>`` tag that contains detailed subtags for each category in the rr graph.
 Each tag has their subsequent subtags that describes one entity. For example, ``<segments>`` includes all the segments in the graph where each ``<segment>`` tag outlines one type of segment.
 
 The ``rr_graph`` tag contains the following tags:
@@ -805,15 +906,41 @@ A ``switches`` tag contains all the switches and its information within the FPGA
     :req_param type:
         See :ref:`architecture switch description <arch_switches>`.
 
-.. rrgraph:tag:: <timing R="float" cin="float" Cout="float" Tdel="float/>
+.. rrgraph:tag:: <timing R="float" Cin="float" Cout="float" Tdel="float" Tdel_min="float" Tdel_max="float"/>
 
-        This optional subtag contains information used for timing analysis. Without it, the program assums all subtags to contain a value of 0.
+        This optional subtag contains information used for timing analysis. Without it, the program assumes all subtags to contain a value of 0.
 
     :opt_param R, Cin, Cout:
         The resistance, input capacitance and output capacitance of the switch.
 
     :opt_param Tdel:
         Switch's intrinsic delay. It can be outlined that the delay through an unloaded switch is Tdel + R * Cout.
+        It is used as both the minimum and maximum intrinsic delay of the switch.
+
+        .. note:: Cannot be specified together with ``Tdel_min`` or ``Tdel_max``.
+
+    :opt_param Tdel_min, Tdel_max:
+        Switch's minimum and maximum intrinsic delay.
+        ``Tdel_min`` must not be larger than ``Tdel_max``.
+        A missing value is 0, like the other timing values.
+
+        .. warning::
+            Unlike ``<Tdel>`` in the architecture file, a missing ``Tdel_min`` is **not** taken to be equal to ``Tdel_max``.
+            A switch with only ``Tdel_max="X"`` has a minimum delay of 0 and a maximum delay of X.
+            To give a single delay, used as both the minimum and maximum delay, use ``Tdel``.
+
+        The delays of a switch are:
+
+        * ``Tdel="X"``: minimum and maximum delay X.
+        * ``Tdel_min="Y" Tdel_max="X"``: minimum delay Y and maximum delay X.
+        * ``Tdel_max="X"`` only: minimum delay 0 and maximum delay X.
+        * ``Tdel_min="Y"`` only: an error if Y is not 0, since the maximum delay is 0.
+        * None of them: minimum and maximum delay 0.
+
+        .. note::
+            When writing an RR graph, VPR leaves out timing values that are 0.
+            It writes ``Tdel`` when the minimum and maximum delays are equal, and ``Tdel_min`` and ``Tdel_max`` otherwise.
+            So a switch with a minimum delay of 0 and a non-zero maximum delay is written with only ``Tdel_max``.
 
 .. rrgraph:tag:: <sizing mux_trans_size="int" buf_size="float"/>
 
@@ -911,7 +1038,7 @@ The ``rr_nodes`` tag stores information about each node for the routing resource
         Valid inputs for class types are { ``CHANX`` | ``CHANY`` | ``SOURCE`` | ``SINK`` | ``OPIN`` | ``IPIN`` }.
         Where ``CHANX`` and ``CHANY`` describe a horizontal and vertical channel.
         Sources and sinks describes where nets begin and end.
-        ``OPIN`` represents an output pin and ``IPIN`` representd an input pin
+        ``OPIN`` represents an output pin and ``IPIN`` represented an input pin
 
     :opt_param direction:
         If the node represents a track (``CHANX`` or ``CHANY``), this field represents its direction as {``INC_DIR`` | ``DEC_DIR`` | ``BI_DIR``}.
@@ -991,8 +1118,12 @@ An example of what a generated routing resource graph file would look like is sh
             <y_list index="2" info="5"/>
         </channels>
         <switches>
-            <switch id="0" name="my_switch" buffered="1">
+            <switch id="0" name="my_switch" type="mux">
                 <timing R="100" Cin="1233-12" Cout="123e-12" Tdel="1e-9"/>
+                <sizing mux_trans_size="2.32" buf_size="23.54"/>
+            </switch>
+            <switch id="1" name="my_min_max_switch" type="mux">
+                <timing R="100" Cin="1233-12" Cout="123e-12" Tdel_min="0.9e-9" Tdel_max="1e-9"/>
                 <sizing mux_trans_size="2.32" buf_size="23.54"/>
             </switch>
         </switches>
@@ -1003,13 +1134,13 @@ An example of what a generated routing resource graph file would look like is sh
         </segments>
         <block_types>
             <block_type id="0" name="io" width="1" height="1">
-                <pin_class type="input">
+                <pin_class type="INPUT">
                     <pin ptc="0">DATIN[0]</pin>
                     <pin ptc="1">DATIN[1]</pin>
                     <pin ptc="2">DATIN[2]</pin>
                     <pin ptc="3">DATIN[3]</pin>
                 </pin_class>
-                <pin_class type="output">
+                <pin_class type="OUTPUT">
                     <pin ptc="4">DATOUT[0]</pin>
                     <pin ptc="5">DATOUT[1]</pin>
                     <pin ptc="6">DATOUT[2]</pin>
@@ -1017,10 +1148,10 @@ An example of what a generated routing resource graph file would look like is sh
                 </pin_class>
             </block_type>
             <block_type id="1" name="buf" width="1" height="1">
-                <pin_class type="input">
+                <pin_class type="INPUT">
                     <pin ptc="0">IN</pin>
                 </pin_class>
-                <pin_class type="output">
+                <pin_class type="OUTPUT">
                     <pin ptc="1">OUT</pin>
                 </pin_class>
             </block_type>
@@ -1045,4 +1176,308 @@ An example of what a generated routing resource graph file would look like is sh
             <edge src_node="1" sink_node="2" switch_id="0"/>
         </rr_edges>
     </rr_graph>
+
+Binary Format (Cap'n Proto)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To aid in handling large graphs, rr_graph files can also be :ref:`saved in <filename_options>` a binary (Cap'n Proto) format. This will result in a smaller file and faster read/write times.
+
+.. _end:
+
+.. _rr_edge_override_file_format:
+
+RR Graph Edge Attribute Override File Format (.txt)
+---------------------------------------------------
+This file lets users override attributes of specific edges in the RR graph. Currently, only the intrinsic delay of
+the edge's switch (``Tdel``, or ``Tdel_min`` and ``Tdel_max``) can be changed. The expected format is:
+
+.. code-block:: none
+
+    # edge    Tdel
+    64812     5.9e-11
+    9981      4.2e-11
+    1234      7.1e-11
+    4321      9.4e-11
+    (42, 64)  7.3e-11
+
+.. _end:
+
+Lines starting with # are comments and ignored. Each other line should specify either: an edge ID and its new delay, or
+a source/sink node pair and its delay.
+
+A line can give either one delay or two delays:
+
+* One delay is used as both the minimum and maximum delay. It replaces both, even if the edge's switch had
+  different minimum and maximum delays.
+* Two delays are the minimum and maximum delay (``Tdel_min`` then ``Tdel_max``, in the same order as the
+  :ref:`RR graph <vpr_route_resource_file>` ``<timing>`` attributes). The minimum delay must not be larger than the maximum delay.
+
+.. code-block:: none
+
+    # edge    Tdel_min   Tdel_max
+    64812     5.6e-11    5.9e-11
+    9981      4.2e-11
+    (42, 64)  7.0e-11    7.3e-11
+
+Here edge ``9981`` has a single delay, so its minimum and maximum delay are both ``4.2e-11``.
+
+This allows more accurate modeling of switch delays in the RR graph without creating many switch types
+in the architecture file and limiting them to small regions. This can be useful for more detailed modeling of
+a fabricated FPGA where layout differences lead to small delay differences in the same type of routing switch.
+
+Network-on-Chip (NoC) Traffic Flows Format (.flows)
+---------------------------------------------------
+
+In order to co-optimize for the NoC placement VPR needs expected performance metrics of the NoC.
+VPR defines the performance requirements of the NoC as traffic flows. A traffic flow is a one-way communication between two
+logical routers in a design. The traffic flows provide the communications bandwidth and Quality of
+Service (QoS) requirements. The traffic flows are application dependent and need to be supplied
+externally by a user. The traffic flows file is an XML based file format which designers
+can use to describe the traffic flows in a given application.
+
+.. note:: Use :option:`vpr --noc_traffic_flows` to specify an NoC traffic flows file to be loaded.
+
+Top Level Tags
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The first tag in all NoC traffic flow files is the ``<traffic_flows>`` tag that contains detailed subtags for each category in the NoC traffic flows.
+
+The ``traffic_flows`` tag contains the following tags:
+
+* ``<single_flow>``
+        * ``<single_flow>``content``</single_flow>`` 
+
+Detailed Tag Information
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Single Flow
+^^^^^^^^^^^
+
+A given traffic flow information is contained within the ``single_flow`` tag. There can be 0 or more single flow tags.
+0 would indicate that an application does not have any traffic flows.
+
+.. rrgraph:tag:: <single_flow src="logical_router_name" dst="logical_router_name" bandwidth="float" latency_cons="float" priority="int"/>
+
+    :opt_param latency_cons:
+        A floating point number which indicates the upper bound
+        on the latency for a traffic flow. This is in units of seconds and is an optional attribute.
+        If this attribute is not provided then the CAD tool will try to reduce the latency as much
+        as possible.
+
+    :opt_param priority:
+        An integer which represents the relative importance of the traffic flow
+        against all other traffic flows in an application. For example, a traffic flow with priority
+        10 would be weighted ten times more than a traffic flow with priority 1. This is an
+        optional attribute and by default all traffic flows have a priority of 1
+
+    :req_param src:
+        A string which represents a logical router name in an application.
+        This logical router is the source endpoint for the traffic flow being described by the corresponding 
+        single flow tag. The logical router name must match the name of the router
+        as found in the clustered netlist; since this name assigned by the CAD tool, instead of
+        having the designer go through the clustered netlist to retrieve the exact name we instead
+        allow designers to use regex patterns in the logical router name. For example, instead of
+        ``noc_router_adapter_block:noc_router_layer1_mvm2:slave_tready_reg0`` user could provide 
+        ``.*noc_router_layer1_mvm2.*``. This allows users to provide the instance name for a given logical router
+        module in the design. This is a required attribute.
+    
+    :req_param dst:
+        A string which represents a logical router name in an application.
+        This logical router is the deastination endpoint for the traffic flow being described by the corresponding 
+        single flow tag. The logical router name must match the name of the router
+        as found in the clustered netlist; since this name assigned by the CAD tool, instead of
+        having the designer go through the clustered netlist to retrieve the exact name we instead
+        allow designers to use regex patterns in the logical router name. For example, instead of
+        ``noc_router_adapter_block:noc_router_layer1_mvm3:slave_tready_reg0`` user could provide 
+        ``.*noc_router_layer1_mvm3.*``. This allows users to provide the instance name for a given logical router
+        module in the design. This is a required attribute.
+
+    :req_param bandwidth:
+        A floating point number which indicates the data bandwidth in the
+        traffic flow communication. This is in units of bits-per-second (bps) and is a required
+        attribute.
+
+NoC Traffic Flows File Example
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An example of what a NoC traffic flows file looks like is shown below:
+
+.. code-block:: xml
+    :caption: Example of a NoC traffic flows file in XML format
+    :linenos:
+
+    <traffic_flows>
+        <single_flow src="m0" dst="m1" bandwidth="2.3e9" latency_cons="3e-9"/>
+        <single_flow src="m0" dst="m2" bandwidth="5e8"/>
+        <single_flow src="ddr" dst="m0" bandwidth="1.3e8" priority=3/>
+        <single_flow src="m3" dst="m2" bandwidth="4.8e9" latency_cons="5e-9" priority=2/>
+    </traffic_flows>
+
+Block types usage summary (.txt .xml or .json)
+-----------------------------------------
+
+Block types usage summary is a file written in human or machine readable format.
+It describes types and the amount of cluster-level FPGA resources that are used
+by implemented design. This file is generated after the placement step with
+option: ``--write_block_usage <filename>``. It can be saved as a human readable
+text file or in XML or JSON file to provide machine readable output. Format is
+selected based on the extension of the ``<filename>``.
+
+The summary consists of 4 parameters:
+
+* `nets number` - the amount of created nets
+* `blocks number` - sum of blocks used to implement the design
+* `input pins` - sum of input pins
+* `output pins` - sum of output pins
+
+and a list of `block types` followed by the number of specific block types that
+are used in the design.
+
+TXT
+~~~
+
+Presents the information in human readable format, the same as in log output:
+
+.. code-block:: none
+    :caption: TXT format of block types usage summary
+    :linenos:
+
+    Netlist num_nets: <int>
+    Netlist num_blocks: <int>
+    Netlist <block_type_name_0> blocks: <int>
+    Netlist <block_type_name_1> blocks: <int>
+    ...
+    Netlist <block_type_name_n> blocks: <int>
+    Netlist inputs pins: <int>
+    Netlist output pins: <int>
+
+.. _end:
+
+JSON
+~~~~
+
+One of two available machine readable formats. The information is written as follows:
+
+.. code-block:: json
+    :caption: JSON format of block types usage summary
+    :linenos:
+
+    {
+      "num_nets": "<int>",
+      "num_blocks": "<int>",
+      "input_pins": "<int>",
+      "output_pins": "<int>",
+      "blocks": {
+        "<block_type_name_0>": <int>,
+        "<block_type_name_1>": <int>,
+        ...
+        "<block_type_name_n>": <int>
+      }
+    }
+
+.. _end:
+
+XML
+~~~
+
+Second machine readable format. The information is written as follows:
+
+.. code-block:: xml
+    :caption: XML format of block types usage summary
+    :linenos:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <block_usage_report>
+      <nets num="<int>"></nets>
+      <blocks num="<int>">
+        <block type="<block_type_name_0>" usage="<int>"></block>
+        <block type="<block_type_name_1>" usage="<int>"></block>
+        ...
+        <block type="<block_type_name_n>" usage="<int>"></block>
+      </blocks>
+      <input_pins num="<int>"></input_pins>
+      <output_pins num="<int>"></output_pins>
+    </block_usage_report>
+
+.. _end:
+
+Timing summary (.txt .xml or .json)
+-----------------------------------------
+
+Timing summary is a file written in human or machine readable format.
+It describes final timing parameters of design implemented for the FPGA device.
+This file is generated after the routing step with option: `--write_timing_summary <filename>`.
+It can be saved as a human readable text file or in XML or JSON file to provide
+machine readable output. Format is selected based on the extension of the `<filename>`.
+
+The summary consists of 7 parameters:
+
+* `Critical Path Delay (cpd) [ns]`
+* `Max Circuit Frequency (Fmax) [MHz]`
+* `Critical Path Skew (cpd_skew) [ns]`: The clock skew on the critical path.
+* `Critical Path Category (cpd_category)`: The category of the critical path (``in2reg``, ``reg2reg``, ``reg2out`` or ``in2out``; see :option:`--timing_report_path_categories`).
+  The skew of an ``in2reg`` or ``reg2out`` critical path includes the full clock insertion delay of its register.
+  It is empty if the critical path has no clock skew (e.g. it is launched by a constant generator).
+* `setup Worst Negative Slack (sWNS) [ns]`
+* `setup Total Negative Slack (sTNS) [ns]`
+* `setup Worst Skew (sWS) [ns]`
+
+TXT
+~~~
+
+Presents the information in human readable format, the same as in log output:
+
+.. code-block:: none
+    :caption: TXT format of timing summary
+    :linenos:
+
+    Final critical path delay (least slack): <double> ns, Fmax: <double> MHz
+    Final critical path skew: <double> ns (<category>)
+    Final setup Worst Negative Slack (sWNS): <double> ns
+    Final setup Total Negative Slack (sTNS): <double> ns
+    Final setup Worst Skew (sWS): <double> ns
+
+.. _end:
+
+JSON
+~~~~
+
+One of two available machine readable formats. The information is written as follows:
+
+.. code-block:: json
+    :caption: JSON format of timing summary
+    :linenos:
+
+    {
+      "cpd": <double>,
+      "fmax": <double>,
+      "cpd_skew": <double>,
+      "cpd_category": "<category>",
+      "swns": <double>,
+      "stns": <double>,
+      "sws": <double>
+    }
+
+.. _end:
+
+XML
+~~~
+
+Second machine readable format. The information is written as follows:
+
+.. code-block:: xml
+    :caption: XML format of timing summary
+    :linenos:
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <timing_summary_report>
+      <cpd value="<double>" unit="ns" description="Final critical path delay"></cpd>
+      <fmax value="<double>" unit="MHz" description="Max circuit frequency"></fmax>
+      <cpd_skew value="<double>" unit="ns" description="Clock skew on the critical path"></cpd_skew>
+      <cpd_category value="<category>" description="Category of the critical path (e.g. reg2reg)"></cpd_category>
+      <swns value="<double>" unit="ns" description="setup Worst Negative Slack (sWNS)"></swns>
+      <stns value="<double>" unit="ns" description="setup Total Negative Slack (sTNS)"></stns>
+      <sws value="<double>" unit="ns" description="setup Worst Skew (sWS)"></sws>
+    </timing_summary_report>
+
 .. _end:

@@ -1,11 +1,13 @@
 #include "edge_groups.h"
 
 #include <stack>
+#include "rr_graph_fwd.h"
+#include "vpr_context.h"
 
 // Adds non-configurable (undirected) edge to be grouped.
 //
 // Returns true if this is a new edge.
-bool EdgeGroups::add_non_config_edge(int from_node, int to_node) {
+bool EdgeGroups::add_non_config_edge(RRNodeId from_node, RRNodeId to_node) {
     return graph_[from_node].edges.insert(to_node).second && graph_[to_node].edges.insert(from_node).second;
 }
 
@@ -18,7 +20,7 @@ void EdgeGroups::create_sets() {
     // https://en.wikipedia.org/wiki/Component_(graph_theory)#Algorithms
     std::vector<size_t> group_size;
     for (auto& node : graph_) {
-        if (node.second.set == OPEN) {
+        if (node.second.set == UNDEFINED) {
             node.second.set = group_size.size();
             group_size.push_back(add_connected_group(node.second));
         }
@@ -26,7 +28,7 @@ void EdgeGroups::create_sets() {
 
     // Sanity check the node sets.
     for (const auto& node : graph_) {
-        VTR_ASSERT(node.second.set != OPEN);
+        VTR_ASSERT(node.second.set != UNDEFINED);
         for (const auto& e : node.second.edges) {
             int set = graph_[e].set;
             VTR_ASSERT(set == node.second.set);
@@ -49,16 +51,16 @@ t_non_configurable_rr_sets EdgeGroups::output_sets() {
     t_non_configurable_rr_sets sets;
     for (const auto& nodes : rr_non_config_node_sets_) {
         std::set<t_node_edge> edge_set;
-        std::set<int> node_set(nodes.begin(), nodes.end());
+        std::set<RRNodeId> node_set(nodes.begin(), nodes.end());
 
-        for (const auto& src : node_set) {
-            for (const auto& dest : graph_[src].edges) {
-                edge_set.emplace(t_node_edge(src, dest));
+        for (const RRNodeId src : node_set) {
+            for (const RRNodeId dest : graph_[src].edges) {
+                edge_set.emplace(src, dest);
             }
         }
 
-        sets.node_sets.emplace(std::move(node_set));
-        sets.edge_sets.emplace(std::move(edge_set));
+        sets.node_sets.emplace_back(std::move(node_set));
+        sets.edge_sets.emplace_back(std::move(edge_set));
     }
 
     return sets;
@@ -66,12 +68,12 @@ t_non_configurable_rr_sets EdgeGroups::output_sets() {
 
 // Set device context structures for non-configurable node sets.
 void EdgeGroups::set_device_context(DeviceContext& device_ctx) {
-    std::vector<std::vector<int>> rr_non_config_node_sets;
+    std::vector<std::vector<RRNodeId>> rr_non_config_node_sets;
     for (const auto& item : rr_non_config_node_sets_) {
         rr_non_config_node_sets.emplace_back(std::move(item));
     }
 
-    std::unordered_map<int, int> rr_node_to_non_config_node_set;
+    std::unordered_map<RRNodeId, int> rr_node_to_non_config_node_set;
     for (size_t set = 0; set < rr_non_config_node_sets.size(); ++set) {
         for (const auto inode : rr_non_config_node_sets[set]) {
             rr_node_to_non_config_node_set.insert(
@@ -96,7 +98,7 @@ size_t EdgeGroups::add_connected_group(const node_data& node) {
         for (auto e : top->edges) {
             auto& next = graph_[e];
             if (next.set != node.set) {
-                VTR_ASSERT(next.set == OPEN);
+                VTR_ASSERT(next.set == UNDEFINED);
                 n++;
                 next.set = node.set;
                 stack.push(&next);

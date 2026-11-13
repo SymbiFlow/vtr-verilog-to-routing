@@ -29,11 +29,6 @@
 
 namespace kj {
 
-#if _MSC_VER
-#pragma warning(disable: 4996)
-// Warns that sprintf() is buffer-overrunny. We know that, it's cool.
-#endif
-
 namespace {
 bool isHex(const char *s) {
   if (*s == '-') s++;
@@ -51,6 +46,17 @@ long long parseSigned(const StringPtr& s, long long min, long long max) {
   return value;
 }
 
+Maybe<long long> tryParseSigned(const StringPtr& s, long long min, long long max) {
+  if (s == nullptr) { return nullptr; } // String does not contain valid number.
+  char *endPtr;
+  errno = 0;
+  auto value = strtoll(s.begin(), &endPtr, isHex(s.cStr()) ? 16 : 10);
+  if (endPtr != s.end() || errno == ERANGE || value < min || max < value) {
+    return nullptr;
+  }
+  return value;
+}
+
 unsigned long long parseUnsigned(const StringPtr& s, unsigned long long max) {
   KJ_REQUIRE(s != nullptr, "String does not contain valid number", s) { return 0; }
   char *endPtr;
@@ -61,6 +67,15 @@ unsigned long long parseUnsigned(const StringPtr& s, unsigned long long max) {
   KJ_REQUIRE(value <= max, "Value out-of-range", value, max) { return 0; }
   //strtoull("-1") does not fail with ERANGE
   KJ_REQUIRE(s[0] != '-', "Value out-of-range", s) { return 0; }
+  return value;
+}
+
+Maybe<unsigned long long> tryParseUnsigned(const StringPtr& s, unsigned long long max) {
+  if (s == nullptr) { return nullptr; } // String does not contain valid number.
+  char *endPtr;
+  errno = 0;
+  auto value = strtoull(s.begin(), &endPtr, isHex(s.cStr()) ? 16 : 10);
+  if (endPtr != s.end() || errno == ERANGE || max < value || s[0] == '-') { return nullptr; }
   return value;
 }
 
@@ -76,30 +91,16 @@ T parseInteger(const StringPtr& s) {
   }
 }
 
-double parseDouble(const StringPtr& s) {
-  KJ_REQUIRE(s != nullptr, "String does not contain valid number", s) { return 0; }
-  char *endPtr;
-  errno = 0;
-  auto value = strtod(s.begin(), &endPtr);
-  KJ_REQUIRE(endPtr == s.end(), "String does not contain valid floating number", s) { return 0; }
-#if _WIN32 || __CYGWIN__ || __BIONIC__
-  // When Windows' strtod() parses "nan", it returns a value with the sign bit set. But, our
-  // preferred canonical value for NaN does not have the sign bit set, and all other platforms
-  // return one without the sign bit set. So, on Windows, detect NaN and return our preferred
-  // version.
-  //
-  // Cygwin seemingly does not try to emulate Linux behavior here, but rather allows Windows'
-  // behavior to leak through. (Conversely, WINE actually produces the Linux behavior despite
-  // trying to behave like Win32...)
-  //
-  // Bionic (Android) failed the unit test and so I added it to the list without investigating
-  // further.
-  if (isNaN(value)) {
-    // NaN
-    return kj::nan();
+template <typename T>
+Maybe<T> tryParseInteger(const StringPtr& s) {
+  if (static_cast<T>(minValue) < 0) {
+    long long min = static_cast<T>(minValue);
+    long long max = static_cast<T>(maxValue);
+    return static_cast<Maybe<T>>(tryParseSigned(s, min, max));
+  } else {
+    unsigned long long max = static_cast<T>(maxValue);
+    return static_cast<Maybe<T>>(tryParseUnsigned(s, max));
   }
-#endif
-  return value;
 }
 
 } // namespace
@@ -118,8 +119,21 @@ PARSE_AS_INTEGER(unsigned long);
 PARSE_AS_INTEGER(long long);
 PARSE_AS_INTEGER(unsigned long long);
 #undef PARSE_AS_INTEGER
-template <> double StringPtr::parseAs<double>() const { return parseDouble(*this); }
-template <> float StringPtr::parseAs<float>() const { return parseDouble(*this); }
+
+#define TRY_PARSE_AS_INTEGER(T) \
+    template <> Maybe<T> StringPtr::tryParseAs<T>() const { return tryParseInteger<T>(*this); }
+TRY_PARSE_AS_INTEGER(char);
+TRY_PARSE_AS_INTEGER(signed char);
+TRY_PARSE_AS_INTEGER(unsigned char);
+TRY_PARSE_AS_INTEGER(short);
+TRY_PARSE_AS_INTEGER(unsigned short);
+TRY_PARSE_AS_INTEGER(int);
+TRY_PARSE_AS_INTEGER(unsigned int);
+TRY_PARSE_AS_INTEGER(long);
+TRY_PARSE_AS_INTEGER(unsigned long);
+TRY_PARSE_AS_INTEGER(long long);
+TRY_PARSE_AS_INTEGER(unsigned long long);
+#undef TRY_PARSE_AS_INTEGER
 
 String heapString(size_t size) {
   char* buffer = _::HeapArrayDisposer::allocate<char>(size + 1);
@@ -187,7 +201,11 @@ static CappedArray<char, sizeof(T) * 3 + 2> stringifyImpl(T i) {
   // We don't use sprintf() because it's not async-signal-safe (for strPreallocated()).
   CappedArray<char, sizeof(T) * 3 + 2> result;
   bool negative = i < 0;
-  Unsigned u = negative ? -i : i;
+  // Note that if `i` is the most-negative value, negating it produces the same bit value. But
+  // since it's a signed integer, this is considered an overflow. We therefore must make it
+  // unsigned first, then negate it, to avoid ubsan complaining.
+  Unsigned u = i;
+  if (negative) u = -u;
   uint8_t reverse[sizeof(T) * 3 + 1];
   uint8_t* p = reverse;
   if (u == 0) {
@@ -485,6 +503,76 @@ char* FloatToBuffer(float value, char* buffer) {
   return buffer;
 }
 
+// ----------------------------------------------------------------------
+// NoLocaleStrtod()
+//   This code will make you cry.
+// ----------------------------------------------------------------------
+
+namespace {
+
+// Returns a string identical to *input except that the character pointed to
+// by radix_pos (which should be '.') is replaced with the locale-specific
+// radix character.
+kj::String LocalizeRadix(const char* input, const char* radix_pos) {
+  // Determine the locale-specific radix character by calling sprintf() to
+  // print the number 1.5, then stripping off the digits.  As far as I can
+  // tell, this is the only portable, thread-safe way to get the C library
+  // to divuldge the locale's radix character.  No, localeconv() is NOT
+  // thread-safe.
+  char temp[16];
+  int size = snprintf(temp, sizeof(temp), "%.1f", 1.5);
+  KJ_ASSERT(temp[0] == '1');
+  KJ_ASSERT(temp[size-1] == '5');
+  KJ_ASSERT(size <= 6);
+
+  // Now replace the '.' in the input with it.
+  return kj::str(
+      kj::arrayPtr(input, radix_pos),
+      kj::arrayPtr(temp + 1, size - 2),
+      kj::StringPtr(radix_pos + 1));
+}
+
+}  // namespace
+
+double NoLocaleStrtod(const char* text, char** original_endptr) {
+  // We cannot simply set the locale to "C" temporarily with setlocale()
+  // as this is not thread-safe.  Instead, we try to parse in the current
+  // locale first.  If parsing stops at a '.' character, then this is a
+  // pretty good hint that we're actually in some other locale in which
+  // '.' is not the radix character.
+
+  char* temp_endptr;
+  double result = strtod(text, &temp_endptr);
+  if (original_endptr != NULL) *original_endptr = temp_endptr;
+  if (*temp_endptr != '.') return result;
+
+  // Parsing halted on a '.'.  Perhaps we're in a different locale?  Let's
+  // try to replace the '.' with a locale-specific radix character and
+  // try again.
+  kj::String localized = LocalizeRadix(text, temp_endptr);
+  const char* localized_cstr = localized.cStr();
+  char* localized_endptr;
+  result = strtod(localized_cstr, &localized_endptr);
+  if ((localized_endptr - localized_cstr) >
+      (temp_endptr - text)) {
+    // This attempt got further, so replacing the decimal must have helped.
+    // Update original_endptr to point at the right location.
+    if (original_endptr != NULL) {
+      // size_diff is non-zero if the localized radix has multiple bytes.
+      int size_diff = localized.size() - strlen(text);
+      // const_cast is necessary to match the strtod() interface.
+      *original_endptr = const_cast<char*>(
+        text + (localized_endptr - localized_cstr - size_diff));
+    }
+  }
+
+  return result;
+}
+
+// ----------------------------------------------------------------------
+// End of code copied from Protobuf
+// ----------------------------------------------------------------------
+
 }  // namespace
 
 CappedArray<char, kFloatToBufferSize> Stringifier::operator*(float f) const {
@@ -499,5 +587,52 @@ CappedArray<char, kDoubleToBufferSize> Stringifier::operator*(double f) const {
   return result;
 }
 
+double parseDouble(const StringPtr& s) {
+  KJ_REQUIRE(s != nullptr, "String does not contain valid number", s) { return 0; }
+  char *endPtr;
+  errno = 0;
+  auto value = _::NoLocaleStrtod(s.begin(), &endPtr);
+  KJ_REQUIRE(endPtr == s.end(), "String does not contain valid floating number", s) { return 0; }
+#if _WIN32 || __CYGWIN__ || __BIONIC__
+  // When Windows' strtod() parses "nan", it returns a value with the sign bit set. But, our
+  // preferred canonical value for NaN does not have the sign bit set, and all other platforms
+  // return one without the sign bit set. So, on Windows, detect NaN and return our preferred
+  // version.
+  //
+  // Cygwin seemingly does not try to emulate Linux behavior here, but rather allows Windows'
+  // behavior to leak through. (Conversely, WINE actually produces the Linux behavior despite
+  // trying to behave like Win32...)
+  //
+  // Bionic (Android) failed the unit test and so I added it to the list without investigating
+  // further.
+  if (isNaN(value)) {
+    // NaN
+    return kj::nan();
+  }
+#endif
+  return value;
+}
+
+Maybe<double> tryParseDouble(const StringPtr& s) {
+  if(s == nullptr) { return nullptr; }
+  char *endPtr;
+  errno = 0;
+  auto value = _::NoLocaleStrtod(s.begin(), &endPtr);
+  if (endPtr != s.end()) { return nullptr; }
+#if _WIN32 || __CYGWIN__ || __BIONIC__
+  if (isNaN(value)) {
+    return kj::nan();
+  }
+#endif
+  return value;
+}
+
 }  // namespace _ (private)
+
+template <> double StringPtr::parseAs<double>() const { return _::parseDouble(*this); }
+template <> float StringPtr::parseAs<float>() const { return _::parseDouble(*this); }
+
+template <> Maybe<double> StringPtr::tryParseAs<double>() const { return _::tryParseDouble(*this); }
+template <> Maybe<float> StringPtr::tryParseAs<float>() const { return _::tryParseDouble(*this); }
+
 }  // namespace kj

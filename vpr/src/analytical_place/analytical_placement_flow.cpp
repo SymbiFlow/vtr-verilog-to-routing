@@ -1,0 +1,436 @@
+/**
+ * @file
+ * @author  Alex Singer
+ * @date    September 2024
+ * @brief   Implementation of the Analytical Placement flow.
+ */
+
+#include "analytical_placement_flow.h"
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include "PlacementDelayModelCreator.h"
+#include "PreClusterDelayCalculator.h"
+#include "PreClusterTimingManager.h"
+#include "analytical_solver.h"
+#include "ap_draw_manager.h"
+#include "ap_netlist.h"
+#include "ap_timing_estimation.h"
+#include "atom_netlist.h"
+#include "cluster_util.h"
+#include "detailed_placer.h"
+#include "device_size_estimate.h"
+#include "draw.h"
+#include "full_legalizer.h"
+#include "gp_solution_quality_estimation.h"
+#include "setup_grid.h"
+#include "logical_ram_infer.h"
+#include "gen_ap_netlist_from_atoms.h"
+#include "global_placer.h"
+#include "globals.h"
+#include "load_flat_place.h"
+#include "netlist_fwd.h"
+#include "partial_legalizer.h"
+#include "partial_placement.h"
+#include "physical_types.h"
+#include "place_delay_model.h"
+#include "prepack.h"
+#include "user_place_constraints.h"
+#include "vpr_api.h"
+#include "vpr_context.h"
+#include "vpr_types.h"
+#include "stats.h"
+#include "vtr_assert.h"
+#include "vtr_time.h"
+#include "vtr_math.h"
+
+/**
+ * @brief A helper method to log statistics on the APNetlist.
+ */
+static void print_ap_netlist_stats(const APNetlist& netlist) {
+    // Get the number of moveable and fixed blocks
+    size_t num_moveable_blocks = 0;
+    size_t num_fixed_blocks = 0;
+    for (APBlockId blk_id : netlist.blocks()) {
+        if (netlist.block_mobility(blk_id) == APBlockMobility::MOVEABLE)
+            num_moveable_blocks++;
+        else
+            num_fixed_blocks++;
+    }
+    // Get the fanout information of nets
+    size_t highest_fanout = 0;
+    float average_fanout = 0.f;
+    unsigned net_count = 0;
+    for (APNetId net_id : netlist.nets()) {
+        if (netlist.net_is_ignored(net_id))
+            continue;
+        size_t net_fanout = netlist.net_pins(net_id).size();
+        if (net_fanout > highest_fanout)
+            highest_fanout = net_fanout;
+        average_fanout += static_cast<float>(net_fanout);
+        net_count++;
+    }
+    average_fanout /= static_cast<float>(net_count);
+    // Print the statistics
+    VTR_LOG("Analytical Placement Netlist Statistics:\n");
+    VTR_LOG("\tAP Blocks: %zu\n", netlist.blocks().size());
+    VTR_LOG("\t\tMoveable AP Blocks: %zu\n", num_moveable_blocks);
+    VTR_LOG("\t\tFixed AP Blocks: %zu\n", num_fixed_blocks);
+    VTR_LOG("\tAP Nets: %zu\n", net_count);
+    VTR_LOG("\t\tAverage Fanout: %.2f\n", average_fanout);
+    VTR_LOG("\t\tHighest Fanout: %zu\n", highest_fanout);
+    VTR_LOG("\tAP Pins: %zu\n", netlist.pins().size());
+    VTR_LOG("\n");
+}
+
+/**
+ * @brief Passes the flat placement information to a provided partial placement.
+ *
+ *  @param flat_placement_info    The flat placement information to be read.
+ *  @param ap_netlist             The APNetlist that used to iterate over its blocks.
+ *  @param prepacker              The Prepacker to get molecule of blocks in the ap_netlist.
+ *  @param p_placement            The partial placement to be updated which is assumed
+ * to be generated on ap_netlist or have the same blocks.
+ */
+static void convert_flat_to_partial_placement(const FlatPlacementInfo& flat_placement_info, const APNetlist& ap_netlist, const Prepacker& prepacker, PartialPlacement& p_placement) {
+    size_t num_mols_assigned_to_center = 0;
+    for (APBlockId ap_blk_id : ap_netlist.blocks()) {
+        // Get location of a valid atom across all molecules in this AP block
+        // and verify that all atoms in the block share the same placement info.
+        float atom_loc_x = 0.f, atom_loc_y = 0.f, atom_loc_layer = 0.f;
+        int atom_loc_sub_tile = 0;
+        bool found_valid_atom = false;
+        for (PackMoleculeId mol_id : ap_netlist.block_molecules(ap_blk_id)) {
+            const t_pack_molecule& mol = prepacker.get_molecule(mol_id);
+            for (AtomBlockId atom_blk_id : mol.atom_block_ids) {
+                if (!atom_blk_id.is_valid())
+                    continue;
+                float current_loc_x = flat_placement_info.blk_x_pos[atom_blk_id];
+                float current_loc_y = flat_placement_info.blk_y_pos[atom_blk_id];
+                float current_loc_layer = flat_placement_info.blk_layer[atom_blk_id];
+                int current_loc_sub_tile = flat_placement_info.blk_sub_tile[atom_blk_id];
+                // Atoms without a location do not constrain the location of
+                // the block.
+                if (current_loc_x == -1 || current_loc_y == -1)
+                    continue;
+                if (found_valid_atom) {
+                    // The locations are compared as they appear in the flat
+                    // placement (i.e. before clamping and defaulting below),
+                    // so that atoms with the same location in the file always
+                    // agree.
+                    if (current_loc_x != atom_loc_x || current_loc_y != atom_loc_y || current_loc_layer != atom_loc_layer || current_loc_sub_tile != atom_loc_sub_tile)
+                        VPR_FATAL_ERROR(VPR_ERROR_AP,
+                                        "AP block %s contains atom %s (ID: %zu) with a location (%g, %g, layer: %g, subtile: %d) "
+                                        "that conflicts the location of other atoms in this block of (%g, %g, layer: %g, subtile: %d).",
+                                        ap_netlist.block_name(ap_blk_id).c_str(),
+                                        g_vpr_ctx.atom().netlist().block_name(atom_blk_id).c_str(), atom_blk_id,
+                                        current_loc_x, current_loc_y, current_loc_layer, current_loc_sub_tile,
+                                        atom_loc_x, atom_loc_y, atom_loc_layer, atom_loc_sub_tile);
+                } else {
+                    atom_loc_x = current_loc_x;
+                    atom_loc_y = current_loc_y;
+                    atom_loc_layer = current_loc_layer;
+                    atom_loc_sub_tile = current_loc_sub_tile;
+                    found_valid_atom = true;
+                }
+            }
+        }
+        if (found_valid_atom) {
+            // Clamp the location onto the device. A tile at x covers [x, x + 1),
+            // so the device covers [0, width); clamp to the largest float below
+            // the width so that off-grid positions within the last column / row
+            // are preserved.
+            const DeviceGrid& grid = g_vpr_ctx.device().grid;
+            atom_loc_x = std::clamp(atom_loc_x, 0.0f,
+                                    std::nextafter(static_cast<float>(grid.width()), 0.0f));
+            atom_loc_y = std::clamp(atom_loc_y, 0.0f,
+                                    std::nextafter(static_cast<float>(grid.height()), 0.0f));
+            // If the layer or sub_tile are unset (-1), default to layer 0 and sub_tile 0.
+            if (atom_loc_layer == -1)
+                atom_loc_layer = 0;
+            if (atom_loc_sub_tile == -1)
+                atom_loc_sub_tile = 0;
+        }
+        // If any atom in the block has a location assigned, use that location
+        // for the entire AP block. Otherwise, assign the AP block to the center
+        // of the device grid and update the flat placement info for all its atoms accordingly.
+        if (!found_valid_atom) {
+            num_mols_assigned_to_center++;
+            VTR_LOG_WARN("No atoms of AP block %s provided in the flat placement. Assigning it to the device center.\n",
+                         ap_netlist.block_name(ap_blk_id).c_str());
+            p_placement.block_x_locs[ap_blk_id] = g_vpr_ctx.device().grid.width() / 2.0f;
+            p_placement.block_y_locs[ap_blk_id] = g_vpr_ctx.device().grid.height() / 2.0f;
+            p_placement.block_layer_nums[ap_blk_id] = 0;
+            p_placement.block_sub_tiles[ap_blk_id] = 0;
+            // Update flat placement for all atoms in all molecules of the block.
+            // Needed for flat placement reconstruction statistics reporting.
+            for (PackMoleculeId mol_id : ap_netlist.block_molecules(ap_blk_id)) {
+                const t_pack_molecule& mol = prepacker.get_molecule(mol_id);
+                for (AtomBlockId atom_blk_id : mol.atom_block_ids) {
+                    g_vpr_ctx.mutable_atom().mutable_flat_placement_info().blk_x_pos[atom_blk_id] = g_vpr_ctx.device().grid.width() / 2.0f;
+                    g_vpr_ctx.mutable_atom().mutable_flat_placement_info().blk_y_pos[atom_blk_id] = g_vpr_ctx.device().grid.height() / 2.0f;
+                    g_vpr_ctx.mutable_atom().mutable_flat_placement_info().blk_layer[atom_blk_id] = 0;
+                    g_vpr_ctx.mutable_atom().mutable_flat_placement_info().blk_sub_tile[atom_blk_id] = 0;
+                }
+            }
+        } else {
+            // Pass the placement information
+            p_placement.block_x_locs[ap_blk_id] = atom_loc_x;
+            p_placement.block_y_locs[ap_blk_id] = atom_loc_y;
+            p_placement.block_layer_nums[ap_blk_id] = atom_loc_layer;
+            p_placement.block_sub_tiles[ap_blk_id] = atom_loc_sub_tile;
+        }
+        // For fixed blocks, constraint positions take priority over flat placement.
+        // Flat placement files use anchor positions; std::floor converts AP coordinates
+        // (tile center) back to anchor positions.
+        if (ap_netlist.block_mobility(ap_blk_id) == APBlockMobility::FIXED) {
+            const APFixedBlockLoc& fixed_loc = ap_netlist.block_loc(ap_blk_id);
+            if (fixed_loc.x != -1)
+                p_placement.block_x_locs[ap_blk_id] = std::floor(fixed_loc.x);
+            if (fixed_loc.y != -1)
+                p_placement.block_y_locs[ap_blk_id] = std::floor(fixed_loc.y);
+            if (fixed_loc.layer_num != -1)
+                p_placement.block_layer_nums[ap_blk_id] = fixed_loc.layer_num;
+            if (fixed_loc.sub_tile != -1)
+                p_placement.block_sub_tiles[ap_blk_id] = fixed_loc.sub_tile;
+        }
+    }
+    VTR_LOG("%zu of %zu molecules placed at device center (no atoms of these molecules found in flat placement).\n",
+            num_mols_assigned_to_center, ap_netlist.blocks().size());
+}
+
+/**
+ * @brief If a flat placement is provided, skips the Global Placer and
+ * converts it to a partial placement. Otherwise, runs the Global Placer.
+ */
+static PartialPlacement run_global_placer(const t_ap_opts& ap_opts,
+                                          const AtomNetlist& atom_nlist,
+                                          const APNetlist& ap_netlist,
+                                          const Prepacker& prepacker,
+                                          PreClusterTimingManager& pre_cluster_timing_manager,
+                                          std::shared_ptr<PlaceDelayModel> place_delay_model,
+                                          const DeviceContext& device_ctx) {
+    if (g_vpr_ctx.atom().flat_placement_info().valid) {
+        VTR_LOG("Flat Placement is provided in the AP flow, skipping the Global Placement.\n");
+        PartialPlacement p_placement(ap_netlist);
+        convert_flat_to_partial_placement(g_vpr_ctx.atom().flat_placement_info(),
+                                          ap_netlist,
+                                          prepacker,
+                                          p_placement);
+        VTR_LOG("\tPlacement estimated wirelength: %g\n", estimate_post_routing_wire_usage(p_placement, ap_netlist, device_ctx.grid));
+
+        // Print the estimated post-routing timing of the flat placement.
+        if (pre_cluster_timing_manager.is_valid()) {
+            FlatPlacementArcDelayEstimator arc_delay_estimator(ap_netlist,
+                                                               *pre_cluster_timing_manager.get_delay_calculator_ptr(),
+                                                               *place_delay_model,
+                                                               device_ctx.grid);
+            t_ap_timing_estimate timing_estimate = estimate_post_routing_timing(p_placement,
+                                                                                arc_delay_estimator,
+                                                                                pre_cluster_timing_manager.get_delay_calculator_ptr());
+            VTR_LOG("\tPlacement estimated CPD: %f ns\n", timing_estimate.cpd * 1e9);
+            VTR_LOG("\tPlacement estimated sTNS: %f ns\n", timing_estimate.stns * 1e9);
+            VTR_LOG("\tPlacement estimated sWNS: %f ns\n", timing_estimate.swns * 1e9);
+        }
+
+        return p_placement;
+    } else {
+        // Run the Global Placer
+        std::unique_ptr<GlobalPlacer> global_placer = make_global_placer(ap_opts.analytical_solver_type,
+                                                                         ap_opts.solver_threading,
+                                                                         ap_opts.partial_legalizer_type,
+                                                                         ap_netlist,
+                                                                         prepacker,
+                                                                         atom_nlist,
+                                                                         device_ctx.grid,
+                                                                         device_ctx.logical_block_types,
+                                                                         device_ctx.physical_tile_types,
+                                                                         device_ctx.arch->models,
+                                                                         pre_cluster_timing_manager,
+                                                                         place_delay_model,
+                                                                         ap_opts.ap_timing_tradeoff,
+                                                                         ap_opts.generate_mass_report,
+                                                                         ap_opts.ap_partial_legalizer_target_density,
+                                                                         ap_opts.num_threads,
+                                                                         ap_opts.log_verbosity);
+        return global_placer->place();
+    }
+}
+
+void run_analytical_placement_flow(t_vpr_setup& vpr_setup) {
+    // Start an overall timer for the Analytical Placement flow.
+    vtr::ScopedStartFinishTimer timer("Analytical Placement");
+
+    // The global state used/modified by this flow.
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().netlist();
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const UserPlaceConstraints& constraints = g_vpr_ctx.floorplanning().constraints;
+    const t_ap_opts& ap_opts = vpr_setup.APOpts;
+
+    // Reject relative placement macros because AP cannot enforce them.
+    if (g_vpr_ctx.floorplanning().relative_macros.get_num_macros() > 0) {
+        VPR_FATAL_ERROR(VPR_ERROR_AP,
+                        "User-defined relative placement macros are not supported in the "
+                        "analytical placement flow. Use the traditional flow (--pack --place) instead.");
+    }
+
+    // Run the prepacker
+    const Prepacker prepacker(atom_nlist,
+                              device_ctx.arch->models,
+                              device_ctx.logical_block_types,
+                              g_vpr_ctx.floorplanning().relative_macros);
+
+    // Pre-compute the pre-clustering timing delays. This object will be passed
+    // into the global placer and the full legalizer to make them timing driven.
+    PreClusterTimingManager pre_cluster_timing_manager(vpr_setup.PackerOpts.timing_driven,
+                                                       atom_nlist,
+                                                       g_vpr_ctx.atom().lookup(),
+                                                       prepacker,
+                                                       vpr_setup.PackerOpts.timing_update_type,
+                                                       *device_ctx.arch,
+                                                       vpr_setup.RoutingArch,
+                                                       vpr_setup.PackerOpts.device_layout,
+                                                       vpr_setup.AnalysisOpts);
+
+    // Estimate the device size before packing and build the RR graph if necessary.
+    // When auto-sizing is used, this sets the device grid to the estimated size so
+    // that downstream stages (e.g. RAM mapper, global placement) can query realistic
+    // device dimensions before packing. The packer may later grow or shrink the device
+    // size to match the actual resource requirements after packing completes.
+    DeviceSizeEstimator device_size_estimator(vpr_setup, *device_ctx.arch, prepacker,
+                                              /*always_estimate_resource_requirement=*/ap_opts.full_legalizer_type == e_ap_full_legalizer::APPack);
+
+    // Set up the dedicated clock networks (if used) now that the device grid
+    // exists. This must happen before any RR graph is built in this flow
+    // (e.g. below, when computing the placement delay model, or later during
+    // full legalization) since the RR graph builder reads the clock network
+    // definitions set up here. Mirrors the ordering used by the non-AP flow
+    // in vpr_create_device(): grid, then clock networks, then the RR graph.
+    // If the device is auto-sized and later resized to its final dimensions
+    // during full legalization, the clock network geometry is recomputed to
+    // match (see full_legalizer.cpp's recreate_device_if_needed()).
+    vpr_setup_clock_networks(vpr_setup, *device_ctx.arch);
+
+    // Infer logical RAMs and assign to physical types to prioritize during packing.
+    // For the auto-device flow, reuse the groups already computed by the estimator.
+    RamMapper ram_mapper;
+    if (vpr_setup.PackerOpts.use_ram_mapper) {
+        ram_mapper = RamMapper(g_vpr_ctx.atom().netlist(),
+                               prepacker,
+                               pre_cluster_timing_manager,
+                               device_size_estimator.ram_groups(),
+                               ap_opts.log_verbosity,
+                               /*is_fixed_device=*/has_fixed_device_size(vpr_setup));
+    }
+
+    // Create the ap netlist from the atom netlist using the result from the
+    // prepacker and ram mapper.
+    APNetlist ap_netlist = gen_ap_netlist_from_atoms(atom_nlist,
+                                                     prepacker,
+                                                     ram_mapper,
+                                                     constraints,
+                                                     ap_opts.ap_high_fanout_threshold);
+    print_ap_netlist_stats(ap_netlist);
+
+    // Pre-compute the place delay model. This will be passed into the global
+    // placer to create a more accurate timing model.
+    std::shared_ptr<PlaceDelayModel> place_delay_model;
+    if (pre_cluster_timing_manager.is_valid()) {
+        place_delay_model = PlacementDelayModelCreator::create_delay_model(vpr_setup.PlacerOpts,
+                                                                           vpr_setup.RouterOpts,
+                                                                           vpr_setup.CRROpts,
+                                                                           (const Netlist<>&)atom_nlist,
+                                                                           vpr_setup.RoutingArch,
+                                                                           vpr_setup.Segments,
+                                                                           device_ctx.arch->Chans,
+                                                                           device_ctx.arch->directs,
+                                                                           false /*is_flat*/);
+    }
+
+    // Initialize graphics here, after the device grid exists, so the draw structures
+    // can be allocated.
+    init_graphics(vpr_setup, *device_ctx.arch);
+
+    // Run the Global Placer.
+    PartialPlacement p_placement = run_global_placer(ap_opts,
+                                                     atom_nlist,
+                                                     ap_netlist,
+                                                     prepacker,
+                                                     pre_cluster_timing_manager,
+                                                     place_delay_model,
+                                                     device_ctx);
+
+    // Verify that the partial placement is valid before running the full
+    // legalizer.
+    const size_t device_width = device_ctx.grid.width();
+    const size_t device_height = device_ctx.grid.height();
+    VTR_ASSERT(p_placement.verify(ap_netlist,
+                                  device_width,
+                                  device_height,
+                                  device_ctx.grid.get_num_layers()));
+
+    // Write out the flat placement produced by global placement if the option
+    // is specified.
+    if (!vpr_setup.FileNameOpts.write_post_gp_flat_place_file.empty()) {
+        write_flat_placement(vpr_setup.FileNameOpts.write_post_gp_flat_place_file.c_str(),
+                             convert_partial_to_flat_placement(p_placement, ap_netlist, prepacker, atom_nlist),
+                             atom_nlist,
+                             vpr_setup.FileNameOpts.flat_place_verbosity);
+    }
+
+    // Generate the pre-cluster timing report now that global placement has
+    // updated the timing arc delays to reflect the flat placement.
+    pre_cluster_timing_manager.generate_setup_timing_report(atom_nlist,
+                                                            g_vpr_ctx.atom().lookup(),
+                                                            *device_ctx.arch,
+                                                            vpr_setup.AnalysisOpts);
+
+    // If only global placement was requested, stop the flow here.
+    if (ap_opts.stop_after_global_placement) {
+        VTR_LOG("Stopping the Analytical Placement flow after Global Placement as requested.\n");
+        return;
+    }
+
+    // Run the Full Legalizer.
+    std::unique_ptr<FullLegalizer> full_legalizer = make_full_legalizer(ap_opts.full_legalizer_type,
+                                                                        ap_netlist,
+                                                                        atom_nlist,
+                                                                        prepacker,
+                                                                        pre_cluster_timing_manager,
+                                                                        ram_mapper,
+                                                                        vpr_setup,
+                                                                        *device_ctx.arch,
+                                                                        device_ctx.grid,
+                                                                        device_size_estimator.estimated_type_instance_counts());
+    full_legalizer->legalize(p_placement);
+
+    // Print the number of resources in netlist and number of resources available in architecture
+    float target_device_utilization = vpr_setup.PackerOpts.target_device_utilization;
+    print_resource_usage();
+    // Print the device utilization
+    print_device_utilization(target_device_utilization);
+
+    // Write out a flat placement file at the end of Full Legalization if the
+    // option is specified.
+    if (!vpr_setup.FileNameOpts.write_legalized_flat_place_file.empty()) {
+        write_flat_placement(vpr_setup.FileNameOpts.write_legalized_flat_place_file.c_str(),
+                             g_vpr_ctx.clustering().clb_nlist,
+                             g_vpr_ctx.placement().block_locs(),
+                             g_vpr_ctx.clustering().atoms_lookup,
+                             vpr_setup.FileNameOpts.flat_place_verbosity);
+    }
+
+    // Run the Detailed Placer.
+    std::unique_ptr<DetailedPlacer> detailed_placer = make_detailed_placer(ap_opts.detailed_placer_type,
+                                                                           g_vpr_ctx.placement().blk_loc_registry(),
+                                                                           atom_nlist,
+                                                                           g_vpr_ctx.clustering().clb_nlist,
+                                                                           vpr_setup,
+                                                                           *device_ctx.arch);
+    detailed_placer->optimize_placement();
+
+    // Clean up some of the global variables that will no longer be used outside
+    // of this flow.
+    g_vpr_ctx.mutable_placement().clean_placement_context_post_place();
+    g_vpr_ctx.mutable_floorplanning().clean_floorplanning_context_post_place();
+}

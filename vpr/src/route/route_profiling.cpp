@@ -103,10 +103,10 @@ void time_on_fanout_analysis() {
             entire_net_rerouted, entire_tree_pruned, part_tree_preserved);
     VTR_LOG("%d connections marked for forced reroute, %d forced reroutes performed\n", connections_forced_to_reroute, connections_rerouted_due_to_forcing);
     // using the global time_on_fanout and itry_on_fanout
-    VTR_LOG("fanout low      time (s)        attemps  rebuild tree time (s)   finished sinks   rerouted sinks\n");
+    VTR_LOG("fanout low      time (s)        attempts  rebuild tree time (s)   finished sinks   rerouted sinks\n");
     for (size_t bin = 0; bin < time_on_fanout.size(); ++bin) {
         if (itry_on_fanout[bin]) { // avoid printing the many 0 bins
-            VTR_LOG("%4d      %14.3f   %12d     %14.3f   %12d  %12d\n",
+            VTR_LOG("%4d      %14.3f   %12d      %14.3f   %12d  %12d\n",
                     bin * fanout_per_bin,
                     time_on_fanout[bin],
                     itry_on_fanout[bin],
@@ -124,7 +124,7 @@ void time_on_fanout_analysis() {
 }
 
 void time_on_criticality_analysis() {
-    VTR_LOG("criticality low           time (s)        attemps\n");
+    VTR_LOG("criticality low           time (s)        attempts\n");
     for (size_t bin = 0; bin < time_on_criticality.size(); ++bin) {
         if (itry_on_criticality[bin]) { // avoid printing the many 0 bins
             VTR_LOG("%4f           %14.3f   %12d\n", bin * criticality_per_bin, time_on_criticality[bin], itry_on_criticality[bin]);
@@ -146,14 +146,14 @@ struct Congested_node_types {
 };
 
 void congestion_analysis() {
-#    if 0
+#if 0
 	// each type indexes into array which holds the congestion for that type
-	std::vector<int> congestion_per_type((size_t)NUM_RR_TYPES, 0);
+	std::vector<int> congestion_per_type((size_t)e_rr_type::NUM_RR_TYPES, 0);
 	// print out specific node information if congestion for type is low enough
 
 	int total_congestion = 0;
-	for (int inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
-		const t_rr_node& node = device_ctx.rr_nodes[inode];
+    for (RRNodeId rr_id : device_ctx.rr_graph.nodes()){
+		const t_rr_node& node = device_ctx.rr_nodes[(size_t)rr_id];
 		int congestion = node.get_occ() - node.get_capacity();
 
 		if (congestion > 0) {
@@ -164,7 +164,7 @@ void congestion_analysis() {
 
 	constexpr int specific_node_print_threshold = 5;
 	Congested_node_types congested;
-	for (int type = SOURCE; type < NUM_RR_TYPES; ++type) {
+	for (int type = SOURCE; type < e_rr_type::NUM_RR_TYPES; ++type) {
 		float congestion_percentage = (float)congestion_per_type[type] / (float) total_congestion * 100;
 		VTR_LOG(" %6s: %10.6f %\n", node_typename[type], congestion_percentage);
 		// nodes of that type need specific printing
@@ -175,15 +175,15 @@ void congestion_analysis() {
 	// specific print out each congested node
 	if (!congested.empty()) {
 		VTR_LOG("Specific congested nodes\nxlow ylow   type\n");
-		for (int inode = 0; inode < device_ctx.rr_nodes.size(); ++inode) {
-			const t_rr_node& node = device_ctx.rr_nodes[inode];
+        for (RRNodeId rr_id : device_ctx.rr_graph.nodes()){
+			const t_rr_node& node = device_ctx.rr_nodes[(size_t)rr_id];
 			if (congested.is_congested(node.type) && (node.get_occ() - node.get_capacity()) > 0) {
 				VTR_LOG("(%3d,%3d) %6s\n", node.get_xlow(), node.get_ylow(), node_typename[node.type]);
 			}
 		}
 	}
 	return;
-#    endif
+#endif
 }
 
 static clock_t conn_start_time;
@@ -214,6 +214,7 @@ void conn_start() {
     conn_start_time = clock();
 }
 void conn_finish(int src_rr, int sink_rr, float criticality) {
+    const auto& device_ctx = g_vpr_ctx.device();
     float route_time = static_cast<float>(clock() - conn_start_time) / CLOCKS_PER_SEC;
     if (route_time > worst_conn_time) {
         worst_src_rr = src_rr;
@@ -223,16 +224,17 @@ void conn_finish(int src_rr, int sink_rr, float criticality) {
     }
 
     VTR_LOG("%s to %s (crit: %f) took %f\n",
-            describe_rr_node(src_rr).c_str(),
-            describe_rr_node(sink_rr).c_str(),
+            describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, src_rr).c_str(),
+            describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, sink_rr).c_str(),
             criticality,
             route_time);
 }
 void net_finish() {
     if (worst_conn_time > 0.f) {
+        const auto& device_ctx = g_vpr_ctx.device();
         VTR_LOG("Worst conn was %s to %s (crit: %f) took %f\n",
-                describe_rr_node(worst_src_rr).c_str(),
-                describe_rr_node(worst_sink_rr).c_str(),
+                describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, worst_src_rr).c_str(),
+                describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, worst_sink_rr).c_str(),
                 worst_crit,
                 worst_conn_time);
     }

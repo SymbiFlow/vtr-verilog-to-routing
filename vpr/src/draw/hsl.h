@@ -1,9 +1,13 @@
-#ifndef HSL_H
-#define HSL_H
+#pragma once
+/**
+ * @file hsl.h
+ * 
+ * This file manages conversions between color (red, green, and blue) and hsl (hue, saturation, and luminesence)
+ */
 
 #ifndef NO_GRAPHICS
 
-#    include "ezgl/color.hpp"
+#include "ezgl/color.hpp"
 
 struct hsl {
     double h; // hue            a fraction between 0 and 1
@@ -16,5 +20,3 @@ hsl color2hsl(ezgl::color in);
 ezgl::color hsl2color(hsl in);
 
 #endif /* NO_GRAPHICS */
-
-#endif

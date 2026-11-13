@@ -1,5 +1,6 @@
-""" Paths for different VTR flow executables and resources """
+"""Paths for different VTR flow executables and resources"""
 
+import os
 import pathlib
 
 # Path to the root repository directory
@@ -7,13 +8,42 @@ root_path = pathlib.Path(__file__).absolute().parent.parent.parent.parent.parent
 
 # VTR Paths
 vtr_flow_path = root_path / "vtr_flow"
+vtr_primitives_path = root_path / "build" / "share" / "yosys" / "parmys" / "vtr_primitives.v"
 
 # ODIN paths
-odin_path = root_path / "ODIN_II"
-odin_exe_path = odin_path / "odin_II"
+odin_path = root_path / "odin_ii"
+odin_exe_path = odin_path / "odin_ii"
 odin_cfg_path = vtr_flow_path / "misc" / "basic_odin_config_split.xml"
 odin_verify_path = odin_path / "verify_odin.sh"
+odin_benchmark_path = odin_path / "regression_test" / "benchmark"
 odin_output_on_error_path = odin_path / "regression_test" / ".library" / "output_on_error.conf"
+
+# YOSYS paths
+yosys_path = root_path / "build" / "bin"
+yosys_exe_path = yosys_path / "yosys"
+yosys_tcl_path = vtr_flow_path / "misc" / "yosys"
+yosys_script_path = yosys_tcl_path / "synthesis.tcl"
+yosys_helper_script_path = yosys_tcl_path / "slang_filelist.tcl"
+yosys_slang_path = root_path / "build" / "share" / "yosys" / "plugins" / "slang.so"
+
+# Synlig paths
+synlig_path = root_path / "build" / "bin" / "synlig_install"
+synlig_exe_path = synlig_path / "usr" / "local" / "bin" / "synlig"
+
+# PARMYS paths
+parmys_path = root_path / "parmys"
+parmys_verify_path = parmys_path / "verify_parmys.sh"
+parmys_benchmark_path = parmys_path / "regression_test" / "benchmark"
+parmys_output_on_error_path = parmys_path / "regression_test" / ".library" / "output_on_error.conf"
+
+# MOSAIC paths
+mosaic_path = root_path / "mosaic"
+mosaic_misc_path = vtr_flow_path / "misc" / "mosaic"
+mosaic_template_path = mosaic_misc_path / "template"
+mosaic_script_path = mosaic_template_path / "synthesis.tcl"
+mosaic_fix_blif_script_path = mosaic_template_path / "fix_blif_for_vpr.py"
+wildebeest_path = mosaic_path / "wildebeest"
+mosaic_plugin_path = root_path / "build" / "share" / "yosys" / "plugins" / "mosaic.so"
 
 # ABC paths
 abc_path = root_path / "abc"
@@ -28,6 +58,8 @@ ace_extract_clk_from_blif_script_path = ace_path / "scripts" / "extract_clk_from
 # VPR paths
 vpr_path = root_path / "vpr"
 vpr_exe_path = vpr_path / "vpr"
+if os.name == "nt":
+    vpr_exe_path = root_path / "build" / "vpr" / "vpr.exe"
 
 # Flow scripts
 scripts_path = vtr_flow_path / "scripts"
@@ -49,3 +81,4 @@ restore_multiclock_latch_old_script_path = scripts_path / "restore_multiclock_la
 restore_multiclock_latch_script_path = scripts_path / "restore_multiclock_latch.pl"
 valgrind_supp = vpr_path / "valgrind.supp"
 lsan_supp = vpr_path / "lsan.supp"
+asan_supp = vpr_path / "asan.supp"

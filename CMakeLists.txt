@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.9)
+cmake_minimum_required(VERSION 3.16)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules)
 include(SupportCcache)
@@ -23,36 +23,57 @@ set(VTR_IPO_BUILD "auto" CACHE STRING "Should VTR be compiled with interprocedur
 set_property(CACHE VTR_IPO_BUILD PROPERTY STRINGS auto on off)
 
 #Allow the user to configure how much assertion checking should occur
-set(VTR_ASSERT_LEVEL "2" CACHE STRING "VTR assertion checking level. 0: no assertions, 1: fast assertions, 2: regular assertions, 3: additional assertions with noticable run-time overhead, 4: all assertions (including those with significant run-time cost)")
+set(VTR_ASSERT_LEVEL "2" CACHE STRING "VTR assertion checking level. 0: no assertions, 1: fast assertions, 2: regular assertions, 3: additional assertions with noticeable run-time overhead, 4: all assertions (including those with significant run-time cost)")
 set_property(CACHE VTR_ASSERT_LEVEL PROPERTY STRINGS 0 1 2 3 4)
 
-option(VTR_ENABLE_STRICT_COMPILE "Specifies whether compiler warnings should be treated as errors (e.g. -Werror)" OFF)
 option(VTR_ENABLE_SANITIZE "Enable address/leak/undefined-behaviour sanitizers (i.e. run-time error checking)" OFF)
 option(VTR_ENABLE_PROFILING "Enable performance profiler (gprof)" OFF)
 option(VTR_ENABLE_COVERAGE "Enable code coverage tracking (gcov)" OFF)
 option(VTR_ENABLE_DEBUG_LOGGING "Enable debug logging" OFF)
+option(VTR_ENABLE_VERBOSE "Enable increased debug verbosity" OFF)
+option(SPEC_CPU "Enable SPEC CPU v8 support" OFF)
 
 #Allow the user to decide whether to compile the graphics library
 set(VPR_USE_EZGL "auto" CACHE STRING "Specify whether vpr uses the graphics library")
 set_property(CACHE VPR_USE_EZGL PROPERTY STRINGS auto off on)
 option(VTR_ENABLE_CAPNPROTO "Enable capnproto binary serialization support in VPR." ON)
 
-#Allow the user to enable/disable VPR analytic placement
-#VPR option --enable_analytic_placer is also required for Analytic Placement
-option(VPR_ANALYTIC_PLACE "Enable analytic placement in VPR." ON)
+#Allow the user to decide whether to compile the server module
+option(VPR_USE_SERVER "Specify whether vpr enables the server mode" ON)
+
+option(VPR_ENABLE_INTERCHANGE "Enable FPGA interchange." ON)
+option(VPR_ENABLE_NOC_SAT_ROUTING "Enable NoC SAT routing." OFF)
 
 option(WITH_BLIFEXPLORER "Enable build with blifexplorer" OFF)
 
 option(WITH_ABC "Enable building abc" ON)
-option(WITH_ODIN "Enable building odin" ON)
+option(WITH_ODIN "Enable building odin" OFF)
 option(ODIN_DEBUG "Enable building odin with debug flags" OFF)
 option(ODIN_WARN "Enable building odin with extra warning flags" OFF)
 option(ODIN_COVERAGE "Enable building odin with coverage flags" OFF)
 option(ODIN_TIDY "Enable building odin with clang tidy" OFF)
 option(ODIN_SANITIZE "Enable building odin with sanitize flags" OFF)
 
-set(VTR_VERSION_MAJOR 8)
-set(VTR_VERSION_MINOR 1)
+# Yosys plugins. Yosys is built when WITH_PARMYS or WITH_MOSAIC is on.
+option(WITH_PARMYS "Enable Yosys as elaborator and parmys-plugin as partial mapper" ON)
+option(WITH_MOSAIC "Enable mosaic yosys plugin as an alternative synthesis frontend" ON)
+option(SLANG_SYSTEMVERILOG "Enable building and installing Yosys-Slang plugin for parsing SystemVerilog" ON)
+
+
+if(${WITH_PARMYS} OR ${WITH_MOSAIC})
+    set(WITH_YOSYS ON)
+else()
+    set(WITH_YOSYS OFF)
+endif()
+
+# slang is a yosys plugin, so skip it when neither frontend builds yosys
+if(${SLANG_SYSTEMVERILOG} AND NOT ${WITH_YOSYS})
+    message(WARNING "Yosys is not enabled, disabling Yosys-Slang as well.")
+    set(SLANG_SYSTEMVERILOG OFF)
+endif()
+
+set(VTR_VERSION_MAJOR 9)
+set(VTR_VERSION_MINOR 0)
 set(VTR_VERSION_PATCH 0)
 set(VTR_VERSION_PRERELEASE "dev")
 
@@ -78,13 +99,18 @@ message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 #
 add_definitions("-DVTR_ASSERT_LEVEL=${VTR_ASSERT_LEVEL}")
 
+if(WIN32)
+    # On Windows, <windows.h> defines min/max macros which conflict with std::min/std::max.
+    add_compile_definitions(NOMINMAX)
+endif()
+
 #Compiler flag configuration checks
 include(CheckCXXCompilerFlag)
 
 #
-# We require c++14 support
+# We require c++20 support
 #
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) #No compiler specific extensions
 
@@ -108,6 +134,10 @@ elseif(VTR_IPO_BUILD STREQUAL "auto")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
     else()
         message(STATUS "Building with IPO: off (auto)")
+        if(NOT MSVC)
+            set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fPIC")
+            set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fPIC")
+        endif()
     endif()
 else()
     message(STATUS "Building with IPO: off")
@@ -123,6 +153,10 @@ if(NOT MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g3")
 endif()
 
+if(NOT MSVC)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+endif()
 #
 # Warning flags
 #
@@ -144,7 +178,7 @@ else()
         "-Wcast-align"                  #Warn if a cast causes memory alignment changes
         "-Wshadow"                      #Warn if local variable shadows another variable
         "-Wformat=2"                    #Sanity checks for printf-like formatting
-        "-Wno-format-nonliteral"        # But don't worry about non-literal formtting (i.e. run-time printf format strings)
+        "-Wno-format-nonliteral"        # But don't worry about non-literal formatting (i.e. run-time printf format strings)
         "-Wlogical-op"                  #Checks for logical op when bit-wise expected
         "-Wmissing-declarations"        #Warn if a global function is defined with no declaration
         "-Wmissing-include-dirs"        #Warn if a user include directory is missing
@@ -162,10 +196,10 @@ else()
         "-Wduplicated-cond"             #Warn about identical conditions in if-else chains
         "-Wduplicated-branches"         #Warn when different branches of an if-else chain are equivalent
         "-Wnull-dereference"            #Warn about null pointer dereference execution paths
-        "-Wuninitialized"               #Warn about unitialized values
+        "-Wuninitialized"               #Warn about uninitialized values
         "-Winit-self"                   #Warn about self-initialization
         "-Wcatch-value=3"               #Warn when catch statements don't catch by reference
-        "-Wextra-semi"                  #Warn about redudnant semicolons
+        "-Wextra-semi"                  #Warn about redundant semicolons
         "-Wimplicit-fallthrough=3"      #Warn about case fallthroughs, but allow 'fallthrough' comments to suppress warnings
         #GCC-like optional
         #"-Wsuggest-final-types"         #Suggest where 'final' would help if specified on a type methods
@@ -200,12 +234,12 @@ endforeach()
 set(FLEX_BISON_WARN_SUPPRESS_FLAGS "")
 set(FLEX_BISON_WARN_SUPPRESS_FLAGS_TO_CHECK
     "-Wno-redundant-decls"  #Flex/bison generate code with redundant declarations
-    "-Wno-switch-default"   #Flex/bison generate switch statments w/o default cases
+    "-Wno-switch-default"   #Flex/bison generate switch statements w/o default cases
     "-Wno-unused-parameter" #Flex produces functions with unused params in re-entrant mode
     "-Wno-missing-declarations" #Flex misses some declarations in re-entrant mode
     "-Wimplicit-fallthrough=0" #Bison produces some cases with explicit
     "-Wno-sign-compare" #Flex generates code which performs some signed/unsigned comparison
-    "-Wno-null-dereference" #Bison produces some cases with potenetial null derefs
+    "-Wno-null-dereference" #Bison produces some cases with potential null derefs
     )
 foreach(flag ${FLEX_BISON_WARN_SUPPRESS_FLAGS_TO_CHECK})
     CHECK_CXX_COMPILER_FLAG(${flag} CXX_COMPILER_SUPPORTS_${flag})
@@ -215,18 +249,20 @@ foreach(flag ${FLEX_BISON_WARN_SUPPRESS_FLAGS_TO_CHECK})
     endif()
 endforeach()
 
-#Suppress IPO link warnings
-set(IPO_LINK_WARN_SUPRESS_FLAGS " ")
-set(IPO_LINK_WARN_SUPRESS_FLAGS_TO_CHECK
-    "-Wno-null-dereference"
-    )
-foreach(flag ${IPO_LINK_WARN_SUPRESS_FLAGS_TO_CHECK})
-    CHECK_CXX_COMPILER_FLAG(${flag} CXX_COMPILER_SUPPORTS_${flag})
-    if(CXX_COMPILER_SUPPORTS_${flag})
-        #Flag supported, so enable it
-        set(IPO_LINK_WARN_SUPRESS_FLAGS "${IPO_LINK_WARN_SUPRESS_FLAGS} ${flag}")
+# Suppress IPO link warnings.
+# When IPO is turned on, it sometimes leads to false positives for warnings
+# since it checks for warnings after some of the source files have been compiled.
+# We globally suppress these warnings here. Any CMake executable which is added
+# after this line will have these warnings suppressed at link time.
+if (CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    message(STATUS "IPO: Suppressing known VTR warnings.")
+    # These warning flags are GCC-specific; skip on Clang (e.g. Apple Clang on macOS)
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_link_options(-Wno-alloc-size-larger-than  # libarchfpga allocates C-style arrays using integers.
+                         -Wno-stringop-overflow       # EXTERNAL/capnproto has some string overflow warnings.
+                         )
     endif()
-endforeach()
+endif()
 
 #
 # Sanitizer flags
@@ -235,8 +271,13 @@ endforeach()
 set(SANITIZE_FLAGS "")
 if(VTR_ENABLE_SANITIZE)
     #Enable sanitizers
-    # -fuse-ld=gold force the gold linker to be used (required for sanitizers, but not enabled by default on some systems)
-    set(SANITIZE_FLAGS "-g -fsanitize=address -fsanitize=leak -fsanitize=undefined -fuse-ld=gold")
+    if(APPLE)
+        # macOS/Apple Clang: no -fuse-ld=gold, no -static-libasan, no leak sanitizer
+        set(SANITIZE_FLAGS "-g -fsanitize=address -fsanitize=undefined")
+    else()
+        # Linux/GCC: use gold linker and static libasan
+        set(SANITIZE_FLAGS "-g -fsanitize=address -fsanitize=leak -fuse-ld=gold -static-libasan")
+    endif()
     message(STATUS "SANITIZE_FLAGS: ${SANITIZE_FLAGS}")
 endif()
 
@@ -261,6 +302,10 @@ set(COVERAGE_FLAGS "")
 if(VTR_ENABLE_COVERAGE)
     #Enable gcov
     set(COVERAGE_FLAGS "-g -ftest-coverage -fprofile-arcs")
+    # List form for target_compile_options / target_link_options consumers
+    # (e.g. libs/EXTERNAL/CMakeLists.txt scopes these to the ezgl submodule
+    # — see DEF-013 in vpr_gui_defects_discovered.rst).
+    set(COVERAGE_FLAGS_LIST -g -ftest-coverage -fprofile-arcs)
     message(STATUS "Coverage Flags: ${COVERAGE_FLAGS}")
 endif()
 
@@ -272,6 +317,25 @@ if(VTR_ENABLE_DEBUG_LOGGING)
     #Enable gcov
     set(LOGGING_FLAGS "-DVTR_ENABLE_DEBUG_LOGGING")
     message(STATUS "Logging Flags: ${LOGGING_FLAGS}")
+endif()
+
+#
+# Increased debugging vebosity
+#
+set(EXTRA_FLAGS "")
+if(VTR_ENABLE_VERBOSE)
+    set(EXTRA_FLAGS "${EXTRA_FLAGS} -DVTR_ENABLE_DEBUG_LOGGING")
+    message(STATUS "Enabling increased debugging verbosity")
+endif()
+
+#
+# Build for SPEC CPU Benchmark v8
+#
+set(SPEC_CPU_FLAGS "")
+if(SPEC_CPU)
+    # Enable SPEC CPU flag - Maximizes portability of code and minimizing the variation in how much work we do on different platforms
+    set(SPEC_CPU_FLAGS "-DSPEC_CPU")
+    message(STATUS "SPEC CPU FLAGS: ${SPEC_CPU_FLAGS}")
 endif()
 
 if (CMAKE_MAKE_PROGRAM EQUAL "ninja" )
@@ -291,7 +355,7 @@ endif()
 # Set final flags
 #
 separate_arguments(
-    ADDITIONAL_FLAGS UNIX_COMMAND "${SANITIZE_FLAGS} ${PROFILING_FLAGS} ${COVERAGE_FLAGS} ${LOGGING_FLAGS} ${COLORED_COMPILE}"
+    ADDITIONAL_FLAGS UNIX_COMMAND "${SANITIZE_FLAGS} ${PROFILING_FLAGS} ${COVERAGE_FLAGS} ${LOGGING_FLAGS} ${COLORED_COMPILE} ${EXTRA_FLAGS} ${SPEC_CPU_FLAGS}"
     )
 separate_arguments(
     WARN_FLAGS UNIX_COMMAND "${WARN_FLAGS}"
@@ -307,12 +371,44 @@ add_custom_target(get_titan_benchmarks
     COMMENT "Downloading (~1GB) and extracting Titan benchmarks (~10GB) into VTR source tree.")
 
 #
+# NoC MLP Benchmarks
+#
+add_custom_target(get_noc_mlp_benchmarks
+        COMMAND ./vtr_flow/scripts/download_noc_mlp.py --vtr_flow_dir ./vtr_flow
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Downloading (~100MB) and extracting NoC MLP benchmarks (~3.2GB) into VTR source tree.")
+
+#
 # ISPD Benchmarks
 #
 add_custom_target(get_ispd_benchmarks
     COMMAND ./vtr_flow/scripts/download_ispd.py --vtr_flow_dir ./vtr_flow
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Downloading (~50MB) and extracting Titan benchmarks (~0.5GB) into VTR source tree.")
+
+#
+# SymbiFlow Benchmarks
+#
+add_custom_target(get_symbiflow_benchmarks
+    COMMAND ./vtr_flow/scripts/download_symbiflow.py --vtr_flow_dir ./vtr_flow
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Downloading (~100MB) and extracting SymbiFlow architectures (~2.7GB) into VTR source tree.")
+
+#
+# Zero ASIC RR Graph Files
+#
+add_custom_target(get_zeroasic_rr_graphs
+    COMMAND ./vtr_flow/scripts/get_zeroasic_rr_graphs.py --vtr_flow_dir ./vtr_flow
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Downloading (~2MB) and extracting Zero ASIC RR graphs (~0.1GB) into VTR source tree.")
+
+#
+# Flat Placement Files
+#
+add_custom_target(get_flat_placements
+    COMMAND ./vtr_flow/scripts/get_flat_placement_files.py --vtr_flow_dir ./vtr_flow
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Downloading (~5MB) and extracting Flat Placement Files (~0.1GB) into VTR source tree.")
 
 #
 # Unit Testing
@@ -334,32 +430,114 @@ enable_testing()
 set(READLINE_FOUND FALSE)
 
 
-# set VPR_USE_EZGL in the root of VTR to decide whether to add
-# subdirectory of graphics library, which prevents users
-# without gtk/x11 libraries installed to build. VPR_USE_EZGL is
-# being used in both the vpr CMakeLists and libs/EXTERNAL CMakeLists.
+# ===========================================================================
+# Qt6 discovery for the VPR GUI (EZGL).
 #
-# check if GTK and X11 are installed and turn on/off graphics
-if (VPR_USE_EZGL STREQUAL "auto")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(GTK3 QUIET gtk+-3.0)
-    pkg_check_modules(X11 QUIET x11)
+# Goal: a plain `make` finds Qt6 and the resulting binaries/tests run with NO
+# Qt environment variables (no LD_LIBRARY_PATH / QT_PLUGIN_PATH / QT6_HOME).
+#
+# Strategy:
+#   * Require Qt >= 6.9.3. QRhi is available since Qt 6.7, but even Qt 6.8 has
+#     rendering bugs, so the floor is set higher.
+#   * Prefer a SYSTEM Qt on the loader's default search path -> no RPATH needed
+#     and the binaries stay relocatable.
+#   * Otherwise fall back to a repo-local SDK provisioned by
+#     ./dev/ensure_qt6_sdk.sh (default <repo>/qt6, override with VTR_QT_PREFIX)
+#     and bake its lib dir into RPATH so the binaries still run with no env.
+#   * An explicit user CMAKE_PREFIX_PATH / Qt6_DIR always wins; RPATH is baked
+#     only when the chosen Qt lib dir is outside the default search path.
+# ===========================================================================
+set(VTR_QT_MIN_VERSION 6.9.3)
 
-    if(GTK3_FOUND AND X11_FOUND)
-        set(VPR_USE_EZGL "on")
-        message(STATUS "VPR Graphics: Enabled")
-    else()
-        set(VPR_USE_EZGL "off")
-        message(STATUS "VPR Graphics: Disabled (required libraries missing, on debian/ubuntu try: sudo apt install libgtk-3-dev libx11-dev")
+# We knowingly depend on Qt private modules (QRhi / QShader via Qt6::GuiPrivate
+# in libezgl), which have no binary/source-compatibility guarantees. Silence
+# Qt's private-module warning here -- it must be set BEFORE the first
+# find_package(Qt6) so it is in scope for every Qt package load downstream,
+# including the libezgl subdirectory's find_package(Qt6 ... GuiPrivate).
+set(QT_NO_PRIVATE_MODULE_WARNING ON)
+
+if (NOT VPR_USE_EZGL STREQUAL "off")
+    # 1) System-first probe. This honors any explicit user override
+    #    (env CMAKE_PREFIX_PATH / Qt6_DIR, or a cached Qt6_DIR): an explicit
+    #    path always gets first crack here.
+    find_package(Qt6 ${VTR_QT_MIN_VERSION} QUIET COMPONENTS Core Gui Widgets)
+
+    # 2) Fall back to the repo-local SDK whenever the probe above did not find a
+    #    suitable Qt -- regardless of any env/cache override. The override had
+    #    its chance in step 1; if it didn't resolve a usable Qt6, a validated
+    #    repo-local SDK (./dev/ensure_qt6_sdk.sh) should still be used rather
+    #    than failing the build. (Previously a stale `Qt6_DIR-NOTFOUND` cache
+    #    entry or an unrelated CMAKE_PREFIX_PATH in the environment would
+    #    suppress this fallback and abort even though a valid SDK was present.)
+    if (NOT Qt6_FOUND)
+        set(_vtr_qt_prefix "$ENV{VTR_QT_PREFIX}")
+        if (NOT _vtr_qt_prefix)
+            set(_vtr_qt_prefix "${CMAKE_SOURCE_DIR}/qt6")
+        endif()
+        # aqt layout: <prefix>/<version>/gcc_64.
+        file(GLOB _vtr_qt_candidates "${_vtr_qt_prefix}/*/gcc_64")
+        list(SORT _vtr_qt_candidates)
+        list(REVERSE _vtr_qt_candidates)   # newest version first
+        foreach(_home ${_vtr_qt_candidates})
+            if (EXISTS "${_home}/lib/cmake/Qt6")
+                list(PREPEND CMAKE_PREFIX_PATH "${_home}")
+                message(STATUS "VTR: using repo-local Qt6 SDK at ${_home}")
+                break()
+            endif()
+        endforeach()
+        find_package(Qt6 ${VTR_QT_MIN_VERSION} QUIET COMPONENTS Core Gui Widgets)
     endif()
 endif()
 
+# Resolve VPR_USE_EZGL (auto -> on/off) from whether a suitable Qt was found.
+# VPR_USE_EZGL decides whether the graphics subdirectory is added; it is read by
+# both the vpr CMakeLists and libs/EXTERNAL CMakeLists.
+if (VPR_USE_EZGL STREQUAL "auto")
+    if (Qt6_FOUND)
+        set(VPR_USE_EZGL "on")
+        message(STATUS "VPR Graphics: Enabled (Qt6 ${Qt6_VERSION} found)")
+    else()
+        set(VPR_USE_EZGL "off")
+        message(STATUS "VPR Graphics: Disabled (no Qt6 >= ${VTR_QT_MIN_VERSION}; run ./dev/ensure_qt6_sdk.sh or install a system Qt6 if its version >= ${VTR_QT_MIN_VERSION})")
+    endif()
+endif()
+
+# Graphics explicitly requested but no suitable Qt -> fail loudly.
+if (VPR_USE_EZGL STREQUAL "on" AND NOT Qt6_FOUND)
+    message(FATAL_ERROR
+        "VPR_USE_EZGL=on but Qt6 >= ${VTR_QT_MIN_VERSION} was not found. "
+        "Run ./dev/ensure_qt6_sdk.sh to provision a repo-local Qt SDK, install a "
+        "system Qt6 >= ${VTR_QT_MIN_VERSION}, or pass -DCMAKE_PREFIX_PATH=<qt-prefix>.")
+endif()
+
+# Custom Mode: bake the Qt lib dir into RPATH so binaries run with no env.
+# Skipped for a system Qt (already on the default loader search path).
+if (Qt6_FOUND AND VPR_USE_EZGL STREQUAL "on")
+    # Qt6_DIR is <prefix>/lib/cmake/Qt6 -> its grandparent is the Qt lib dir.
+    get_filename_component(_qt_libdir "${Qt6_DIR}/../.." ABSOLUTE)
+    if (_qt_libdir MATCHES "^/usr/" OR _qt_libdir MATCHES "^/lib/")
+        message(STATUS "VTR: system Qt6 at ${_qt_libdir} (no RPATH baking)")
+    else()
+        list(APPEND CMAKE_BUILD_RPATH "${_qt_libdir}")
+        list(APPEND CMAKE_INSTALL_RPATH "${_qt_libdir}")
+        message(STATUS "VTR: baking custom Qt6 lib dir into RPATH: ${_qt_libdir}")
+    endif()
+endif()
 
 #Add the various sub-projects
 if(${WITH_ABC})
     add_subdirectory(abc)
 endif()
+
 add_subdirectory(libs) #libs/CMakeLists.txt handles adding warnings flags to non-external libraries
+
+if(${WITH_PARMYS})
+    add_subdirectory(parmys)
+endif()
+
+if(${WITH_MOSAIC})
+    add_subdirectory(mosaic)
+endif()
 
 #Add the various tools
 add_compile_options(${WARN_FLAGS}) #Add warn flags for VTR tools
@@ -370,8 +548,9 @@ if(${WITH_ABC})
     add_subdirectory(ace2)
 endif()
 add_subdirectory(utils)
+
 if(${WITH_ODIN})
-    add_subdirectory(ODIN_II)
+    add_subdirectory(odin_ii)
     # blifexplorer depends on odin
     if(${WITH_BLIFEXPLORER})
         add_subdirectory(blifexplorer)
@@ -418,12 +597,14 @@ list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/libarchfpga")
 list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/libvtrutil")
 list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/libpugiutil")
 list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/liblog")
+list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/librrgraph")
 list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/libs/librtlnumber")
-list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/ODIN_II")
+list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/odin_ii")
+list(APPEND DIRS_TO_FORMAT_CPP "${CMAKE_CURRENT_SOURCE_DIR}/parmys/parmys-plugin")
 
 include(AutoClangFormat)
 
-list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/ODIN_II")
+list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/odin_ii")
 list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/ace2")
 list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/dev")
 list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/doc")
@@ -431,3 +612,9 @@ list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/vpr")
 list(APPEND DIRS_TO_FORMAT_PY "${CMAKE_CURRENT_SOURCE_DIR}/vtr_flow")
 
 include(AutoPyFormat)
+
+
+#
+# Python Environment setup
+#
+include(PyEnv)

@@ -12,7 +12,7 @@ import shutil
 import csv
 from datetime import datetime
 
-# generate images wihtout having a window appear
+# generate images without having a window appear
 import matplotlib
 
 matplotlib.use("Agg")
@@ -20,7 +20,6 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.path.expanduser("~/benchtracker/"))
 from util import get_trailing_num, immediate_subdir, natural_sort
-
 
 NO_PARSE = 1
 NO_OUTPUT = 2
@@ -30,7 +29,7 @@ def main():
     params = Params()
     parse_args(params)
 
-    (param_names, param_options) = read_parse_file(params)
+    param_names, param_options = read_parse_file(params)
 
     results = parse_output(param_names, params)
 
@@ -40,7 +39,7 @@ def main():
 def plot_results(param_names, param_options, results, params):
     """Create a directory based on key parameters and date and plot results vs iteration
 
-	Each of the parameter in results will receive its own plot, drawn by matplotlib"""
+    Each of the parameter in results will receive its own plot, drawn by matplotlib"""
 
     # circuit/run_num where run_num is one before the existing one
     directory = params.circuit
@@ -58,7 +57,6 @@ def plot_results(param_names, param_options, results, params):
         os.mkdir(directory)
 
     with Chdir(directory):
-
         export_results_to_csv(param_names, results, params)
 
         x = results.keys()
@@ -155,7 +153,16 @@ def annotate_last(lx, ly):
     if type(ly) == list:
         return
     plt.plot([lx, lx], [0, ly], linestyle="--")
-    plt.scatter([lx,], [ly,], 50, color="black")
+    plt.scatter(
+        [
+            lx,
+        ],
+        [
+            ly,
+        ],
+        50,
+        color="black",
+    )
 
     plt.annotate("({},{})".format(lx, ly), xy=(lx, ly), xytext=(0, 15), textcoords="offset points")
 
@@ -187,10 +194,10 @@ def export_results_to_csv(param_names, results, params):
 
 
 def parse_output(param_names, params):
-    """Return a dictionary mapping iteration -> [params...] 
-	
-	The index of the params list corresponds to the index of param_names
-	assuming consecutively matched groups"""
+    """Return a dictionary mapping iteration -> [params...]
+
+    The index of the params list corresponds to the index of param_names
+    assuming consecutively matched groups"""
     if not os.path.isfile(params.output_file):
         print("output file does not exist! ({})".format(params.output_file))
         sys.exit(NO_OUTPUT)
@@ -247,8 +254,7 @@ def parse_args(ns=None):
     """parse arguments from command line and return as namespace object"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent(
-            """\
+        description=textwrap.dedent("""\
             parse parameters per iteration for a given benchmark and plots them
             
         Benchmark:
@@ -269,8 +275,7 @@ def parse_args(ns=None):
 
         Parameter Options:
         	log - make the y-axis log scale for this parameter
-        	"""
-        ),
+        	"""),
         usage="%(prog)s <output_file> <circuit> <channel_width> [OPTIONS]",
     )
 

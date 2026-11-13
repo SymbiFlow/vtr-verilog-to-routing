@@ -7,11 +7,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <string_view>
 
+#include "cluster_legalizer.h"
+#include "clustered_netlist.h"
+#include "physical_types.h"
+#include "physical_types_util.h"
+#include "prepack.h"
+#include "vpr_context.h"
 #include "vtr_assert.h"
 #include "vtr_log.h"
-#include "vtr_digest.h"
-#include "vtr_memory.h"
 
 #include "vpr_types.h"
 #include "vpr_error.h"
@@ -20,151 +25,215 @@
 
 #include "globals.h"
 #include "atom_netlist.h"
-#include "pack_types.h"
-#include "cluster_router.h"
 #include "pb_type_graph.h"
 #include "output_clustering.h"
-#include "read_xml_arch_file.h"
 #include "vpr_utils.h"
 #include "pack.h"
 
-#define LINELENGTH 1024
-#define TAB_LENGTH 4
+static void print_clustering_stats_header();
+static void print_clustering_stats(std::string_view block_name, int num_block_type, float num_inputs_clocks, float num_outputs);
 
 /**************** Subroutine definitions ************************************/
 
-/* Prints out one cluster (clb).  Both the external pins and the *
- * internal connections are printed out.                         */
-static void print_stats() {
-    int ipin;
-    unsigned int itype;
-    int total_nets_absorbed;
-    std::unordered_map<AtomNetId, bool> nets_absorbed;
+static void count_clb_inputs_and_outputs_from_pb_route(const t_pb* pb,
+                                                       t_logical_block_type_ptr logical_block,
+                                                       int ipin,
+                                                       e_pin_type pin_type,
+                                                       std::unordered_map<AtomNetId, bool>& nets_absorbed,
+                                                       std::vector<int>& num_clb_inputs_used,
+                                                       std::vector<int>& num_clb_outputs_used) {
+    VTR_ASSERT_DEBUG(!pb->pb_route.empty());
+    int pb_graph_pin_id = get_pb_graph_node_pin_from_pb_graph_node(pb->pb_graph_node, ipin)->pin_count_in_cluster;
 
-    int *num_clb_types, *num_clb_inputs_used, *num_clb_outputs_used;
-
-    auto& device_ctx = g_vpr_ctx.device();
-    auto& atom_ctx = g_vpr_ctx.atom();
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-
-    num_clb_types = num_clb_inputs_used = num_clb_outputs_used = nullptr;
-
-    num_clb_types = (int*)vtr::calloc(device_ctx.logical_block_types.size(), sizeof(int));
-    num_clb_inputs_used = (int*)vtr::calloc(device_ctx.logical_block_types.size(), sizeof(int));
-    num_clb_outputs_used = (int*)vtr::calloc(device_ctx.logical_block_types.size(), sizeof(int));
-
-    for (auto net_id : atom_ctx.nlist.nets()) {
-        nets_absorbed[net_id] = true;
+    if (pb->pb_route.count(pb_graph_pin_id)) {
+        //Pin used
+        AtomNetId atom_net_id = pb->pb_route[pb_graph_pin_id].atom_net_id;
+        if (atom_net_id) {
+            nets_absorbed[atom_net_id] = false;
+            if (pin_type == e_pin_type::RECEIVER) {
+                num_clb_inputs_used[logical_block->index]++;
+            } else if (pin_type == e_pin_type::DRIVER) {
+                num_clb_outputs_used[logical_block->index]++;
+            }
+        }
     }
+}
 
-    /* Counters used only for statistics purposes. */
-
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-        auto logical_block = cluster_ctx.clb_nlist.block_type(blk_id);
-        auto physical_tile = pick_best_physical_type(logical_block);
-        for (ipin = 0; ipin < logical_block->pb_type->num_pins; ipin++) {
+static void count_stats_from_legalizer(const ClusterLegalizer& cluster_legalizer,
+                                       std::unordered_map<AtomNetId, bool>& nets_absorbed,
+                                       std::vector<int>& num_clb_types,
+                                       std::vector<int>& num_clb_inputs_used,
+                                       std::vector<int>& num_clb_outputs_used) {
+    for (LegalizationClusterId cluster_id : cluster_legalizer.clusters()) {
+        t_logical_block_type_ptr logical_block = cluster_legalizer.get_cluster_type(cluster_id);
+        t_physical_tile_type_ptr physical_tile = pick_physical_type(logical_block);
+        const t_pb* pb = cluster_legalizer.get_cluster_pb(cluster_id);
+        for (int ipin = 0; ipin < logical_block->pb_type->num_pins; ipin++) {
             int physical_pin = get_physical_pin(physical_tile, logical_block, ipin);
-            auto pin_class = physical_tile->pin_class[physical_pin];
-            auto pin_class_inf = physical_tile->class_inf[pin_class];
+            e_pin_type pin_type = get_pin_type_from_pin_physical_num(physical_tile, physical_pin);
 
-            if (cluster_ctx.clb_nlist.block_pb(blk_id)->pb_route.empty()) {
-                ClusterNetId clb_net_id = cluster_ctx.clb_nlist.block_net(blk_id, ipin);
+            if (pb->pb_route.empty())
+                continue;
+            count_clb_inputs_and_outputs_from_pb_route(pb,
+                                                       logical_block,
+                                                       ipin,
+                                                       pin_type,
+                                                       nets_absorbed,
+                                                       num_clb_inputs_used,
+                                                       num_clb_outputs_used);
+        }
+        num_clb_types[logical_block->index]++;
+    }
+}
+
+static void count_stats_from_netlist(std::unordered_map<AtomNetId, bool>& nets_absorbed,
+                                     std::vector<int>& num_clb_types,
+                                     std::vector<int>& num_clb_inputs_used,
+                                     std::vector<int>& num_clb_outputs_used) {
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
+    const ClusteredNetlist& clb_nlist = g_vpr_ctx.clustering().clb_nlist;
+
+    for (ClusterBlockId blk_id : clb_nlist.blocks()) {
+        t_logical_block_type_ptr logical_block = clb_nlist.block_type(blk_id);
+        t_physical_tile_type_ptr physical_tile = pick_physical_type(logical_block);
+        for (int ipin = 0; ipin < logical_block->pb_type->num_pins; ipin++) {
+            int physical_pin = get_physical_pin(physical_tile, logical_block, ipin);
+            e_pin_type pin_type = get_pin_type_from_pin_physical_num(physical_tile, physical_pin);
+
+            if (!clb_nlist.block_pb(blk_id)->pb_route.empty()) {
+                count_clb_inputs_and_outputs_from_pb_route(clb_nlist.block_pb(blk_id),
+                                                           logical_block,
+                                                           ipin,
+                                                           pin_type,
+                                                           nets_absorbed,
+                                                           num_clb_inputs_used,
+                                                           num_clb_outputs_used);
+            } else {
+                ClusterNetId clb_net_id = clb_nlist.block_net(blk_id, ipin);
                 if (clb_net_id != ClusterNetId::INVALID()) {
-                    auto net_id = atom_ctx.lookup.atom_net(clb_net_id);
+                    AtomNetId net_id = atom_ctx.lookup().atom_net(clb_net_id);
                     VTR_ASSERT(net_id);
                     nets_absorbed[net_id] = false;
 
-                    if (pin_class_inf.type == RECEIVER) {
+                    if (pin_type == e_pin_type::RECEIVER) {
                         num_clb_inputs_used[logical_block->index]++;
-                    } else if (pin_class_inf.type == DRIVER) {
+                    } else if (pin_type == e_pin_type::DRIVER) {
                         num_clb_outputs_used[logical_block->index]++;
-                    }
-                }
-            } else {
-                int pb_graph_pin_id = get_pb_graph_node_pin_from_block_pin(blk_id, ipin)->pin_count_in_cluster;
-
-                const t_pb* pb = cluster_ctx.clb_nlist.block_pb(blk_id);
-                if (pb->pb_route.count(pb_graph_pin_id)) {
-                    //Pin used
-                    auto atom_net_id = pb->pb_route[pb_graph_pin_id].atom_net_id;
-                    if (atom_net_id) {
-                        nets_absorbed[atom_net_id] = false;
-                        if (pin_class_inf.type == RECEIVER) {
-                            num_clb_inputs_used[logical_block->index]++;
-                        } else if (pin_class_inf.type == DRIVER) {
-                            num_clb_outputs_used[logical_block->index]++;
-                        }
                     }
                 }
             }
         }
         num_clb_types[logical_block->index]++;
     }
+}
 
-    for (itype = 0; itype < device_ctx.logical_block_types.size(); itype++) {
+/* Prints out one cluster (clb).  Both the external pins and the *
+ * internal connections are printed out.                         */
+static void print_stats(const ClusterLegalizer* cluster_legalizer_ptr, bool from_legalizer) {
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().netlist();
+
+    std::vector<int> num_clb_types(device_ctx.logical_block_types.size(), 0);
+    std::vector<int> num_clb_inputs_used(device_ctx.logical_block_types.size(), 0);
+    std::vector<int> num_clb_outputs_used(device_ctx.logical_block_types.size(), 0);
+
+    std::unordered_map<AtomNetId, bool> nets_absorbed;
+    for (AtomNetId net_id : atom_nlist.nets()) {
+        nets_absorbed[net_id] = true;
+    }
+
+    /* Counters used only for statistics purposes. */
+    if (from_legalizer) {
+        VTR_ASSERT(cluster_legalizer_ptr != nullptr);
+        count_stats_from_legalizer(*cluster_legalizer_ptr, nets_absorbed, num_clb_types, num_clb_inputs_used, num_clb_outputs_used);
+    } else {
+        VTR_ASSERT(cluster_legalizer_ptr == nullptr);
+        count_stats_from_netlist(nets_absorbed, num_clb_types, num_clb_inputs_used, num_clb_outputs_used);
+    }
+
+    print_clustering_stats_header();
+
+    for (unsigned int itype = 0; itype < device_ctx.logical_block_types.size(); itype++) {
         if (num_clb_types[itype] == 0) {
-            VTR_LOG("\t%s: # blocks: %d, average # input + clock pins used: %g, average # output pins used: %g\n",
-                    device_ctx.logical_block_types[itype].name, num_clb_types[itype], 0.0, 0.0);
+            print_clustering_stats(device_ctx.logical_block_types[itype].name, num_clb_types[itype], 0.0, 0.0);
         } else {
-            VTR_LOG("\t%s: # blocks: %d, average # input + clock pins used: %g, average # output pins used: %g\n",
-                    device_ctx.logical_block_types[itype].name, num_clb_types[itype],
-                    (float)num_clb_inputs_used[itype] / (float)num_clb_types[itype],
-                    (float)num_clb_outputs_used[itype] / (float)num_clb_types[itype]);
+            print_clustering_stats(device_ctx.logical_block_types[itype].name, num_clb_types[itype],
+                                   (float)num_clb_inputs_used[itype] / (float)num_clb_types[itype],
+                                   (float)num_clb_outputs_used[itype] / (float)num_clb_types[itype]);
         }
     }
 
-    total_nets_absorbed = 0;
-    for (auto net_id : atom_ctx.nlist.nets()) {
+    int total_nets_absorbed = 0;
+    for (AtomNetId net_id : atom_nlist.nets()) {
         if (nets_absorbed[net_id] == true) {
             total_nets_absorbed++;
         }
     }
     VTR_LOG("Absorbed logical nets %d out of %d nets, %d nets not absorbed.\n",
-            total_nets_absorbed, (int)atom_ctx.nlist.nets().size(), (int)atom_ctx.nlist.nets().size() - total_nets_absorbed);
-    free(num_clb_types);
-    free(num_clb_inputs_used);
-    free(num_clb_outputs_used);
+            total_nets_absorbed, (int)atom_nlist.nets().size(), (int)atom_nlist.nets().size() - total_nets_absorbed);
     /* TODO: print more stats */
 }
 
+static void print_clustering_stats_header() {
+    VTR_LOG("Final Clustering Statistics: \n");
+    VTR_LOG("----------   --------   ------------------------------------   --------------------------\n");
+    VTR_LOG("Block Type   # Blocks   Avg. # of input clocks and pins used   Avg. # of output pins used\n");
+    VTR_LOG("----------   --------   ------------------------------------   --------------------------\n");
+}
+
+static void print_clustering_stats(std::string_view block_name, int num_block_type, float num_inputs_clocks, float num_outputs) {
+    VTR_LOG(
+        "%10s   "
+        "%8d   "
+        "%36g   "
+        "%26g   ",
+        block_name.data(),
+        num_block_type,
+        num_inputs_clocks,
+        num_outputs);
+
+    VTR_LOG("\n");
+
+    fflush(stdout);
+}
+
 static const char* clustering_xml_net_text(AtomNetId net_id) {
-    /* This routine prints out the atom_ctx.nlist net name (or open).
-     * net_num is the index of the atom_ctx.nlist net to be printed
+    /* This routine prints out the atom_ctx.netlist() net name (or open).
+     * net_num is the index of the atom_ctx.netlist() net to be printed
      */
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().netlist();
 
     if (!net_id) {
         return "open";
     } else {
-        auto& atom_ctx = g_vpr_ctx.atom();
-        return atom_ctx.nlist.net_name(net_id).c_str();
+        return atom_nlist.net_name(net_id).c_str();
     }
 }
 
-static std::string clustering_xml_interconnect_text(t_logical_block_type_ptr type, const IntraLbPbPinLookup& pb_graph_pin_lookup_from_index_by_type, int inode, const t_pb_routes& pb_route) {
+static std::string clustering_xml_interconnect_text(t_logical_block_type_ptr type, int inode, const t_pb_routes& pb_route) {
     if (!pb_route.count(inode) || !pb_route[inode].atom_net_id) {
         return "open";
     }
 
     int prev_node = pb_route[inode].driver_pb_pin_id;
     int prev_edge;
-    if (prev_node == OPEN) {
+    if (prev_node == UNDEFINED) {
         /* No previous driver implies that this is either a top-level input pin or a primitive output pin */
-        const t_pb_graph_pin* cur_pin = pb_graph_pin_lookup_from_index_by_type.pb_gpin(type->index, inode);
-        VTR_ASSERT(cur_pin->parent_node->pb_type->parent_mode == nullptr || (cur_pin->is_primitive_pin() && cur_pin->port->type == OUT_PORT));
+        const t_pb_graph_pin* cur_pin = type->pb_graph_pin(inode);
+        VTR_ASSERT(cur_pin->parent_node->pb_type->is_root() || (cur_pin->is_primitive_pin() && cur_pin->port->type == OUT_PORT));
         return clustering_xml_net_text(pb_route[inode].atom_net_id);
     } else {
-        const t_pb_graph_pin* cur_pin = pb_graph_pin_lookup_from_index_by_type.pb_gpin(type->index, inode);
-        const t_pb_graph_pin* prev_pin = pb_graph_pin_lookup_from_index_by_type.pb_gpin(type->index, prev_node);
+        const t_pb_graph_pin* cur_pin = type->pb_graph_pin(inode);
+        const t_pb_graph_pin* prev_pin = type->pb_graph_pin(prev_node);
 
         for (prev_edge = 0; prev_edge < prev_pin->num_output_edges; prev_edge++) {
-            VTR_ASSERT(prev_pin->output_edges[prev_edge]->num_output_pins == 1);
-            if (prev_pin->output_edges[prev_edge]->output_pins[0]->pin_count_in_cluster == inode) {
+            if (prev_pin->output_edges[prev_edge]->output_pin()->pin_count_in_cluster == inode) {
                 break;
             }
         }
         VTR_ASSERT(prev_edge < prev_pin->num_output_edges);
 
-        char* name = prev_pin->output_edges[prev_edge]->interconnect->name;
+        const char* name = prev_pin->output_edges[prev_edge]->interconnect->name.c_str();
         if (prev_pin->port->parent_pb_type->depth
             >= cur_pin->port->parent_pb_type->depth) {
             /* Connections from siblings or children should have an explicit index, connections from parent does not need an explicit index */
@@ -187,7 +256,7 @@ static std::string clustering_xml_interconnect_text(t_logical_block_type_ptr typ
  * cannot simply be marked open as that would lose the routing information. Instead, a block must be
  * output that reflects the routing resources used. This function handles both cases.
  */
-static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_block_type_ptr type, const IntraLbPbPinLookup& pb_graph_pin_lookup_from_index_by_type, t_pb_graph_node* pb_graph_node, int pb_index, bool is_used, const t_pb_routes& pb_route) {
+static void clustering_xml_open_block(pugi::xml_node& parent_node, t_logical_block_type_ptr type, t_pb_graph_node* pb_graph_node, int pb_index, bool is_used, const t_pb_routes& pb_route) {
     int i, j, k, m;
     const t_pb_type *pb_type, *child_pb_type;
     t_mode* mode = nullptr;
@@ -210,11 +279,11 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
             if (pb_type->ports[i].type == OUT_PORT) {
                 VTR_ASSERT(!pb_type->ports[i].is_clock);
                 for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                    const t_pb_graph_pin* pin = &pb_graph_node->output_pins[port_index][j];
+                    const t_pb_graph_pin* pin = &pb_graph_node->pins_by_output_port[port_index][j];
                     node_index = pin->pin_count_in_cluster;
-                    if (pb_type->num_modes > 0 && pb_route.count(node_index) && pb_route[node_index].atom_net_id) {
+                    if (!pb_type->is_primitive() && pb_route.count(node_index) && pb_route[node_index].atom_net_id) {
                         prev_node = pb_route[node_index].driver_pb_pin_id;
-                        const t_pb_graph_pin* prev_pin = pb_graph_pin_lookup_from_index_by_type.pb_gpin(type->index, prev_node);
+                        const t_pb_graph_pin* prev_pin = type->pb_graph_pin(prev_node);
                         const t_pb_graph_edge* edge = get_edge_between_pins(prev_pin, pin);
 
                         VTR_ASSERT(edge != nullptr);
@@ -224,7 +293,7 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
                                             "Differing modes for block.  Got %s previously and %s for edge %d (interconnect %s).",
                                             mode->name, pb_type->modes[mode_of_edge].name,
                                             port_index,
-                                            edge->interconnect->name);
+                                            edge->interconnect->name.c_str());
                         }
                         VTR_ASSERT(mode == nullptr || &pb_type->modes[mode_of_edge] == mode);
                         mode = &pb_type->modes[mode_of_edge];
@@ -249,12 +318,12 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
 
                 std::vector<std::string> pins;
                 for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                    node_index = pb_graph_node->input_pins[port_index][j].pin_count_in_cluster;
+                    node_index = pb_graph_node->pins_by_input_port[port_index][j].pin_count_in_cluster;
 
-                    if (pb_type->parent_mode == nullptr) {
+                    if (pb_type->is_root()) {
                         pins.push_back(clustering_xml_net_text(pb_route[node_index].atom_net_id));
                     } else {
-                        pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                        pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
                     }
                 }
                 port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
@@ -273,8 +342,8 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
                 port_node.append_attribute("name") = pb_graph_node->pb_type->ports[i].name;
                 std::vector<std::string> pins;
                 for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                    node_index = pb_graph_node->output_pins[port_index][j].pin_count_in_cluster;
-                    pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                    node_index = pb_graph_node->pins_by_output_port[port_index][j].pin_count_in_cluster;
+                    pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
                 }
                 port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
                 port_index++;
@@ -291,11 +360,11 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
 
                 std::vector<std::string> pins;
                 for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                    node_index = pb_graph_node->clock_pins[port_index][j].pin_count_in_cluster;
-                    if (pb_type->parent_mode == nullptr) {
+                    node_index = pb_graph_node->pins_by_clock_port[port_index][j].pin_count_in_cluster;
+                    if (pb_type->is_root()) {
                         pins.push_back(clustering_xml_net_text(pb_route[node_index].atom_net_id));
                     } else {
-                        pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                        pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
                     }
                 }
                 port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
@@ -303,7 +372,7 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
             }
         }
 
-        if (pb_type->num_modes > 0) {
+        if (!pb_type->is_primitive()) {
             for (i = 0; i < mode->num_pb_type_children; i++) {
                 child_pb_type = &mode->pb_type_children[i];
                 for (j = 0; j < mode->pb_type_children[i].num_pb; j++) {
@@ -312,7 +381,7 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
                     for (k = 0; k < child_pb_type->num_ports && !is_used; k++) {
                         if (child_pb_type->ports[k].type == OUT_PORT) {
                             for (m = 0; m < child_pb_type->ports[k].num_pins; m++) {
-                                node_index = pb_graph_node->child_pb_graph_nodes[mode_of_edge][i][j].output_pins[port_index][m].pin_count_in_cluster;
+                                node_index = pb_graph_node->child_pb_graph_nodes[mode_of_edge][i][j].pins_by_output_port[port_index][m].pin_count_in_cluster;
                                 if (pb_route.count(node_index) && pb_route[node_index].atom_net_id) {
                                     is_used = true;
                                     break;
@@ -321,7 +390,7 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
                             port_index++;
                         }
                     }
-                    clustering_xml_open_block(block_node, type, pb_graph_pin_lookup_from_index_by_type,
+                    clustering_xml_open_block(block_node, type,
                                               &pb_graph_node->child_pb_graph_nodes[mode_of_edge][i][j],
                                               j, is_used, pb_route);
                 }
@@ -331,7 +400,7 @@ static void clustering_xml_open_block(pugi::xml_node parent_node, t_logical_bloc
 }
 
 /* outputs a block that is used (i.e. has configuration) and all of its child blocks */
-static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_type_ptr type, const IntraLbPbPinLookup& pb_graph_pin_lookup_from_index_by_type, t_pb* pb, int pb_index, const t_pb_routes& pb_route) {
+static void clustering_xml_block(pugi::xml_node& parent_node, t_logical_block_type_ptr type, t_pb* pb, int pb_index, const t_pb_routes& pb_route) {
     int i, j, k, m;
     const t_pb_type *pb_type, *child_pb_type;
     t_pb_graph_node* pb_graph_node;
@@ -344,25 +413,25 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
     mode = &pb_type->modes[pb->mode];
 
     pugi::xml_node block_node = parent_node.append_child("block");
-    block_node.append_attribute("name") = pb->name;
+    block_node.append_attribute("name") = pb->name.c_str();
     block_node.append_attribute("instance") = vtr::string_fmt("%s[%d]", pb_type->name, pb_index).c_str();
 
-    if (pb_type->num_modes > 0) {
+    if (!pb_type->is_primitive()) {
         block_node.append_attribute("mode") = mode->name;
     } else {
-        const auto& atom_ctx = g_vpr_ctx.atom();
-        AtomBlockId atom_blk = atom_ctx.nlist.find_block(pb->name);
+        const AtomContext& atom_ctx = g_vpr_ctx.atom();
+        AtomBlockId atom_blk = atom_ctx.netlist().find_block(pb->name);
         VTR_ASSERT(atom_blk);
 
         pugi::xml_node attrs_node = block_node.append_child("attributes");
-        for (const auto& attr : atom_ctx.nlist.block_attrs(atom_blk)) {
+        for (const std::pair<const std::string, std::string>& attr : atom_ctx.netlist().block_attrs(atom_blk)) {
             pugi::xml_node attr_node = attrs_node.append_child("attribute");
             attr_node.append_attribute("name") = attr.first.c_str();
             attr_node.text().set(attr.second.c_str());
         }
 
         pugi::xml_node params_node = block_node.append_child("parameters");
-        for (const auto& param : atom_ctx.nlist.block_params(atom_blk)) {
+        for (const std::pair<const std::string, std::string>& param : atom_ctx.netlist().block_params(atom_blk)) {
             pugi::xml_node param_node = params_node.append_child("parameter");
             param_node.append_attribute("name") = param.first.c_str();
             param_node.text().set(param.second.c_str());
@@ -379,31 +448,31 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
 
             std::vector<std::string> pins;
             for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                node_index = pb->pb_graph_node->input_pins[port_index][j].pin_count_in_cluster;
+                node_index = pb->pb_graph_node->pins_by_input_port[port_index][j].pin_count_in_cluster;
 
-                if (pb_type->parent_mode == nullptr) {
+                if (pb_type->is_root()) {
                     if (pb_route.count(node_index)) {
                         pins.push_back(clustering_xml_net_text(pb_route[node_index].atom_net_id));
                     } else {
                         pins.push_back(clustering_xml_net_text(AtomNetId::INVALID()));
                     }
                 } else {
-                    pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                    pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
                 }
             }
             port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
 
             //The cluster router may have rotated equivalent pins (e.g. LUT inputs),
-            //record the resulting rotation here so it can be unambigously mapped
+            //record the resulting rotation here so it can be unambiguously mapped
             //back to the atom netlist
-            if (pb_type->ports[i].equivalent != PortEquivalence::NONE && pb_type->parent_mode != nullptr && pb_type->num_modes == 0) {
+            if (pb_type->ports[i].equivalent != PortEquivalence::NONE && pb_type->parent_mode != nullptr && pb_type->is_primitive()) {
                 //This is a primitive with equivalent inputs
 
-                auto& atom_ctx = g_vpr_ctx.atom();
-                AtomBlockId atom_blk = atom_ctx.nlist.find_block(pb->name);
+                const AtomContext& atom_ctx = g_vpr_ctx.atom();
+                AtomBlockId atom_blk = atom_ctx.netlist().find_block(pb->name);
                 VTR_ASSERT(atom_blk);
 
-                AtomPortId atom_port = atom_ctx.nlist.find_atom_port(atom_blk, pb_type->ports[i].model_port);
+                AtomPortId atom_port = atom_ctx.netlist().find_atom_port(atom_blk, pb_type->ports[i].model_port);
 
                 if (atom_port) { //Port exists (some LUTs may have no input and hence no port in the atom netlist)
 
@@ -414,7 +483,7 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
                     std::vector<std::string> pin_map_list;
 
                     for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                        node_index = pb->pb_graph_node->input_pins[port_index][j].pin_count_in_cluster;
+                        node_index = pb->pb_graph_node->pins_by_input_port[port_index][j].pin_count_in_cluster;
 
                         if (pb_route.count(node_index)) {
                             AtomNetId atom_net = pb_route[node_index].atom_net_id;
@@ -423,10 +492,10 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
 
                             //This physical pin is in use, find the original pin in the atom netlist
                             AtomPinId orig_pin;
-                            for (AtomPinId atom_pin : atom_ctx.nlist.port_pins(atom_port)) {
+                            for (AtomPinId atom_pin : atom_ctx.netlist().port_pins(atom_port)) {
                                 if (recorded_pins.count(atom_pin)) continue; //Don't add pins twice
 
-                                AtomNetId atom_pin_net = atom_ctx.nlist.pin_net(atom_pin);
+                                AtomNetId atom_pin_net = atom_ctx.netlist().pin_net(atom_pin);
 
                                 if (atom_pin_net == atom_net) {
                                     recorded_pins.insert(atom_pin);
@@ -437,7 +506,7 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
 
                             VTR_ASSERT(orig_pin);
                             //The physical pin j, maps to a pin in the atom netlist
-                            pin_map_list.push_back(vtr::string_fmt("%d", atom_ctx.nlist.pin_port_bit(orig_pin)));
+                            pin_map_list.push_back(vtr::string_fmt("%d", atom_ctx.netlist().pin_port_bit(orig_pin)));
                         } else {
                             //The physical pin is disconnected
                             pin_map_list.push_back("open");
@@ -462,8 +531,8 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
             port_node.append_attribute("name") = pb_graph_node->pb_type->ports[i].name;
             std::vector<std::string> pins;
             for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                node_index = pb->pb_graph_node->output_pins[port_index][j].pin_count_in_cluster;
-                pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                node_index = pb->pb_graph_node->pins_by_output_port[port_index][j].pin_count_in_cluster;
+                pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
             }
             port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
             port_index++;
@@ -480,15 +549,15 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
 
             std::vector<std::string> pins;
             for (j = 0; j < pb_type->ports[i].num_pins; j++) {
-                node_index = pb->pb_graph_node->clock_pins[port_index][j].pin_count_in_cluster;
-                if (pb_type->parent_mode == nullptr) {
+                node_index = pb->pb_graph_node->pins_by_clock_port[port_index][j].pin_count_in_cluster;
+                if (pb_type->is_root()) {
                     if (pb_route.count(node_index)) {
                         pins.push_back(clustering_xml_net_text(pb_route[node_index].atom_net_id));
                     } else {
                         pins.push_back(clustering_xml_net_text(AtomNetId::INVALID()));
                     }
                 } else {
-                    pins.push_back(clustering_xml_interconnect_text(type, pb_graph_pin_lookup_from_index_by_type, node_index, pb_route));
+                    pins.push_back(clustering_xml_interconnect_text(type, node_index, pb_route));
                 }
             }
             port_node.text().set(vtr::join(pins.begin(), pins.end(), " ").c_str());
@@ -496,12 +565,12 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
         }
     }
 
-    if (pb_type->num_modes > 0) {
+    if (!pb_type->is_primitive()) {
         for (i = 0; i < mode->num_pb_type_children; i++) {
             for (j = 0; j < mode->pb_type_children[i].num_pb; j++) {
                 /* If child pb is not used but routing is used, I must print things differently */
-                if ((pb->child_pbs[i] != nullptr) && (pb->child_pbs[i][j].name != nullptr)) {
-                    clustering_xml_block(block_node, type, pb_graph_pin_lookup_from_index_by_type, &pb->child_pbs[i][j], j, pb_route);
+                if ((pb->child_pbs[i] != nullptr) && (!pb->child_pbs[i][j].name.empty())) {
+                    clustering_xml_block(block_node, type, &pb->child_pbs[i][j], j, pb_route);
                 } else {
                     is_used = false;
                     child_pb_type = &mode->pb_type_children[i];
@@ -510,7 +579,7 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
                     for (k = 0; k < child_pb_type->num_ports && !is_used; k++) {
                         if (child_pb_type->ports[k].type == OUT_PORT) {
                             for (m = 0; m < child_pb_type->ports[k].num_pins; m++) {
-                                node_index = pb_graph_node->child_pb_graph_nodes[pb->mode][i][j].output_pins[port_index][m].pin_count_in_cluster;
+                                node_index = pb_graph_node->child_pb_graph_nodes[pb->mode][i][j].pins_by_output_port[port_index][m].pin_count_in_cluster;
                                 if (pb_route.count(node_index) && pb_route[node_index].atom_net_id) {
                                     is_used = true;
                                     break;
@@ -519,7 +588,7 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
                             port_index++;
                         }
                     }
-                    clustering_xml_open_block(block_node, type, pb_graph_pin_lookup_from_index_by_type,
+                    clustering_xml_open_block(block_node, type,
                                               &pb_graph_node->child_pb_graph_nodes[pb->mode][i][j],
                                               j, is_used, pb_route);
                 }
@@ -528,22 +597,38 @@ static void clustering_xml_block(pugi::xml_node parent_node, t_logical_block_typ
     }
 }
 
+static void clustering_xml_blocks_from_legalizer(pugi::xml_node& block_node,
+                                                 ClusterLegalizer& cluster_legalizer) {
+    // Finalize the cluster legalization by ensuring that each cluster pb has
+    // its pb_route calculated.
+    cluster_legalizer.finalize();
+    for (LegalizationClusterId cluster_id : cluster_legalizer.clusters()) {
+        t_pb* pb = cluster_legalizer.get_cluster_pb(cluster_id);
+        clustering_xml_block(block_node,
+                             cluster_legalizer.get_cluster_type(cluster_id),
+                             pb,
+                             size_t(cluster_id),
+                             pb->pb_route);
+    }
+}
+
+static void clustering_xml_blocks_from_netlist(pugi::xml_node& block_node) {
+    const ClusteredNetlist& clb_nlist = g_vpr_ctx.clustering().clb_nlist;
+    for (ClusterBlockId blk_id : clb_nlist.blocks()) {
+        /* TODO: Must do check that total CLB pins match top-level pb pins, perhaps check this earlier? */
+        clustering_xml_block(block_node,
+                             clb_nlist.block_type(blk_id),
+                             clb_nlist.block_pb(blk_id),
+                             size_t(blk_id),
+                             clb_nlist.block_pb(blk_id)->pb_route);
+    }
+}
+
 /* This routine dumps out the output netlist in a format suitable for  *
  * input to vpr. This routine also dumps out the internal structure of *
  * the cluster, in essentially a graph based format.                   */
-void output_clustering(const vtr::vector<ClusterBlockId, std::vector<t_intra_lb_net>*>& intra_lb_routing, bool global_clocks, const std::unordered_set<AtomNetId>& is_clock, const std::string& architecture_id, const char* out_fname, bool skip_clustering) {
-    auto& device_ctx = g_vpr_ctx.device();
-    auto& atom_ctx = g_vpr_ctx.atom();
-    auto& cluster_ctx = g_vpr_ctx.mutable_clustering();
-
-    if (!intra_lb_routing.empty()) {
-        VTR_ASSERT(intra_lb_routing.size() == cluster_ctx.clb_nlist.blocks().size());
-        for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-            cluster_ctx.clb_nlist.block_pb(blk_id)->pb_route = alloc_and_load_pb_route(intra_lb_routing[blk_id], cluster_ctx.clb_nlist.block_pb(blk_id)->pb_graph_node);
-        }
-    }
-
-    IntraLbPbPinLookup pb_graph_pin_lookup_from_index_by_type(device_ctx.logical_block_types);
+void output_clustering(ClusterLegalizer* cluster_legalizer_ptr, const std::unordered_set<AtomNetId>& is_clock, const std::string& architecture_id, const char* out_fname, bool skip_clustering, bool from_legalizer) {
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().netlist();
 
     pugi::xml_document out_xml;
 
@@ -551,26 +636,26 @@ void output_clustering(const vtr::vector<ClusterBlockId, std::vector<t_intra_lb_
     block_node.append_attribute("name") = out_fname;
     block_node.append_attribute("instance") = "FPGA_packed_netlist[0]";
     block_node.append_attribute("architecture_id") = architecture_id.c_str();
-    block_node.append_attribute("atom_netlist_id") = atom_ctx.nlist.netlist_id().c_str();
+    block_node.append_attribute("atom_netlist_id") = atom_nlist.netlist_id().c_str();
 
     std::vector<std::string> inputs;
     std::vector<std::string> outputs;
 
-    for (auto blk_id : atom_ctx.nlist.blocks()) {
-        auto type = atom_ctx.nlist.block_type(blk_id);
+    for (AtomBlockId blk_id : atom_nlist.blocks()) {
+        AtomBlockType type = atom_nlist.block_type(blk_id);
         switch (type) {
             case AtomBlockType::INPAD:
                 if (skip_clustering) {
                     VTR_ASSERT(0);
                 }
-                inputs.push_back(atom_ctx.nlist.block_name(blk_id));
+                inputs.push_back(atom_nlist.block_name(blk_id));
                 break;
 
             case AtomBlockType::OUTPAD:
                 if (skip_clustering) {
                     VTR_ASSERT(0);
                 }
-                outputs.push_back(atom_ctx.nlist.block_name(blk_id));
+                outputs.push_back(atom_nlist.block_name(blk_id));
                 break;
 
             case AtomBlockType::BLOCK:
@@ -581,61 +666,56 @@ void output_clustering(const vtr::vector<ClusterBlockId, std::vector<t_intra_lb_
 
             default:
                 VTR_LOG_ERROR("in output_netlist: Unexpected type %d for atom block %s.\n",
-                              type, atom_ctx.nlist.block_name(blk_id).c_str());
+                              type, atom_nlist.block_name(blk_id).c_str());
         }
     }
 
     block_node.append_child("inputs").text().set(vtr::join(inputs.begin(), inputs.end(), " ").c_str());
     block_node.append_child("outputs").text().set(vtr::join(outputs.begin(), outputs.end(), " ").c_str());
 
-    if (global_clocks) {
-        std::vector<std::string> clocks;
-        for (auto net_id : atom_ctx.nlist.nets()) {
-            if (is_clock.count(net_id)) {
-                clocks.push_back(atom_ctx.nlist.net_name(net_id));
-            }
+    std::vector<std::string> clocks;
+    for (AtomNetId net_id : atom_nlist.nets()) {
+        if (is_clock.count(net_id)) {
+            clocks.push_back(atom_nlist.net_name(net_id));
         }
-
-        block_node.append_child("clocks").text().set(vtr::join(clocks.begin(), clocks.end(), " ").c_str());
     }
 
+    block_node.append_child("clocks").text().set(vtr::join(clocks.begin(), clocks.end(), " ").c_str());
+
     if (skip_clustering == false) {
-        for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-            /* TODO: Must do check that total CLB pins match top-level pb pins, perhaps check this earlier? */
-            clustering_xml_block(block_node, cluster_ctx.clb_nlist.block_type(blk_id), pb_graph_pin_lookup_from_index_by_type, cluster_ctx.clb_nlist.block_pb(blk_id), size_t(blk_id), cluster_ctx.clb_nlist.block_pb(blk_id)->pb_route);
+        if (from_legalizer) {
+            VTR_ASSERT(cluster_legalizer_ptr != nullptr);
+            clustering_xml_blocks_from_legalizer(block_node, *cluster_legalizer_ptr);
+        } else {
+            VTR_ASSERT(cluster_legalizer_ptr == nullptr);
+            clustering_xml_blocks_from_netlist(block_node);
         }
     }
 
     out_xml.save_file(out_fname);
 
-    print_stats();
-
-    if (!intra_lb_routing.empty()) {
-        for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-            cluster_ctx.clb_nlist.block_pb(blk_id)->pb_route.clear();
-        }
-    }
+    print_stats(cluster_legalizer_ptr, from_legalizer);
 }
 
 /********************************************************************
- * An useful API to output packing results to a XML file
+ * A useful API to output packing results to a XML file
  * This function is a wrapper for the function output_clustering()
  * but remove all the requirements on input data structures that
  * have to be built with other APIs
  *
- * As such, this function is expected to be a standard API 
+ * As such, this function is expected to be a standard API
  * which can be called anytime and anywhere after packing is finished.
  ********************************************************************/
-void write_packing_results_to_xml(const bool& global_clocks,
-                                  const std::string& architecture_id,
+void write_packing_results_to_xml(const std::string& architecture_id,
                                   const char* out_fname) {
-    vtr::vector<ClusterBlockId, std::vector<t_intra_lb_net>*> intra_lb_routing_placeholder;
-    std::unordered_set<AtomNetId> is_clock = alloc_and_load_is_clock(global_clocks);
+    std::unordered_set<AtomNetId> is_clock = alloc_and_load_is_clock();
 
-    output_clustering(intra_lb_routing_placeholder,
-                      global_clocks,
+    // Since the cluster legalizer is not being used to output the clustering
+    // (from_legalizer is false), passing in nullptr.
+    output_clustering(nullptr,
                       is_clock,
                       architecture_id,
                       out_fname,
-                      false);
+                      false, /*skip_clustering*/
+                      false /*from_legalizer*/);
 }

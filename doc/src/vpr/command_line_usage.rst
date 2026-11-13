@@ -1,21 +1,23 @@
+.. _vpr_command_line_usage:
+
 Command-line Options
 ====================
 .. program:: vpr
 
 .. |des90_place| image:: https://www.verilogtorouting.org/img/des90_placement_macros.gif
     :width: 200px
-    :alt: Placement 
+    :alt: Placement
 
 .. |des90_cpd| image:: https://www.verilogtorouting.org/img/des90_cpd.gif
-    :width: 200px 
-    :alt: Critical Path 
+    :width: 200px
+    :alt: Critical Path
 
 .. |des90_nets| image:: https://www.verilogtorouting.org/img/des90_nets.gif
     :width: 200px
     :alt: Wiring
 
 .. |des90_routing| image:: https://www.verilogtorouting.org/img/des90_routing_util.gif
-    :width: 200px 
+    :width: 200px
     :alt: Routing Usage
 
 +---------------------------------------+---------------------------------------+---------------------------------------+---------------------------------------+
@@ -41,13 +43,82 @@ where:
 
     is the technology mapped netlist in :ref:`BLIF format <vpr_blif_file>` to be implemented
 
-VPR will then pack, place, and route the circuit onto the specified architecture.
+By default, VPR will run the analytical placement flow, performing integrated packing and placement, followed by routing and analysis.
+To use the traditional sequential flow (pack, place, route, analysis), pass all four stage flags explicitly (see :ref:`stage_options`).
 
 By default VPR will perform a binary search routing to find the minimum channel width required to route the circuit.
 
+.. _vpr_options_file:
+
+Options File
+------------
+
+Instead of passing every option on the command-line, options can be read from a YAML file.
+
+.. option:: --options_file <file>
+
+    Reads additional command-line options from the YAML file ``<file>``.
+
+    The file is a map from option name to value.
+    For example, the file ``my_options.yaml``:
+
+    .. code-block:: yaml
+
+        # Comments may be on their own line...
+        architecture: my_arch.xml   # ...or at the end of a line.
+        circuit: my_circuit.blif    # Positional arguments: give both or neither.
+        route_chan_width: 100
+        --seed: 7                   # The leading "--" is optional.
+
+        # Flags: true sets the flag, false leaves it out.
+        pack: true
+        place: true
+        analytical_place: false
+
+        timing_analysis: on         # Passed as "on", not as the YAML boolean true.
+        timing_report_detail: "detailed"  # Quotes are optional.
+
+        # Options which take multiple values are given as a list,
+        # either as [in2reg, reg2reg] or as one "- item" per line:
+        timing_report_path_categories:
+          - in2reg
+          - reg2reg
+
+    can be used as::
+
+        vpr --options_file my_options.yaml
+
+    which is equivalent to::
+
+        vpr my_arch.xml my_circuit.blif --route_chan_width 100 --seed 7 --pack --place --timing_analysis on --timing_report_detail detailed --timing_report_path_categories in2reg reg2reg
+
+    The options in the file are used exactly as if they were written on the command-line in place of ``--options_file <file>``, and follow the usual rules:
+
+    * An option which takes a single value may only be given once, so it can not be given both in the file and on the command-line.
+    * Flags (options which take no value, such as ``--pack``) are given as ``true`` (set the flag) or ``false`` (do not set it).
+      YAML's other boolean words (``yes``/``no``, ``on``/``off``) are also accepted.
+    * Options which take multiple values are given as a YAML list, either on one line (``[a, b]``) or with one ``- item`` per line.
+      Values given both in the file and on the command-line are combined, in the order they appear.
+    * Values are passed to VPR as the text written in the file (without any quotes), so they take the same values as on the command-line.
+      For example, ``--timing_analysis`` takes ``on`` or ``off``, not ``true`` or ``false``.
+    * Relative file paths are relative to the directory VPR is run from, not to the location of the options file.
+    * The positional arguments (``architecture`` and ``circuit``) may be given in the file.
+      If either is given in the file, both must be, and neither may then be given on the command-line.
+    * Only one options file may be given, and it may not contain ``options_file``.
+    * Comments (``# ...``) may be used, on their own line or at the end of a line.
+    * The leading ``--`` of an option name is optional (``seed`` and ``--seed`` are equivalent).
+      Positional arguments have no leading ``--`` (``architecture``, not ``--architecture``).
+
+    The VPR log shows both the command-line VPR was run with and an equivalent command-line with the options file replaced by its options, which can be re-run without the file.
+
 Detailed Command-line Options
 -----------------------------
-VPR has a lot of options.
+VPR has a lot of options. Running :option:`vpr --help` will display all the available options and their usage information.
+
+.. option:: -h, --help
+
+    Display help message then exit.
+
 The options most people will be interested in are:
 
 * :option:`--route_chan_width` (route at a fixed channel width), and
@@ -63,24 +134,77 @@ Values in curly braces separated by vertical bars, e.g. ``{on | off}``, indicate
 
 Stage Options
 ^^^^^^^^^^^^^
-VPR runs all stages of (pack, place, route, and analysis) if none of :option:`--pack`, :option:`--place`, :option:`--route` or :option:`--analysis` are specified.
+When none of the stage flags below are specified, VPR runs the **default flow**: analytical
+placement (integrated packing + placement), routing, and analysis.
+
+When one or more stage flags are specified, **only those stages** are run.
+
+To run the **traditional sequential flow** (separate pack, place, route, and analysis stages)
+instead of the default analytical placement flow, pass all four stage flags explicitly:
+
+.. code-block:: shell
+
+    vpr <architecture> <circuit> --pack --place --route --analysis
+
+.. note::
+
+    The traditional sequential flow was the previous default. Scripts or flows that previously ran
+    ``vpr <architecture> <circuit>`` without stage flags and relied on the pack → place → route
+    behavior must now add ``--pack --place --route --analysis`` explicitly.
 
 .. option:: --pack
 
-    Run packing stage
+    Run packing stage (part of the traditional flow; not used with :option:`--analytical_place`).
 
     **Default:** ``off``
 
 .. option:: --place
 
-    Run placement stage
+    Run placement stage (part of the traditional flow; not used with :option:`--analytical_place`).
+
+    **Default:** ``off``
+
+.. option:: --analytical_place
+
+    Run the analytical placement flow.
+    This flow uses an integrated packing and placement algorithm which uses information from the primitive level to improve clustering and placement;
+    as such, the :option:`--pack` and :option:`--place` options are not used when this option is set.
+    This flow supports both automatic device sizing (via :option:`--device` ``auto``) and fixed device sizes (via :option:`--device` with a ``<fixed_layout>`` name, or via :option:`--device_width` with :option:`--device` ``auto``).
+    Placement constraints can optionally be used to fix primitive blocks to specific locations on the device grid.
+
+    .. note::
+
+        This is the first stage of the **default flow**: when no stage flags are specified, VPR
+        runs analytical placement, routing, and analysis automatically.
+
+    .. seealso:: See :ref:`analytical_placement_options` for the options for this flow.
+
+    .. seealso:: See :ref:`Fixed FPGA Grid Layout <fixed_arch_grid_layout>`, :option:`--device`, and :option:`--device_width` for how to fix the device size.
+
+    .. seealso:: See :ref:`VPR Placement Constraints <placement_constraints>` for how to fix primitive blocks in a design to the device grid.
+
+    **Default:** ``off``
+
+.. option:: --global_place
+
+    Run only the Global Placement stage of the analytical placement flow (see :option:`--analytical_place`).
+    The flow stops right after global placement; full legalization and detailed placement are skipped, so no
+    clustered netlist or placement is produced.
+    After global placement, post-global placement quality metrics are reported.
+
+    If a flat placement is provided with :option:`--read_flat_place`, the global placer is not run; instead,
+    the flat placement is read and used as the global placement solution.
+
+    The global placement solution can be written to a file using :option:`--write_post_gp_flat_place`.
+
+    This option cannot be combined with :option:`--route` or :option:`--analysis`.
+    If :option:`--analytical_place` is also specified, the full analytical placement flow is run.
 
     **Default:** ``off``
 
 .. option:: --route
 
-    Run routing stage
-    This also implies --analysis if routing was successful.
+    Run routing stage.
 
     **Default:** ``off``
 
@@ -102,14 +226,18 @@ Graphics Options
 
     **Default:** ``off``
 
-.. option:: --auto <int>
+.. option:: --graphics_pause {every_update | major | final_stage | never}
 
-    Can be 0, 1, or 2.
     This sets how often you must click Proceed to continue execution after viewing the graphics.
-    The higher the number, the more infrequently the program will pause.
 
-    **Default:** ``1``
-    
+    * ``every_update``: pause at every step (e.g. each temperature or router iteration).
+    * ``major``: pause at major checkpoints, such as the end of each stage.
+    * ``final_stage``: skip graphics at intermediate stages and pause once the last requested stage completes: routing if it is run or loaded (e.g. with :option:`--route` or :option:`--analysis`), otherwise placement.
+      This applies to the interactive window, :option:`--save_graphics` and :option:`--graphics_commands` alike, and a ``wait_for_stage`` command for any other stage is an error.
+    * ``never``: never pause.
+
+    **Default:** ``major``
+
 .. option:: --save_graphics {on | off}
 
     If set to on, this option will save an image of the final placement and the final routing created by vpr to pdf files on disk, with no need for any user interaction. The files are named vpr_placement.pdf and vpr_routing.pdf.
@@ -118,7 +246,8 @@ Graphics Options
 
 .. option:: --graphics_commands <string>
 
-    A set of semi-colon seperated graphics commands.
+    A set of semi-colon separated graphics commands.
+    Graphics commands must be surrounded by quotation marks (e.g. --graphics_commands "save_graphics place.png;")
 
     * save_graphics <file>
          Saves graphics to the specified file (.png/.pdf/
@@ -128,9 +257,24 @@ Graphics Options
     * set_macros <int>
          Sets the placement macro drawing state
     * set_nets <int>
-         Sets the net drawing state
+         Sets the net drawing state.
+         ``0`` = nets off,
+         ``1`` = flylines (direct source-to-sink lines),
+         ``2`` = routed nets (actual routed wire paths).
     * set_cpd <int>
-         Sets the criticla path delay drawing state
+         Sets the critical path delay drawing state.
+         Bitmask: ``0`` = off,
+         bit 0 (``1``) = flylines along the critical path,
+         bit 1 (``2``) = per-edge delay labels,
+         bit 2 (``4``) = routed-wire highlight along the critical path.
+         Useful values: ``1`` = flylines, ``3`` = flylines + delays,
+         ``4`` = routing only, ``5`` = flylines + routing,
+         ``7`` = flylines + delays + routing.
+         Values ``2`` and ``6`` are degenerate (no-ops): delay labels are
+         drawn alongside flylines, so the delay bit on its own renders
+         nothing.
+         Bit 2 (routing) only renders at the routing stage; gate with
+         ``wait_for_stage routing_done``.
     * set_routing_util <int>
          Sets the routing utilization drawing state
     * set_clip_routing_util <int>
@@ -144,61 +288,98 @@ Graphics Options
     * set_draw_net_max_fanout <int>
          Sets the maximum fanout for nets to be drawn (if fanout is beyond this value the net will not be drawn)
     * set_congestion <int>
-         Sets the routing congestion drawing state
+         Sets the routing congestion drawing state.
+         ``0`` = off, ``1`` = congested nodes, ``2`` = congested nodes + nets.
+         Only renders when invoked at the routing stage.
+    * wait_for_stage <stage>_<initial|done>
+         Pauses script execution until VPR reaches the named stage at the
+         requested checkpoint. Stages: ``placement``, ``routing``.
+
+         - ``<stage>_initial`` resumes on the *first* ``update_screen()``
+           call at that stage. Per-iteration state is mid-flight, but
+           anything that only needs already-settled inputs to that stage
+           (e.g. flylines based on netlist topology, route trees from the
+           first routing iteration) is available.
+         - ``<stage>_done`` resumes on the *post*-stage ``update_screen()``
+           checkpoint, where the underlying contexts (``place_ctx``,
+           ``route_ctx``) are fully settled. Required for any renderer that
+           depends on final per-stage output — e.g. ``set_congestion`` /
+           ``set_routing_util`` (need final occupancy data) or visual
+           regression goldens.
+
+         Commands placed after the barrier run on the matching checkpoint.
+         Examples::
+
+             wait_for_stage placement_done; save_graphics place.png;
+             wait_for_stage routing_initial; set_nets 2; save_graphics nets.png;
+             wait_for_stage routing_done; set_congestion 1; save_graphics cong.png;
     * exit <int>
          Exits VPR with specified exit code
-    
+
     Example:
 
     .. code-block:: none
 
-        save_graphics place.png; \
+        "save_graphics place.png; \
         set_nets 1; save_graphics nets1.png;\
         set_nets 2; save_graphics nets2.png; set_nets 0;\
         set_cpd 1; save_graphics cpd1.png; \
         set_cpd 3; save_graphics cpd3.png; set_cpd 0; \
         set_routing_util 5; save_graphics routing_util5.png; \
         set_routing_util 0; \
-        set_congestion 1; save_graphics congestion1.png;
+        set_congestion 1; save_graphics congestion1.png;"
 
     The above toggles various graphics settings (e.g. drawing nets, drawing critical path) and then saves the results to .png files.
-    
+
     Note that drawing state is reset to its previous state after these commands are invoked.
 
-    Like the interactive graphics :option`<--disp>` option, the :option:`--auto` option controls how often the commands specified with this option are invoked.
+    Like the interactive graphics :option`<--disp>` option, the :option:`--graphics_pause` option controls how often the commands specified with this option are invoked.
 
 .. _general_options:
 
 General Options
 ^^^^^^^^^^^^^^^
-.. option:: -h, --help
-
-    Display help message then exit.
-
 .. option:: --version
 
     Display version information then exit.
 
 .. option:: --device <string>
 
-    Specifies which device layout/floorplan to use from the architecture file.
+    Specifies which device layout/floorplan to use from the architecture file.  Valid values are:
 
-    ``auto`` uses the smallest device satisfying the circuit's resource requirements.
-    Other values are assumed to be the names of device layouts defined in the :ref:`arch_grid_layout` section of the architecture file.
+    * ``auto`` VPR uses the smallest device satisfying the circuit's resource requirements.  This option will use the ``<auto_layout>`` tag if it is present in the architecture file in order to construct the smallest FPGA that has sufficient resources to fit the design. If the ``<auto_layout>`` tag is not present, the ``auto`` option chooses the smallest device amongst all the architecture file's ``<fixed_layout>`` specifications into which the design can be packed. When :option:`--device_width` is set, VPR instead uses the specified grid width and derives the height from the ``<auto_layout>`` aspect ratio.
+    * Any string matching ``name`` attribute of a device layout defined with a ``<fixed_layout>`` tag in the :ref:`arch_grid_layout` section of the architecture file.
 
-    .. note:: If the architecture contains both ``<auto_layout>`` and ``<fixed_layout>`` specifications, specifying an ``auto`` device will use the ``<auto_layout>``.
+    If the value specified is neither ``auto`` nor matches the ``name`` attribute value of a ``<fixed_layout>`` tag, VPR issues an error.
+
+    .. note:: If the only layout in the architecture file is a single device specified using ``<fixed_layout>``, it is recommended to always specify the ``--device`` option; this prevents the value ``--device auto`` from interfering with operations supported only for ``<fixed_layout>`` grids.
 
     **Default:** ``auto``
+
+.. option:: --device_width <int>
+
+    When :option:`--device` is ``auto``, use a fixed grid width instead of auto-sizing the device to fit the circuit.
+    Grid height is derived from the ``<auto_layout>`` aspect ratio in the architecture file.
+
+    .. note:: This option is only valid when :option:`--device` is ``auto``. The architecture file must define an ``<auto_layout>`` tag so that the grid height can be computed from the specified width.
+
+    **Default:** ``0`` (disabled; device width is auto-sized)
 
 .. option:: -j, --num_workers <int>
 
     Controls how many parallel workers VPR may use:
 
     * ``1`` implies VPR will execute serially,
-    * ``>1`` implies VPR may execute in parallel with up to the specified concurency
+    * ``>1`` implies VPR may execute in parallel with up to the specified concurrency
     * ``0`` implies VPR may execute with up to the maximum concurrency supported by the host machine
 
     If this option is not specified it may be set from the ``VPR_NUM_WORKERS`` environment variable; otherwise the default is used.
+
+    If this option is set to something other than 1, the following algorithms can be run in parallel:
+
+    * Timing Analysis
+    * Routing (If routing algorithm is set to parallel or parallel_decomp; See :option:`--router_algorithm`)
+    * Portions of analytical placement (If using the analytical placement flow; See :option:`--analytical_place`)
 
     .. note:: To compile VPR to allow the usage of parallel workers, ``libtbb-dev`` must be installed in the system.
 
@@ -211,10 +392,21 @@ General Options
 
     **Default:**  ``on``
 
-.. option:: --echo_file {on | off}
+.. option:: --echo_file {on | off | <echo_file_name> [<echo_file_name> ...]}
 
     Generates echo files of key internal data structures.
     These files are generally used for debugging vpr, and typically end in ``.echo``
+
+    * ``off``: No echo files are generated.
+    * ``on``: All echo files are generated.
+    * ``<echo_file_name> [<echo_file_name> ...]``: Only the listed echo files are generated, identified by their default file names.
+      This is useful when only a few echo files are needed, since some echo files can be very large.
+
+    For example, the following generates only the timing graph analysis and clusters echo files:
+
+    .. code-block:: none
+
+        --echo_file timing_graph.analysis.echo clusters.echo
 
     **Default:** ``off``
 
@@ -222,8 +414,18 @@ General Options
 
     Checks that any intermediate files loaded (e.g. previous packing/placement/routing) are consistent with the current netlist/architecture.
 
-    If set to ``on`` will error if any files in the upstream dependancy have been modified.
-    If set to ``off`` will warn if any files in the upstream dependancy have been modified.
+    If set to ``on`` will error if any files in the upstream dependency have been modified.
+    If set to ``off`` will warn if any files in the upstream dependency have been modified.
+
+    **Default:** ``on``
+
+.. option:: --verify_route_file_switch_id {on | off}
+
+    Verify that the switch IDs in the routing file are consistent with those in the RR Graph.
+    Set this to false when switch IDs in the routing file may differ from the RR Graph.
+    For example, when analyzing different timing corners using the same netlist, placement, and routing files,
+    the RR switch IDs in the RR Graph may differ due to changes in delays.
+    In such cases, set this option to false so that the switch IDs from the RR Graph are used, and those in the routing file are ignored.
 
     **Default:** ``on``
 
@@ -238,10 +440,12 @@ General Options
 
 .. option:: --constant_net_method {global | route}
 
-    Specifies how constant nets (i.e. those driven to a constant value) are handled:
+    Specifies how constant nets (i.e. those driven by a constant generator such as vcc/gnd) are handled:
 
-     * ``global``: Treat constant nets as globals (not routed)
+     * ``global``: Treat constant nets as ignored (not routed)
      * ``route``: Treat constant nets as normal nets (routed)
+
+    Nets which are only inferred to be constant (e.g. the output of a primitive whose inputs are all constant, see :option:`--const_gen_inference`) are always routed, since the primitive driving them is still implemented.
 
      **Default:** ``global``
 
@@ -269,19 +473,25 @@ General Options
 .. option:: --exit_before_pack {on | off}
 
     Causes VPR to exit before packing starts (useful for statistics collection).
-    
+
     **Default:** ``off``
 
 .. option:: --strict_checks {on, off}
 
     Controls whether VPR enforces some consistency checks strictly (as errors) or treats them as warnings.
-    
-    Usually these checks indicate an issue with either the targetted architecture, or consistency issues with VPR's internal data structures/algorithms (possibly harming optimization quality).
+
+    Usually these checks indicate an issue with either the targeted architecture, or consistency issues with VPR's internal data structures/algorithms (possibly harming optimization quality).
     In specific circumstances on specific architectures these checks may be too restrictive and can be turned off.
-    
+
     .. warning:: Exercise extreme caution when turning this option off -- be sure you completely understand why the issue is being flagged, and why it is OK to treat as a warning instead of an error.
-    
+
     **Default:** ``on``
+
+.. option:: --terminate_if_timing_fails {on, off}
+
+    Controls whether VPR should terminate if timing is not met after routing.
+
+    **Default:** ``off``
 
 .. _filename_options:
 
@@ -336,23 +546,153 @@ Use the options below to override this default naming behaviour.
 
 .. option:: --write_rr_graph <file>
 
-    Writes out the routing resource graph generated at the last stage of VPR into :ref:`RR Graph XML format <vpr_route_resource_file>`
+    Writes out the routing resource graph generated at the last stage of VPR in the :ref:`RR Graph file format <vpr_route_resource_file>`. The output can be read into VPR using :option:`--read_rr_graph`.
 
-    <file> describes the filename for the generated routing resource graph. The output can be read into VPR using :option:`--read_rr_graph`
+    <file> describes the filename for the generated routing resource graph. Accepted extensions are ``.xml`` and ``.bin`` to write the graph in XML or binary (Cap'n Proto) format.
 
 .. option:: --read_rr_graph <file>
 
-    Reads in the routing resource graph named <file> loads it for use during the placement and routing stages.
+    Reads in the routing resource graph named <file> loads it for use during the placement and routing stages. Expects a file extension of either ``.xml`` or ``.bin``.
 
     The routing resource graph overthrows all the architecture definitions regarding switches, nodes, and edges. Other information such as grid information, block types, and segment information are matched with the architecture file to ensure accuracy.
 
-    This file should be in XML format and can be easily obtained through :option:`--write_rr_graph`
+    The file can be obtained through :option:`--write_rr_graph`.
 
     .. seealso:: :ref:`Routing Resource XML File <vpr_route_resource_file>`.
+
+.. option:: --read_rr_edge_override <file>
+
+    Reads a file that overrides the intrinsic delay of specific edges in RR graph.
+    See the :ref:`file format <rr_edge_override_file_format>`.
+
+    This option should be used with both :option:`--read_rr_graph` and :option:`--write_rr_graph`. When used this way,
+    VPR reads the RR graph, updates the delays of selected edges using :option:`--read_rr_edge_override`,
+    and writes the updated RR graph. The modified RR graph can then be used in later VPR runs.
+
+.. option:: --read_vpr_constraints <file>
+
+    Reads the :ref:`VPR constraints <vpr_constraints>` that the flow must respect from the specified XML file.
+
+.. option:: --write_vpr_constraints <file>
+
+    Writes out new :ref:`floorplanning constraints <placement_constraints>` based on the current placement to the specified XML file.
+
+.. option:: --read_router_lookahead <file>
+
+    Reads the lookahead data from the specified file instead of computing it. Expects a file extension of either ``.capnp`` or ``.bin``.
+
+.. option:: --write_router_lookahead <file>
+
+    Writes the lookahead data to the specified file. Accepted file extensions are ``.capnp``, ``.bin``, and ``.csv``.
+
+.. option:: --read_placement_delay_lookup <file>
+
+    Reads the placement delay lookup from the specified file instead of computing it. Expects a file extension of either ``.capnp`` or ``.bin``.
+
+.. option:: --write_placement_delay_lookup <file>
+
+    Writes the placement delay lookup to the specified file. Expects a file extension of either ``.capnp`` or ``.bin``. Not supported for the simple place delay model.
+
+.. option:: --read_initial_place_file <file>
+
+    Reads in the initial cluster-level placement (in :ref:`.place file format <vpr_place_file>`) from the specified file and uses it as the starting point for annealing improvement, instead of generating an initial placement internally.
+
+.. option:: --write_initial_place_file <file>
+
+    Writes out the clustered netlist placement chosen by the initial placement algorithm to the specified file, in :ref:`.place file format <vpr_place_file>`.
 
 .. option:: --outfile_prefix <string>
 
     Prefix for output files
+
+.. option:: --read_flat_place <file>
+
+    Reads a file containing the locations of each atom on the FPGA.
+    This is used by the packer to better cluster atoms together.
+
+    The flat placement file (which often ends in :ref:`.fplace <vpr_flat_place_file>`) is a text file
+    where each line describes the location of an atom. Each line in the flat
+    placement file should have the following syntax:
+
+    .. code-block:: none
+
+        <atom_name : str> <x : float> <y : float> <layer : float> <atom_sub_tile : int>
+
+    For example:
+
+    .. code-block:: none
+
+        n523  6 8 0 0
+        n522  6 8 0 0
+        n520  6 8 0 0
+        n518  6 8 0 0
+
+    The position of the atom on the FPGA is given by 3 floating point values
+    (``x``, ``y``, ``layer``). We allow for the positions of atom to be not
+    quite legal (ok to be off-grid) since this flat placement will be fed into
+    the packer and placer, which will snap the positions to grid locations. By
+    allowing for off-grid positions, the packer can better trade-off where to
+    move atom blocks if they cannot be placed at the given position.
+    For 2D FPGA architectures, the ``layer`` should be 0.
+
+    The ``sub_tile`` is a clustered placement construct: which cluster-level
+    location at a given (x, y, layer) should these atoms go at (relevant when
+    multiple clusters can be stacked there). A sub-tile of -1 may be used when
+    the sub-tile of an atom is unknown (allowing the packing algorithm to choose
+    any sub-tile at the given (x, y, layer) location).
+
+    .. warning::
+
+        This interface is currently experimental and under active development.
+
+.. option:: --write_flat_place <file>
+
+    Writes the post-placement locations of each atom into a flat placement file
+    (see :ref:`flat placement file format <vpr_flat_place_file>`).
+
+    For each atom in the netlist, the following information is stored into the
+    flat placement file:
+
+    * The x, y, and sub_tile location of the cluster that contains this atom.
+
+.. option:: --write_legalized_flat_place <file>
+
+    Writes the post-legalization locations of each atom into a flat placement file
+    (see :ref:`flat placement file format <vpr_flat_place_file>`).
+
+    For each atom in the netlist, the following information is stored into the
+    flat placement file:
+
+    * The x, y, and sub_tile location of the cluster that contains this atom.
+
+.. option:: --write_post_gp_flat_place <file>
+
+    Writes the flat placement produced by Global Placement in the analytical
+    placement flow (see :option:`--analytical_place` and :option:`--global_place`)
+    into a flat placement file (see :ref:`flat placement file format <vpr_flat_place_file>`).
+
+    For each atom in the netlist, the (x, y, layer) position and sub_tile chosen by
+    the global placer are stored. Since the global placement has not been legalized
+    yet, these positions may be fractional (off-grid). This file can be read back in
+    using :option:`--read_flat_place`.
+
+.. option:: --flat_place_verbosity <int>
+
+    Controls how much annotation is written into flat placement files
+    (see :ref:`flat placement file format <vpr_flat_place_file>`). Annotations are
+    written as a ``#`` comment after the ``<atom_sub_tile>`` column and are
+    informational only: :option:`vpr --read_flat_place` does not parse them. Each
+    level includes what the levels below it print.
+
+    * ``0``: No annotation and no header comments, i.e. only the columns the reader
+      parses. The output is then exactly the input format documented above, and
+      carries no build timestamp, so it is reproducible across runs.
+    * ``1``: Header comments, plus the cluster block number and the primitive type
+      of each atom.
+    * ``2``: Additionally each atom's ``site_path``, the hierarchical path of the
+      primitive it was placed on within its cluster.
+
+    **Default:** ``1``
 
 .. _netlist_options:
 
@@ -367,8 +707,23 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
     Usually buffer LUTS are introduced in BLIF circuits by upstream tools in order to rename signals (like ``assign`` statements in Verilog).
     Absorbing these buffers reduces the number of LUTs required to implement the circuit.
 
-    Ocassionally buffer LUTs are inserted for other purposes, and this option can be used to preserve them.
+    Occasionally buffer LUTs are inserted for other purposes, and this option can be used to preserve them.
     Disabling buffer absorption can also improve the matching between the input and post-synthesis netlist/SDF.
+
+    **Default**: ``on``
+
+.. option:: --merge_constant_generators {on | off}
+
+    Controls whether constant generators of the same value are merged into a single constant generator.
+
+    Synthesis tools may create a separate constant generator (a LUT with no inputs) for each signal tied to a constant (e.g. each constant primary output, or each constant input of a hard block).
+    When enabled, all constant-zero generators are merged into a single constant-zero generator, and all constant-one generators are merged into a single constant-one generator.
+    The generator with the highest fanout of each value (e.g. ``gnd`` / ``vcc``) is kept, and the names of the removed nets are kept as aliases of the merged net.
+
+    Since constant nets are not routed by default (see :option:`--constant_net_method`), the constant generators are assumed to be available within each tile and do not need to be duplicated.
+    However, each constant generator is still implemented as a physical block and uses tile pin resources, so merging them avoids wasting these resources.
+
+    Disabling merging can improve the matching between the input and post-synthesis netlist.
 
     **Default**: ``on``
 
@@ -380,8 +735,8 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
     * ``none``: No constant generator inference will occur. Any signals which are actually constants will be treated as non-constants.
     * ``comb``: VPR will infer constant generators from combinational blocks with no non-constant inputs (always safe).
     * ``comb_seq``: VPR will infer constant generators from combinational *and* sequential blocks with only constant inputs (usually safe).
-      
-    .. note:: In rare circumstances ``comb_seq`` could incorrectly identify certain blocks as constant generators. 
+
+    .. note:: In rare circumstances ``comb_seq`` could incorrectly identify certain blocks as constant generators.
               This would only occur if a sequential netlist primitive has an internal state which evolves *completely independently* of any data input (e.g. a hardened LFSR block, embedded thermal sensor).
 
     **Default**: ``comb_seq``
@@ -401,6 +756,10 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
 
     Controls whether dangling nets (i.e. those who do not drive, or are not driven by anything) are swept and removed from the netlist.
 
+    .. note:: VPR cannot implement nets which have sinks but no driver.
+              If such undriven nets are found when this option is ``off``, VPR reports them as an error.
+              Undriven nets usually indicate a problem in the design or in synthesis.
+
     **Default**: ``on``
 
 .. option:: --sweep_dangling_blocks {on | off}
@@ -411,7 +770,8 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
 
 .. option:: --sweep_constant_primary_outputs {on | off}
 
-    Controls whether primary outputs driven by constant values are swept and removed from the netlist.
+    Controls whether primary outputs driven by constant generators (e.g. vcc/gnd) are swept and removed from the netlist.
+    Primary outputs driven by nets which are only inferred to be constant (see :option:`--const_gen_inference`) are not swept.
 
     .. seealso:: :option:`--sweep_dangling_primary_ios`
 
@@ -422,6 +782,9 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
     Controls the verbosity of netlist processing (constant generator detection, swept netlist components).
     High values produce more detailed output.
 
+    At ``1`` (the default) only summary counts are printed.
+    At ``2`` or higher the individual netlist components are also listed by name (e.g. every constant generator found while loading the circuit).
+
     **Default**: ``1``
 
 .. _packing_options:
@@ -429,7 +792,7 @@ By default VPR will remove buffer LUTs, and iteratively sweep the netlist to rem
 Packing Options
 ^^^^^^^^^^^^^^^
 AAPack is the packing algorithm built into VPR.
-AAPack takes as input a technology-mapped blif netlist consisting of LUTs, flip-flops, memories, mulitpliers, etc and outputs a .net formatted netlist composed of more complex logic blocks.
+AAPack takes as input a technology-mapped blif netlist consisting of LUTs, flip-flops, memories, multipliers, etc and outputs a .net formatted netlist composed of more complex logic blocks.
 The logic blocks available on the FPGA are specified through the FPGA architecture file.
 For people not working on CAD, you can probably leave all the options to their default values.
 
@@ -445,11 +808,11 @@ For people not working on CAD, you can probably leave all the options to their d
 
     Unrelated clustering can increase packing density (decreasing the number of blocks required to implement the circuit), but can significantly impact routability.
 
-    When set to ``auto`` VPR automatically decides whether to enable unrelated clustring based on the targetted device and achieved packing density.
+    When set to ``auto`` VPR automatically decides whether to enable unrelated clustring based on the targeted device and achieved packing density.
 
     **Default**:  ``auto``
 
-.. option:: --alpha_clustering <float>
+.. option:: --timing_gain_weight <float>
 
     A parameter that weights the optimization of timing vs area.
 
@@ -457,7 +820,7 @@ For people not working on CAD, you can probably leave all the options to their d
 
     **Default**: ``0.75``
 
-.. option:: --beta_clustering <float>
+.. option:: --connection_gain_weight <float>
 
     A tradeoff parameter that controls the optimization of smaller net absorption vs. the optimization of signal sharing.
 
@@ -503,7 +866,7 @@ For people not working on CAD, you can probably leave all the options to their d
 
     Controls how the packer selects the block type to which a primitive will be mapped if it can potentially map to multiple block types.
 
-     * ``on``  : Try to balance block type utilization by picking the block type with the (currenty) lowest utilization.
+     * ``on``  : Try to balance block type utilization by picking the block type with the (currently) lowest utilization.
      * ``off`` : Do not try to balance block type utilization
      * ``auto``: Dynamically enabled/disabled (based on density)
 
@@ -511,41 +874,41 @@ For people not working on CAD, you can probably leave all the options to their d
 
 .. option:: --target_ext_pin_util { auto | <float> | <float>,<float> | <string>:<float> | <string>:<float>,<float> }
 
-    Sets the external pin utilization target (fraction between 0.0 and 1.0) during clustering. 
+    Sets the external pin utilization target (fraction between 0.0 and 1.0) during clustering.
     This determines how many pin the clustering engine will aim to use in a given cluster before closing it and opening a new cluster.
-    
+
     Setting this to ``1.0`` guides the packer to pack as densely as possible (i.e. it will keep adding molecules to the cluster until no more can fit).
     Setting this to a lower value will guide the packer to pack less densely, and instead creating more clusters.
     In the limit setting this to ``0.0`` will cause the packer to create a new cluster for each molecule.
-    
+
     Typically packing less densely improves routability, at the cost of using more clusters.
-    
+
     This option can take several different types of values:
 
     * ``auto`` VPR will automatically determine appropriate target utilizations.
-    
+
     * ``<float>`` specifies the target input pin utilization for all block types.
 
-        For example: 
-        
+        For example:
+
           * ``0.7`` specifies that all blocks should aim for 70% input pin utilization.
 
     * ``<float>,<float>`` specifies the target input and output pin utilizations respectively for all block types.
 
-        For example: 
+        For example:
 
           * ``0.7,0.9`` specifies that all blocks should aim for 70% input pin utilization, and 90% output pin utilization.
 
     * ``<string>:<float>`` and ``<string>:<float>,<float>`` specify the target pin utilizations for a specific block type (as above).
 
-        For example: 
+        For example:
 
           * ``clb:0.7`` specifies that only ``clb`` type blocks should aim for 70% input pin utilization.
           * ``clb:0.7,0.9`` specifies that only ``clb`` type blocks should aim for 70% input pin utilization, and 90% output pin utilization.
 
-    .. note:: 
+    .. note::
 
-        If a pin utilization target is unspecified it defaults to 1.0 (i.e. 100% utilization).
+        If some pin utilizations are specified, ``auto`` mode is turned off and the utilization target for any unspecified pin types defaults to 1.0 (i.e. 100% utilization).
 
         For example:
 
@@ -559,13 +922,13 @@ For people not working on CAD, you can probably leave all the options to their d
 
     would specify that ``clb`` blocks use a target input pin utilization of 50%, ``dsp`` blocks use a targets of 90% and 70% for inputs and outputs respectively, and all other blocks use an input pin utilization target of 80%.
 
-    .. note:: 
+    .. note::
 
-        This option is only a guideline. 
-        If a molecule  (e.g. a carry-chain with many inputs) would not otherwise fit into a cluster type at the specified target utilization the packer will fallback to using all pins (i.e. a target utilization of ``1.0``). 
+        This option is only a guideline.
+        If a molecule  (e.g. a carry-chain with many inputs) would not otherwise fit into a cluster type at the specified target utilization the packer will fallback to using all pins (i.e. a target utilization of ``1.0``).
 
     .. note::
-    
+
         This option requires :option:`--clustering_pin_feasibility_filter` to be enabled.
 
     **Default:** ``auto``
@@ -584,16 +947,16 @@ For people not working on CAD, you can probably leave all the options to their d
     This option can take several different types of values:
 
     * ``auto`` VPR will automatically determine appropriate thresholds.
-    
+
     * ``<int>`` specifies the fanout threshold for all block types.
 
-        For example: 
-        
+        For example:
+
           * ``64`` specifies that a threshold of 64 should be used for all blocks.
 
     * ``<string>:<float>`` specifies the the threshold for a specific block type.
 
-        For example: 
+        For example:
 
           * ``clb:16`` specifies that ``clb`` type blocks should use a threshold of 16.
 
@@ -619,12 +982,59 @@ For people not working on CAD, you can probably leave all the options to their d
 
     **Default:** ``30``
 
+.. option:: --memoize_cluster_packings {on | off}
+
+    Enables memoization of previously seen clusters during packing.
+
+    This can significantly reduce runtime for architectures with complex or sparse logic block interconnects by skipping redundant intracluster routing calls made to test for cluster legality.
+    Architectures with simple logic block interconnects (i.e. those with full or regular crossbars) are likely to only see a marginal improvement, if any.
+    Enabling this option does not affect circuit quality metrics like routed wirelength or critical path delay.
+
+    Note: ``--memoize_cluster_packings`` is unsupported if ``--ap_full_legalizer`` is set to ``flat-recon``, and will be ignored.
+
+    **Default:** ``off``
+
+.. option:: --cluster_router_hot_start {on | off}
+
+    Enables hot-starting of the intra-cluster router during packing.
+
+    When enabled, each call to the intra-cluster router seeds unchanged nets from the previous successful route before running pathfinder.
+    Nets whose terminals are unchanged and whose route trees are still valid under the current mode assignments are committed upfront, allowing pathfinder to skip them on its first iteration.
+    This can reduce router runtime when many candidate molecules are tried and rejected: after a failed molecule is removed, the cluster returns to a known-good state without re-routing nets that did not change.
+    Enabling this option should not significantly affect circuit quality metrics like routed wirelength or critical path delay, though minor variations are possible.
+
+    **Default:** ``on``
+
 .. option:: --pack_verbosity <int>
 
-    Controls the verbosity of clustering output. 
+    Controls the verbosity of clustering output.
     Larger values produce more detailed output, which may be useful for debugging architecture packing problems.
+    At ``2`` (the default) the clustered-netlist check prints only aggregate counts of unusual blocks (e.g. single-output blocks that may be constant generators).
+    At ``3`` or higher these blocks are also listed individually.
 
     **Default:** ``2``
+
+.. option:: --use_ram_premapper {on | off}
+
+    Controls whether a separate RAM pre-mapping algorithm is invoked before the main packing stage.
+
+    When enabled, this algorithm decides which RAM slices are grouped together to form a physical RAM (based on shared
+    address and control signals) and which physical RAM type in the architecture implements each group. The type
+    selection runs in two passes: an initial pass that maps each group to minimize area, followed by a second pass that
+    remaps the most timing-critical groups to smaller, faster RAM types when resources allow. The resulting groups guide RAM
+    packing and prioritize RAMs in the packing order, and in the analytical placement flow global placement treats each
+    physical RAM group as a single moveable unit.
+
+    When disabled, these mapping decisions are instead made by the general heuristics within the main packing algorithm,
+    and in the analytical placement flow each RAM slice is treated as a single moveable unit rather than being grouped.
+
+    **Default:** ``on``
+
+.. option:: --write_block_usage <file>
+
+    Writes out to the file under path <file> cluster-level block usage summary in machine
+    readable (JSON or XML) or human readable (TXT) format. Format is selected
+    based on the extension of <file>.
 
 .. _placer_options:
 
@@ -653,14 +1063,53 @@ If any of init_t, exit_t or alpha_t is specified, the user schedule, with a fixe
 
 .. option:: --inner_num <float>
 
-    The number of moves attempted at each temperature is inner_num *  num_blocks^(4/3) in the circuit.
-    The number of blocks in a circuit is the number of pads plus the number of clbs.
+    The number of moves attempted at each temperature in placement can be calculated from inner_num scaled with circuit size or device-circuit size as specified in ``place_effort_scaling``.
+
     Changing inner_num is the best way to change the speed/quality tradeoff of the placer, as it leaves the highly-efficient automatic annealing schedule on and simply changes the number of moves per temperature.
 
     Specifying ``-inner_num 10`` will slow the placer by a factor of 10 while typically improving placement quality only by 10% or less (depends on the architecture).
     Hence users more concerned with quality than CPU time may find this a more appropriate value of inner_num.
 
+    **Default:** ``0.5``
+
+.. option:: --place_effort_scaling {circuit | device_circuit}
+
+    Controls how the number of placer moves level scales with circuit and device size:
+
+    * ``circuit``: The number of moves attempted at each temperature is inner_num *  num_blocks^(4/3) in the circuit.
+    * ``device_circuit``: The number of moves attempted at each temperature is inner_num * grid_size^(2/3) * num_blocks^(4/3) in the circuit.
+
+    The number of blocks in a circuit is the number of pads plus the number of clbs.
+
+    **Default:** ``circuit``
+
+.. option:: --anneal_auto_init_t_scale <float>
+
+    A scale on the starting temperature of the anneal for the automatic annealing
+    schedule.
+
+    When in the automatic annealing schedule, the annealer will select a good
+    initial temperature based on the quality of the initial placement. This option
+    allows you to scale that initial temperature up or down by multiplying the
+    initial temperature by the given scale. Increasing this number
+    will increase the initial temperature which will have the annealer potentially
+    explore more of the space at the expense of run time. Depending on the quality
+    of the initial placement, this may improve or hurt the quality of the final
+    placement.
+
     **Default:** ``1.0``
+
+.. option:: --anneal_auto_init_t_estimator {cost_variance, equilibrium}
+
+   Controls which estimation method is used when selecting the starting temperature
+   for the automatic annealing schedule.
+
+   The options for estimators are:
+
+   * ``cost_variance``: Estimates the initial temperature using the variance of cost after a set of trial swaps. The initial temperature is set to a value proportional to the variance.
+   * ``equilibrium``: Estimates the initial temperature by trying to predict the equilibrium temperature for the initial placement (i.e. the temperature that would result in no change in cost).
+
+    **Default** ``equilibrium``
 
 .. option:: --init_t <float>
 
@@ -683,24 +1132,22 @@ If any of init_t, exit_t or alpha_t is specified, the user schedule, with a fixe
 .. option:: --fix_pins {free | random}
 
     Controls how the placer handles I/O pads during placement.
-    
+
     * ``free``: The placer can move I/O locations to optimize the placement.
     * ``random``: Fixes I/O pads to arbitrary locations and does not allow the placer to move them during the anneal (models the effect of poor board-level I/O constraints).
-    
+
     Note: the fix_pins option also used to accept a third argument - a place file that specified where I/O pins should be placed. This argument is no longer accepted by         fix_pins. Instead, the fix_clusters option can now be used to lock down I/O pins.
 
     **Default:** ``free``.
-    
+
 .. option:: --fix_clusters {<file.place>}
 
     Controls how the placer handles blocks (of any type) during placement.
-    
-    * ``<file.place>``: A path to a file listing the desired location of blocks in the netlist.
-    
-    This place location file is in the same format as a :ref:`normal placement file <vpr_place_file>`, but does not require the first two lines which are normally at the top     of a placement file that specify the netlist file, netlist ID, and array size.
-    
-    **Default:** ````.
-    
+
+    * ``<file.place>``: A path to a file listing the desired location of clustered blocks in the netlist.
+
+    This place location file is in the same format as a :ref:`.place file <vpr_place_file>`, but does not require the first two lines which are normally at the top     of a placement file that specify the netlist file, netlist ID, and array size.
+
 .. option:: --place_algorithm {bounding_box | criticality_timing | slack_timing}
 
     Controls the algorithm used by the placer.
@@ -720,6 +1167,16 @@ If any of init_t, exit_t or alpha_t is specified, the user schedule, with a fixe
 
     **Default:**  ``criticality_timing``
 
+.. option:: --place_frequency {once | always}
+
+    Specifies how often placement is performed during the minimum channel width search.
+
+    ``once``: Placement is run only once at the beginning of the channel width search. This reduces runtime but may not benefit from congestion-aware optimizations.
+
+    ``always``: Placement is rerun for each channel width trial. This might improve routability at the cost of increased runtime.
+
+    **Default:** ``once``
+
 .. option:: --place_chan_width <int>
 
     Tells VPR how many tracks a channel of relative width 1 is expected to need to complete routing of this circuit.
@@ -734,43 +1191,97 @@ If any of init_t, exit_t or alpha_t is specified, the user schedule, with a fixe
 
     **Default:** ``0.0``
 
-.. _dusty_sa_options:
-Setting any of the following options selects `Dusty's annealing schedule <dusty_sa.rst>`_.
+.. option:: --RL_agent_placement {on | off}
 
-.. option:: --alpha_min <float>
+    Uses a Reinforcement Learning (RL) agent in choosing the appropriate move type in placement.
+    It activates the RL agent placement instead of using a fixed probability for each move type.
 
-    The minimum (starting) update factor (alpha) used.
-    Ranges between 0 and alpha_max.
+    **Default:** ``on``
 
-    **Default:** ``0.2``
+.. option:: --place_agent_multistate {on | off}
 
-.. option:: --alpha_max <float>
+    Enable a multistate agent in the placement. A second state will be activated late in
+    the annealing and in the Quench that includes all the timing driven directed moves.
 
-    The maximum (stopping) update factor (alpha) used after which simulated annealing will complete.
-    Ranges between alpha_min and 1.
+    **Default:** ``on``
 
-    **Default:** ``0.9``
+.. option:: --place_agent_algorithm {e_greedy | softmax}
 
-.. option:: --alpha_decay <float>
+    Controls which placement RL agent is used.
 
-    The rate at which alpha will approach 1: alpha(n) = 1 - (1 - alpha(n-1)) * alpha_decay
-    Ranges between 0 and 1.
+    **Default:** ``softmax``
 
-    **Default:** ``0.7``
+.. option:: --place_agent_epsilon <float>
 
-.. option:: --anneal_success_min <float>
+    Placement RL agent's epsilon for the epsilon-greedy agent. Epsilon represents
+    the percentage of exploration actions taken vs the exploitation ones.
 
-   The minimum success ratio after which the temperature will reset to maintain the target success ratio.
-   Ranges between 0 and anneal_success_target.
+    **Default:** ``0.3``
 
-    **Default:** ``0.1``
+.. option:: --place_agent_gamma <float>
 
-.. option:: --anneal_success_target <float>
+    Controls how quickly the agent's memory decays. Values between [0., 1.] specify
+    the fraction of weight in the exponentially weighted reward average applied to moves
+    which occurred greater than moves_per_temp moves ago. Values < 0 cause the
+    unweighted reward sample average to be used (all samples are weighted equally)
 
-   The temperature after each reset is selected to keep this target success ratio.
-   Ranges between anneal_success_target and 1.
+    **Default:** ``0.05``
 
-    **Default:** ``0.25``
+.. option:: --place_reward_fun {basic | nonPenalizing_basic | runtime_aware | WLbiased_runtime_aware}
+
+    The reward function used by the placement RL agent to learn the best action at each anneal stage.
+
+    .. note:: The latter two are only available for timing-driven placement.
+
+    **Default:** ``WLbiased_runtime_aware``
+
+.. option:: --place_agent_space {move_type | move_block_type}
+
+    The RL Agent exploration space can be either based on only move types or also consider different block types moved.
+
+    **Default:** ``move_block_type``
+
+.. option:: --place_quench_only {on | off}
+
+    If this option is set to ``on``, the placement will skip the annealing phase and only perform the placement quench.
+    This option is useful when the the quality of initial placement is good enough and there is no need to perform the
+    annealing phase.
+
+    **Default:** ``off``
+
+
+.. option:: --placer_debug_block <int>
+
+    .. note:: This option is likely only of interest to developers debugging the placement algorithm
+
+    Controls which block the placer produces detailed debug information for.
+
+    If the block being moved has the same ID as the number assigned to this parameter, the placer will print debugging information about it.
+
+    * For values >= 0, the value is the block ID for which detailed placer debug information should be produced.
+    * For value == -1, detailed placer debug information is produced for all blocks.
+    * For values < -1, no placer debug output is produced.
+
+    .. warning:: VPR must have been compiled with `VTR_ENABLE_DEBUG_LOGGING` on to get any debug output from this option.
+
+    **Default:** ``-2``
+
+.. option:: --placer_debug_net <int>
+
+    .. note:: This option is likely only of interest to developers debugging the placement algorithm
+
+    Controls which net the placer produces detailed debug information for.
+
+    If a net with the same ID assigned to this parameter is connected to the block that is being moved, the placer will print debugging information about it.
+
+    * For values >= 0, the value is the net ID for which detailed placer debug information should be produced.
+    * For value == -1, detailed placer debug information is produced for all nets.
+    * For values < -1, no placer debug output is produced.
+
+    .. warning:: VPR must have been compiled with `VTR_ENABLE_DEBUG_LOGGING` on to get any debug output from this option.
+
+    **Default:** ``-2``
+
 
 .. _timing_driven_placer_options:
 
@@ -798,12 +1309,19 @@ The following options are only valid when the placement engine is in timing-driv
 
     **Default:** ``0``
 
+.. option:: --quench_recompute_divider <int>
+
+    Controls how many times the placer performs a timing analysis to update its criticality estimates during a quench.
+    If unspecified, uses the value from --inner_loop_recompute_divider.
+
+    **Default:** ``0``
+
 .. option:: --td_place_exp_first <float>
 
     Controls how critical a connection is considered as a function of its slack, at the start of the anneal.
 
     If this value is 0, all connections are considered equally critical.
-    If this value is large, connections with small slacks are considered much more critical than connections with small slacks.
+    If this value is large, connections with small slacks are considered much more critical than connections with large slacks.
     As the anneal progresses, the exponent used in the criticality computation gradually changes from its starting value of td_place_exp_first to its final value of :option:`--td_place_exp_last`.
 
     **Default:** ``1.0``
@@ -816,19 +1334,20 @@ The following options are only valid when the placement engine is in timing-driv
 
     **Default:** ``8.0``
 
-.. option:: --place_delay_model {delta, delta_override}
+.. option:: --place_delay_model {simple, delta, delta_override}
 
     Controls how the timing-driven placer estimates delays.
 
-     * ``delta`` The router is used to profile delay from various locations in the grid for various differences in position
+     * ``simple`` The placement delay estimator is built from the router lookahead. This takes less CPU time to build and it is still as accurate as the ``delta`` model.
+     * ``delta`` The router is used to profile delay from various locations in the grid for various differences in position.
      * ``delta_override`` Like ``delta`` but also includes special overrides to ensure effects of direct connects between blocks are accounted for.
        This is potentially more accurate but is more complex and depending on the architecture (e.g. number of direct connects) may increase place run-time.
 
-    **Default:** ``delta``
+    **Default:** ``simple``
 
 .. option:: --place_delay_model_reducer {min, max, median, arithmean, geomean}
 
-    When calculating delta delays for the placment delay model how are multiple values combined?
+    When calculating delta delays for the placement delay model how are multiple values combined?
 
     **Default:** ``min``
 
@@ -838,38 +1357,463 @@ The following options are only valid when the placement engine is in timing-driv
 
     **Default:** ``0.0``
 
-.. option:: --place_delay_ramp_delta_threshold <float> 
+.. option:: --place_delay_ramp_delta_threshold <float>
 
     The delta distance beyond which --place_delay_ramp is applied.
     Negative values disable the placer delay ramp.
 
     **Default:** ``-1``
 
-.. option:: --place_delay_ramp_slope <float> 
+.. option:: --place_delay_ramp_slope <float>
 
     The slope of the ramp (in seconds per grid tile) which is applied to the placer delay model for delta distance beyond :option:`--place_delay_ramp_delta_threshold`.
-    
+
     **Default:** ``0.0e-9``
 
 .. option:: --place_tsu_rel_margin <float>
 
     Specifies the scaling factor for cell setup times used by the placer.
     This effectively controls whether the placer should try to achieve extra margin on setup paths.
-    For example a value of 1.1 corresponds to requesting 10%% setup margin.
-    
+    For example a value of 1.1 corresponds to requesting 10% setup margin.
+
     **Default:** ``1.0``
 
 .. option:: --place_tsu_abs_margin <float>
 
-    Specifies an absolute offest added to cell setup times used by the placer.
+    Specifies an absolute offset added to cell setup times used by the placer.
     This effectively controls whether the placer should try to achieve extra margin on setup paths.
     For example a value of 500e-12 corresponds to requesting an extra 500ps of setup margin.
-    
+
     **Default:** ``0.0``
 
 .. option:: --post_place_timing_report <file>
 
-    Name of the post-placement timing report file to generate (not generated if unspecfied).
+    Name of the post-placement timing report file to generate (not generated if unspecified).
+
+
+.. _noc_placement_options:
+
+NoC Options
+^^^^^^^^^^^^^^
+The following options are only used when FPGA device and netlist contain a NoC router.
+
+.. option:: --noc {on | off}
+
+    Enables a NoC-driven placer that optimizes the placement of routers on the NoC. Also, it enables an option in the graphical display that can be used to
+    display the NoC on the FPGA.
+
+    **Default:** ``off``
+
+.. option:: --noc_flows_file <file>
+
+    XML file containing the list of traffic flows within the NoC (communication between routers).
+
+    .. note:: It is required to specify a ``noc_flows_file`` if NoC optimization is turned on (``--noc on``).
+
+.. option:: --noc_routing_algorithm {xy_routing | bfs_routing | west_first_routing | north_last_routing | negative_first_routing | odd_even_routing}
+
+    Controls the algorithm used by the NoC to route packets.
+
+    * ``xy_routing`` Uses the direction oriented routing algorithm. This is recommended to be used with mesh NoC topologies.
+    * ``bfs_routing`` Uses the breadth first search algorithm. The objective is to find a route that uses a minimum number of links. This algorithm is not guaranteed to generate deadlock-free traffic flow routes, but can be used with any NoC topology.
+    * ``west_first_routing`` Uses the west-first routing algorithm. This is recommended to be used with mesh NoC topologies.
+    * ``north_last_routing`` Uses the north-last routing algorithm. This is recommended to be used with mesh NoC topologies.
+    * ``negative_first_routing`` Uses the negative-first routing algorithm. This is recommended to be used with mesh NoC topologies.
+    * ``odd_even_routing`` Uses the odd-even routing algorithm. This is recommended to be used with mesh NoC topologies.
+
+    **Default:** ``bfs_routing``
+
+.. option:: --noc_placement_weighting <float>
+
+    Controls the importance of the NoC placement parameters relative to timing and wirelength of the design.
+
+    * ``noc_placement_weighting = 0`` means the placement is based solely on timing and wirelength.
+    * ``noc_placement_weighting = 1`` means noc placement is considered equal to timing and wirelength.
+    * ``noc_placement_weighting > 1`` means the placement is increasingly dominated by NoC parameters.
+
+    **Default:** ``5.0``
+
+.. option:: --noc_aggregate_bandwidth_weighting <float>
+
+    Controls the importance of minimizing the NoC aggregate bandwidth. This value can be >=0, where 0 would mean the aggregate bandwidth has no relevance to placement.
+    Other positive numbers specify the importance of minimizing the NoC aggregate bandwidth compared to other NoC-related cost terms.
+    Weighting factors for NoC-related cost terms are normalized internally. Therefore, their absolute values are not important, and
+    only their relative ratios determine the importance of each cost term.
+
+    **Default:** ``0.38``
+
+.. option:: --noc_latency_constraints_weighting <float>
+
+    Controls the importance of meeting all the NoC traffic flow latency constraints. This value can be >=0, where 0 would mean latency constraints have no relevance to placement.
+    Other positive numbers specify the importance of meeting latency constraints compared to other NoC-related cost terms.
+    Weighting factors for NoC-related cost terms are normalized internally. Therefore, their absolute values are not important, and
+    only their relative ratios determine the importance of each cost term.
+
+    **Default:** ``0.6``
+
+.. option:: --noc_latency_weighting <float>
+
+    Controls the importance of reducing the latencies of the NoC traffic flows.
+    This value can be >=0, where 0 would mean the latencies have no relevance to placement
+    Other positive numbers specify the importance of minimizing aggregate latency compared to other NoC-related cost terms.
+    Weighting factors for NoC-related cost terms are normalized internally. Therefore, their absolute values are not important, and
+    only their relative ratios determine the importance of each cost term.
+
+    **Default:** ``0.02``
+
+.. option:: --noc_congestion_weighting <float>
+
+    Controls the importance of reducing the congestion of the NoC links.
+    This value can be >=0, where 0 would mean the congestion has no relevance to placement.
+    Other positive numbers specify the importance of minimizing congestion compared to other NoC-related cost terms.
+    Weighting factors for NoC-related cost terms are normalized internally. Therefore, their absolute values are not important, and
+    only their relative ratios determine the importance of each cost term.
+
+    **Default:** ``0.25``
+
+.. option:: --noc_swap_percentage <float>
+
+    Sets the minimum fraction of swaps attempted by the placer that are NoC blocks.
+    This value is an integer ranging from [0-100].
+
+    * ``0`` means NoC blocks will be moved at the same rate as other blocks.
+    * ``100`` means all swaps attempted by the placer are NoC router blocks.
+
+    **Default:** ``0``
+
+.. option:: --noc_placement_file_name <file>
+
+    Name of the output file that contains the NoC placement information.
+
+    **Default:** ``vpr_noc_placement_output.txt``
+
+
+.. _analytical_placement_options:
+
+Analytical Placement Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Instead of packing atoms into clusters and placing the clusters into valid tile
+sites on the FPGA, Analytical Placement uses analytical techniques to place atoms
+on the FPGA device by relaxing the constraints on where they can be placed. This
+atom-level placement is then legalized into a clustered placement and passed into
+the router in VPR.
+
+Analytical Placement is generally split into three stages:
+
+* Global Placement: Uses analytical techniques to place atoms on the FPGA grid.
+
+* Full Legalization: Legalizes a flat (atom) placement into legal clusters placed on the FPGA grid.
+
+* Detailed Placement: While keeping the clusters legal, performs optimizations on the clustered placement.
+
+**Typical Usage**
+
+A typical invocation that runs the full AP flow followed by routing and timing analysis:
+
+.. code-block:: none
+
+    vpr <arch>.xml <circuit>.blif --analytical_place --route --analysis
+
+When using a pre-computed flat placement file with the ``flat-recon`` full legalizer:
+
+.. code-block:: none
+
+    vpr <arch>.xml <circuit>.blif --analytical_place --read_flat_place <circuit>.fplace \
+        --ap_full_legalizer flat-recon --route --analysis
+
+.. note::
+
+    ``--analysis`` must be specified explicitly to run post-route timing analysis.
+    It is not implied by ``--route``.
+
+.. option:: --ap_analytical_solver {identity | qp-hybrid | lp-b2b}
+
+    Controls which Analytical Solver the Global Placer will use in the AP Flow.
+    The Analytical Solver solves for a placement which optimizes some objective
+    function, ignorant of the FPGA legality constraints. This provides a "lower-
+    bound" solution. The Global Placer will legalize this solution and feed it
+    back to the analytical solver to make its solution more legal.
+
+    * ``identity`` Does not formulate any equations and just passes the last
+      legalized solution through. In the first iteration, it initializes all blocks
+      to the center of the device. This solver is only used for testing and
+      debugging and should not be part of any real AP flow.
+
+    * ``qp-hybrid`` Solves for a placement that minimizes the quadratic HPWL of
+      the flat placement using a hybrid clique/star net model (as described in
+      FastPlace :cite:`Viswanathan2005_FastPlace`).
+      Uses the legalized solution as anchor-points to pull the solution to a
+      more legal solution (similar to the approach from SimPL :cite:`Kim2013_SimPL`).
+
+    * ``lp-b2b`` Solves for a placement that minimizes the linear HPWL of the
+      flat placement using the Bound2Bound net model (as described in Kraftwerk2 :cite:`Spindler2008_Kraftwerk2`).
+      Uses the legalized solution as anchor-points to pull the solution to a
+      more legal solution (similar to the approach from SimPL :cite:`Kim2013_SimPL`).
+
+    .. note::
+
+        When :option:`--num_workers` is set to more than one,
+        the solver step of the analytical solver can be parallelized across multiple threads.
+        This reduces solver runtime while producing the identical placement result.
+
+    **Default:** ``lp-b2b``
+
+.. option:: --ap_solver_threading {auto | sequential | concurrent}
+
+    Controls how the analytical solver uses the threads given by
+    :option:`--num_workers` when solving the linear systems of the global
+    placement. There is one linear system per dimension: x, y, and z on
+    multi-layer devices.
+
+    * ``auto`` Solve the systems concurrently when there are at least two
+      threads per system, otherwise sequentially. That is, at least 4 threads on
+      single-layer devices and 6 threads on multi-layer devices.
+
+    * ``sequential`` Solve the systems one after the other, each using every
+      thread. Eigen parallelizes the work inside each solve.
+
+    * ``concurrent`` Solve all systems at the same time, splitting the threads
+      evenly between them. This needs at least one thread per system. VPR
+      errors out when there are fewer threads than systems.
+
+    **Default:** ``auto``
+
+.. option:: --ap_partial_legalizer {none | bipartitioning | flow-based}
+
+    Controls which Partial Legalizer the Global Placer will use in the AP Flow.
+    The Partial Legalizer legalizes a placement generated by an Analytical Solver.
+    It is used within the Global Placer to guide the solver to a more legal
+    solution.
+
+    * ``none`` Does not partially legalize the global placement solution and just
+      passes the last solved solution through. This partial legalizer is only
+      used for testing and debugging and should not be part of any real AP flow.
+
+    * ``bipartitioning`` Creates minimum windows around over-dense regions of
+      the device and bi-partitions the atoms in these windows such that the region
+      is no longer over-dense and the atoms are in tiles that they can be placed
+      into. This is the recommended partial legalizer: it has better time complexity
+      and produces better legalization quality than ``flow-based``.
+
+    * ``flow-based`` Flows atoms from regions that are overfilled to regions that
+      are underfilled. This is a legacy legalizer that predates ``bipartitioning``
+      and is retained for comparison purposes; ``bipartitioning`` should be preferred.
+
+    **Default:** ``bipartitioning``
+
+.. option:: --ap_full_legalizer {naive | appack | flat-recon}
+
+    Controls which Full Legalizer to use in the AP Flow.
+
+    * ``naive`` Use a Naive Full Legalizer which will try to create clusters exactly where their atoms are placed.
+
+    * ``appack`` Use APPack, which takes the Packer in VPR and uses the flat atom placement to create better clusters.
+
+    * ``flat-recon`` Use the Flat Placement Reconstruction Full Legalizer which tries to reconstruct a clustered placement that is
+      as close to the incoming flat placement as possible. It can operate on the in-memory output of the Global Placement stage,
+      or it can reconstruct a placement from an external :ref:`.fplace <vpr_flat_place_file>` file supplied via :option:`--read_flat_place`.
+      In both cases, it expects the given solution to be close to legal.
+      If used with a :ref:`.fplace <vpr_flat_place_file>` file, each atom in a molecule should have compatible location information. It is legal to
+      leave some molecules unconstrained; the reconstruction phase will choose where to place them but does not attempt to optimize these locations.
+
+    **Default:** ``appack``
+
+.. option:: --ap_detailed_placer {none | annealer}
+
+    Controls which Detailed Placer to use in the AP Flow.
+
+    * ``none`` Do not use any Detailed Placer.
+
+    * ``annealer`` Use the Annealer from the Placement stage as a Detailed Placer. This will use the same Placer Options from the Place stage to configure the annealer.
+
+    **Default:** ``annealer``
+
+.. option:: --ap_timing_tradeoff <float>
+
+    Controls the trade-off between wirelength (HPWL) and delay minimization in the AP flow.
+
+    A value of 0.0 makes the AP flow focus completely on wirelength minimization,
+    while a value of 1.0 makes the AP flow focus completely on timing optimization.
+    The default of 0.5 balances both objectives equally.
+
+    .. note::
+
+        This option has no effect when :option:`--timing_analysis` is set to ``off``,
+        in which case the AP flow optimizes only for wirelength.
+
+    **Default:** ``0.5``
+
+.. option:: --ap_partial_legalizer_target_density { auto | <regex>:<float>,<float> }
+
+   Sets the target density of different physical tiles on the FPGA device
+   for the partial legalizer in the AP flow. The partial legalizer will
+   try to fill tiles up to (but not beyond) this target density. This
+   is used as a guide, the legalizer may not follow this if it must fill
+   the tile more.
+
+   The partial legalizer uses an abstraction called "mass" to describe the resources
+   used by a set of primitives in the netlist and the capacity of resources in a
+   given tile. For primitives like LUTs, FFs, and DSPs this mass can be thought of
+   as the number of pins used (but not exactly). For memories, this mass can be
+   thought of as the number of bits stored. This target density parameter lowers
+   the mass capacity of tiles.
+
+   When this option is set to auto, VPR will select good values for the
+   target density of tiles.
+
+   reasonable values are between 0.0 and 1.0, with negative values not being allowed.
+
+   This option is similar to appack_max_dist_th, where a regex string
+   is used to set the target density of different physical tiles.
+
+   For example:
+
+     .. code-block:: none
+
+        --ap_partial_legalizer_target_density .*:0.9 "clb|memory:0.8"
+
+   Would set the target density of all physical tiles to be 0.9, except for the clb and
+   memory tiles, which will be set to a target density of 0.8.
+
+    **Default:** ``auto``
+
+.. option:: --appack_max_dist_th { auto | <regex>:<float>,<float> }
+
+   Sets the maximum candidate distance thresholds for the logical block types
+   used by APPack. APPack uses the primitive-level placement produced by the
+   global placer to cluster primitives together. APPack uses the thresholds
+   here to ignore primitives which are too far away from the cluster being formed.
+
+   When this option is set to "auto", VPR will select good values for these
+   thresholds based on the primitives contained within each logical block type.
+
+   Using this option, the user can set the maximum candidate distance threshold
+   of logical block types to something else. The strings passed in by the user
+   should be of the form ``<regex>:<float>,<float>`` where the regex string is
+   used to match the name of the logical block type to set, the first float
+   is a scaling term, and the second float is an offset. The threshold will
+   be set to max(scale * (W + H), offset), where W and H are the width and height
+   of the device. This allows the user to specify a threshold based on the
+   size of the device, while also preventing the number from going below "offset".
+   When multiple strings are provided, the thresholds are set from left to right,
+   and any logical block types which have been unset will be set to their "auto"
+   values.
+
+   For example:
+
+     .. code-block:: none
+
+        --appack_max_dist_th .*:0.1,0 "clb|memory:0,5"
+
+   Would set all logical block types to be 0.1 * (W + H), except for the clb and
+   memory block, which will be set to a fixed value of 5.
+
+   Another example:
+
+     .. code-block:: none
+
+        --appack_max_dist_th "clb|LAB:0.2,5"
+
+   This will set all of the logical block types to their "auto" thresholds, except
+   for logical blocks with the name clb/LAB which will be set to 0.2 * (W + H) or
+   5 (whichever is larger).
+
+    **Default:** ``auto``
+
+.. option:: --appack_unrelated_clustering_args { auto | <regex>:<float>,<float> }
+
+   Sets parameters used for unrelated clustering (the max search distance and max attempts)
+   used by APPack.
+   APPack uses the primitive-level placement produced by the
+   global placer to cluster primitives together. APPack uses this information
+   to help increase the density of clusters (if needed) by searching for
+   unrelated molecules to pack together. It does this by searching out from
+   the centroid of the cluster being created until it finds a valid molecule.
+   If a valid molecule is found, but it fails, the packer may do another attempt
+   (up to a maximum number of attempts).
+   This argument allows the user to select the maximum distance the code will
+   search and how many attempts it will try to search for each cluster.
+
+   When this option is set to auto, VPR will select good values for these
+   parameters based on the primitives contained within each logical block type.
+
+   This option is similar to the appack_max_dist_th argument, where the
+   parameters are passed by the user in the form <regex>:<float>,<float> where
+   regex is used to match the name of the logical block type to set, the
+   first float is the max unrelated tile distance, and the second float
+   is the max unrelated clustering attempts.
+
+   For example:
+
+     .. code-block:: none
+
+        --appack_unrelated_clustering_args "clb|LAB:10,5"
+
+   This will set all of the logical block types to their "auto" parameters, except
+   for logical blocks with the name clb/LAB which will have a max search distance of
+   10 tiles and a maximum of 5 unrelated clustering attempts.
+
+    **Default:** ``auto``
+
+.. option:: --appack_inter_die_gain_multiplier <float>
+
+   Multiplier applied to APPack candidate gains when the candidate's flat
+   placement location is on a different die than the current cluster location
+   in an interposer-based architecture. This option only applies when the
+   device grid has interposer cuts; it does not apply to candidates on a
+   different layer in a 3D architecture without interposer cuts.
+
+    **Default:** ``0.1``
+
+.. option:: --appack_gain_attenuation_fn {none | quad_sqrt_knee | gaussian}
+
+    Controls the function APPack uses to attenuate a candidate molecule's gain
+    based on its distance from the cluster being formed.
+
+    * ``none`` No attenuation is applied (the multiplier is always 1.0). Useful
+      as a baseline to measure the contribution of gain attenuation.
+
+    * ``quad_sqrt_knee`` Piecewise function which decays quadratically near the
+      cluster and transitions to an inverted sqrt decay farther away.
+
+    * ``gaussian`` Smooth Gaussian decay.
+
+    **Default:** ``quad_sqrt_knee``
+
+.. option:: --ap_high_fanout_threshold <int>
+
+    Defines the threshold for high fanout nets within AP flow.
+
+    Ignores the nets that have higher fanouts than the threshold for the analytical solver.
+
+    **Default:** ``256``
+
+.. option:: --ap_verbosity <int>
+
+    Controls the verbosity of the AP flow output.
+    Larger values produce more detailed output, which may be useful for
+    debugging the algorithms in the AP flow.
+
+    * ``1 <= verbosity < 10`` Print standard, stage-level messages. This will
+      print messages at the GP, FL, or DP level.
+
+    * ``10 <= verbosity < 20`` Print more detailed messages of what is happening
+      within stages. For example, show high-level information on the legalization
+      iterations within the Global Placer.
+
+    * ``20 <= verbosity`` Print very detailed messages on intra-stage algorithms.
+
+    **Default:** ``1``
+
+.. option:: --ap_generate_mass_report {on | off}
+
+    Controls whether to generate a report on how the partial legalizer
+    within the AP flow calculates the mass of primitives and the
+    capacity of tiles on the device. This report is useful when
+    debugging the partial legalizer.
+
+    **Default:** ``off``
+
 
 .. _router_options:
 
@@ -880,6 +1824,24 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 .. note:: By default the router performs a binary search to find the minimum routable channel width.  To route at a fixed channel width use :option:`--route_chan_width`.
 
 .. seealso:: :ref:`timing_driven_router_options`
+
+.. option:: --flat_routing {on | off}
+
+    If this option is enabled, the *run-flat* router is used instead of the *two-stage* router.
+    This means that during the routing stage, all nets, both intra- and inter-cluster, are routed directly from one primitive pin to another primitive pin.
+    This increases routing time but can improve routing quality by re-arranging LUT inputs and exposing additional optimization opportunities in architectures with local intra-cluster routing that is not a full crossbar.
+
+    **Default:** ``off``
+
+.. option:: --router_opt_choke_points {on | off}
+
+    Some FPGA architectures with limited fan-out options within a cluster (e.g. fracturable LUTs with shared pins) do not converge well in routing unless fan-out choke points are discovered and optimized for during net routing.
+    Enabling this option improves router convergence for such architectures.
+
+    .. note::
+        This option only affects routing when the flat router (:option:`--flat_routing` on) is used.
+
+    **Default:** ``on``
 
 .. option:: --max_router_iterations <int>
 
@@ -903,10 +1865,9 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
 .. option:: --initial_pres_fac <float>
 
-    Sets the starting value of the present overuse penalty factor.
+    Sets the present overuse factor for the second routing iteration.
 
     *Speed-quality trade-off:* increasing this number speeds up the router, at the cost of some increase in final track count.
-    Values of 1000 or so are perfectly reasonable.
 
     **Default:** ``0.5``
 
@@ -915,6 +1876,14 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
     Sets the growth factor by which the present overuse penalty factor is multiplied after each router iteration.
 
     **Default:** ``1.3``
+
+.. option:: --max_pres_fac <float>
+
+    Sets the maximum present overuse penalty factor that can ever result during routing. Should always be less than 1e25 or so to prevent overflow.
+    Smaller values may help prevent circuitous routing in difficult routing problems, but may increase
+    the number of routing iterations needed and hence runtime.
+
+    **Default:** ``1000.0``
 
 .. option:: --acc_fac <float>
 
@@ -943,7 +1912,7 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
     * ``delay_normalized_length_frequency`` like ``delay_normalized``, but scaled by routing resource length and scaled inversely by routing resource frequency.
 
-    **Default:** ``delay_normalized_length`` for the timing-driven router and ``demand_only`` for the breadth-first router
+    **Default:** ``delay_normalized_length``
 
 .. option:: --bend_cost <float>
 
@@ -976,7 +1945,7 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
     The algorithm is robust to incorrect hints (i.e. it continues to binary search), so the hint does not need to be precise.
 
-    This option may ocassionally produce a different minimum channel width due to the different initialization.
+    This option may occasionally produce a different minimum channel width due to the different initialization.
 
     .. seealso:: :option:`--verify_binary_search`
 
@@ -984,26 +1953,21 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
     Force the router to check that the channel width determined by binary search is the minimum.
 
-    The binary search ocassionally may not find the minimum channel width (e.g. due to router sub-optimality, or routing pattern issues at a particular channel width).
+    The binary search occasionally may not find the minimum channel width (e.g. due to router sub-optimality, or routing pattern issues at a particular channel width).
 
     This option attempts to verify the minimum by routing at successively lower channel widths until two consecutive routing failures are observed.
 
-.. option:: --router_algorithm {breadth_first | timing_driven}
+.. option:: --router_algorithm {timing_driven | parallel | parallel_decomp}
 
     Selects which router algorithm to use.
 
-    .. warning::
+    * ``timing_driven`` is the default single-threaded PathFinder algorithm.
 
-        The ``breadth_first`` router **should NOT be used to compare the run-time/quality** of alternate routing algorithms.
+    * ``parallel`` partitions the device to route non-overlapping nets in parallel. Use with the ``-j`` option to specify the number of threads.
 
-        It is inferrior to the ``timing_driven`` router from a circuit speed (2x - 10x slower) and run-time perspective (takes 10-100x longer on the large benchmarks).
-        The ``breadth_first`` router is deprecated and may be removed in a future release.
+    * ``parallel_decomp`` decomposes nets for aggressive parallelization :cite:`kosar2024parallel`. This imposes additional constraints and may result in worse QoR for difficult circuits.
 
-    The ``breadth_first`` router :cite:`betz_arch_cad` focuses solely on routing a design successfully, while the ``timing_driven`` router :cite:`betz_arch_cad,murray_air` focuses both on achieving a successful route and achieving good circuit speed.
-
-    The breadth-first router is capable of routing a design using slightly fewer tracks than the timing-driving router (typically 5% if the timing-driven router uses its default parameters.
-    This can be reduced to about 2% if the router parameters are set so the timing-driven router pays more attention to routability and less to area).
-    The designs produced by the timing-driven router are much faster, however, (2x - 10x) and it uses less CPU time to route.
+    Note that both ``parallel`` and ``parallel_decomp`` are timing-driven routers.
 
     **Default:** ``timing_driven``
 
@@ -1011,7 +1975,7 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
     Incrementally re-route nets with fanout above the specified threshold.
 
-    This attempts to re-use the legal (i.e. non-congested) parts of the routing tree for high fanout nets, with the aim of reducing router execution time.
+    This attempts to reuse the legal (i.e. non-congested) parts of the routing tree for high fanout nets, with the aim of reducing router execution time.
 
     To disable, set value to a value higher than the largest fanout of any net.
 
@@ -1035,6 +1999,61 @@ VPR uses a negotiated congestion algorithm (based on Pathfinder) to perform rout
 
     **Default:** ``off``
 
+.. option:: --write_timing_summary <file>
+
+    Writes out to the file under path <file> final timing summary in machine
+    readable (JSON or XML) or human readable (TXT) format. Format is selected
+    based on the extension of <file>. The summary consists of parameters:
+
+    * `cpd` - Final critical path delay (least slack) [ns]
+    * `fmax` - Maximal frequency of the implemented circuit [MHz]
+    * `swns` - setup Worst Negative Slack (sWNS) [ns]
+    * `stns` - Setup Total Negative Slack (sTNS) [ns]
+
+
+.. option:: --generate_net_timing_report {on | off}
+
+    Generates a report that lists the bounding box, slack, and delay of every routed connection in a design in CSV format (``report_net_timing.csv``). Each row in the CSV corresponds to a single net.
+
+    The report can later be used by other tools to enable further optimizations. For example, the Synopsys synthesis tool (Synplify) can use this information to re-synthesize the design and improve the Quality of Results (QoR).
+
+    Fields in the report are:
+
+    .. code-block:: none
+
+        netname         : The name assigned to the net in the atom netlist
+        Fanout          : Net's fanout (number of sinks)
+        bb_xmin         : X coordinate of the net's bounding box's bottom-left corner
+        bb_ymin         : Y coordinate of the net's bounding box's bottom-left corner
+        bb_layer_min    : Lowest layer number of the net's bounding box
+        bb_xmax         : X coordinate of the net's bounding box's top-right corner
+        bb_ymax         : Y coordinate of the net's bounding box's top-right corner
+        bb_layer_max    : Highest layer number of the net's bounding box
+        src_pin_name    : Name of the net's source pin
+        src_pin_slack   : Setup slack of the net's source pin
+        sinks           : A semicolon-separated list of sink pin entries, each in the format:
+                          <sink_pin_name>,<sink_pin_slack>,<sink_pin_delay>
+
+    Example value for the ``sinks`` field:
+    ``"U2.B,0.12,0.5;U3.C,0.10,0.6;U4.D,0.08,0.7"``
+
+    **Default:** ``off``
+
+.. option:: --route_verbosity <int>
+
+    Controls the verbosity of routing output.
+    High values produce more detailed output, which can be useful for debugging or understanding the routing process.
+
+    **Default**: ``1``
+
+.. option:: --device_model_warnings <on|off>
+
+    Show warnings related to architecture files, RR graph generation, and router lookahead.
+    These warnings are intended for VTR developers.
+    End users who are given fixed architecture and RR graph files can safely set this parameter to off.
+
+    **Default:** ``on``
+
 .. _timing_driven_router_options:
 
 Timing-Driven Router Options
@@ -1048,6 +2067,100 @@ The following options are only valid when the router is in timing-driven mode (t
     Values between 1 and 2 are reasonable, with higher values trading some quality for reduced CPU time.
 
     **Default:** ``1.2``
+
+.. option:: --astar_offset <float>
+
+    Sets how aggressive the directed search used by the timing-driven router is.
+    It is a subtractive adjustment to the lookahead heuristic.
+
+    Values between 0 and 1e-9 are reasonable; higher values may increase quality at the expense of run-time.
+
+    **Default:** ``0.0``
+
+.. option:: --router_profiler_astar_fac <float>
+
+    Controls the directedness of the timing-driven router's exploration when doing router delay profiling of an architecture.
+    The router delay profiling step is currently used to calculate the place delay matrix lookup.
+    Values between 1 and 2 are reasonable; higher values trade some quality for reduced run-time.
+
+    **Default:** ``1.2``
+
+.. option:: --enable_parallel_connection_router {on | off}
+
+    Controls whether the MultiQueue-based parallel connection router is used during a single connection routing.
+
+    When enabled, the parallel connection router accelerates the path search for individual source-sink connections using
+    multi-threading without altering the net routing order.
+
+    **Default:** ``off``
+
+.. option:: --post_target_prune_fac <float>
+
+    Controls the post-target pruning heuristic calculation in the parallel connection router.
+
+    This parameter is used as a multiplicative factor applied to the VPR heuristic (not guaranteed to be admissible, i.e.,
+    might over-predict the cost to the sink) to calculate the 'stopping heuristic' when pruning nodes after the target has
+    been reached. The 'stopping heuristic' must be admissible for the path search algorithm to guarantee optimal paths and
+    be deterministic.
+
+    Values of this parameter are architecture-specific and have to be empirically found.
+
+    This parameter has no effect if :option:`--enable_parallel_connection_router` is not set.
+
+    **Default:** ``1.2``
+
+.. option:: --post_target_prune_offset <float>
+
+    Controls the post-target pruning heuristic calculation in the parallel connection router.
+
+    This parameter is used as a subtractive offset together with :option:`--post_target_prune_fac` to apply an affine
+    transformation on the VPR heuristic to calculate the 'stopping heuristic'. The 'stopping heuristic' must be admissible
+    for the path search algorithm to guarantee optimal paths and be deterministic.
+
+    Values of this parameter are architecture-specific and have to be empirically found.
+
+    This parameter has no effect if :option:`--enable_parallel_connection_router` is not set.
+
+    **Default:** ``0.0``
+
+.. option:: --multi_queue_num_threads <int>
+
+    Controls the number of threads used by MultiQueue-based parallel connection router.
+
+    If not explicitly specified, defaults to 1, implying the parallel connection router works in 'serial' mode using only
+    one main thread to route.
+
+    This parameter has no effect if :option:`--enable_parallel_connection_router` is not set.
+
+    **Default:** ``1``
+
+.. option:: --multi_queue_num_queues <int>
+
+    Controls the number of queues used by MultiQueue in the parallel connection router.
+
+    Must be set >= 2. A common configuration for this parameter is the number of threads used by MultiQueue * 4 (the number
+    of queues per thread).
+
+    This parameter has no effect if :option:`--enable_parallel_connection_router` is not set.
+
+    **Default:** ``2``
+
+.. option:: --multi_queue_direct_draining {on | off}
+
+    Controls whether to enable queue draining optimization for MultiQueue-based parallel connection router.
+
+    When enabled, queues can be emptied quickly by draining all elements if no further solutions need to be explored after
+    the target is reached in the path search.
+
+    Note: For this optimization to maintain optimality and deterministic results, the 'ordering heuristic' (calculated by
+    :option:`--astar_fac` and :option:`--astar_offset`) must be admissible to ensure emptying queues of entries with higher
+    costs does not prune possibly superior solutions. However, you can still enable this optimization regardless of whether
+    optimality and determinism are required for your specific use case (in such cases, the 'ordering heuristic' can be
+    inadmissible).
+
+    This parameter has no effect if :option:`--enable_parallel_connection_router` is not set.
+
+    **Default:** ``off``
 
 .. option:: --max_criticality <float>
 
@@ -1070,7 +2183,7 @@ The following options are only valid when the router is in timing-driven mode (t
 
     The first routing iteration wirelength abort threshold.
     If the first routing iteration uses more than this fraction of available wirelength routing is aborted.
-    
+
     **Default:** ``0.85``
 
 .. option:: --incremental_reroute_delay_ripup {on | off | auto}
@@ -1095,7 +2208,15 @@ The following options are only valid when the router is in timing-driven mode (t
 
     **Default:** ``safe``
 
-.. option:: --routing_budgets_algorithm { disable | minimax | scale_delay }
+.. option:: --routing_predictor_min_history <int>
+
+    Number of routing iterations of overuse history the routing failure predictor must accumulate before it starts estimating the iteration at which a successful route will be found.
+
+    .. seealso:: :option:`--routing_failure_predictor`
+
+    **Default:** ``8``
+
+.. option:: --routing_budgets_algorithm { disable | minimax | yoyo | scale_delay }
 
     .. warning:: Experimental
 
@@ -1103,7 +2224,9 @@ The following options are only valid when the router is in timing-driven mode (t
 
     ``disable`` is used to disable the budget feature. This uses the default VPR and ignores hold time constraints.
 
-    ``minimax`` sets the minimum and maximum budgets by distributing the long path and short path slacks depending on the the current delay values. This uses the routing cost valleys and Minimax-PERT algorithm :cite:`minimax_pert,RCV_algorithm`.
+    ``minimax`` sets the minimum and maximum budgets by distributing the long path and short path slacks depending on the the current delay values. This uses the Minimax-PERT algorithm :cite:`minimax_pert`.
+
+    ``yoyo`` allocates budgets using minimax algorithm (as above), and enables hold slack resolution in the router using the Routing Cost Valleys (RCV) algorithm :cite:`RCV_algorithm`.
 
     ``scale_delay`` has the minimum budgets set to 0 and the maximum budgets is set to the delay of a net scaled by the pin criticality (net delay/pin criticality).
 
@@ -1116,14 +2239,14 @@ The following options are only valid when the router is in timing-driven mode (t
 
     **Default:** ``off``
 
-.. option:: --congested_routing_iteration_threshold CONGESTED_ROUTING_ITERATION_THRESHOLD
+.. option:: --congested_routing_iteration_threshold <float>
 
     Controls when the router enters a high effort mode to resolve lingering routing congestion.
     Value is the fraction of max_router_iterations beyond which the routing is deemed congested.
-    
+
     **Default:** ``1.0`` (never)
 
-.. option:: --route_bb_update {static, dynamic}
+.. option:: --route_bb_update {static | dynamic}
 
     Controls how the router's net bounding boxes are updated:
 
@@ -1132,35 +2255,65 @@ The following options are only valid when the router is in timing-driven mode (t
 
      **Default:** ``dynamic``
 
-.. option:: --router_high_fanout_threshold ROUTER_HIGH_FANOUT_THRESHOLD
+.. option:: --router_high_fanout_threshold <int>
 
     Specifies the net fanout beyond which a net is considered high fanout.
     Values less than zero disable special behaviour for high fanout nets.
 
     **Default:** ``64``
 
-.. option:: --router_lookahead {classic, map}
+.. option:: --router_lookahead {classic | map | compressed_map | extended_map | separable | simple}
 
     Controls what lookahead the router uses to calculate cost of completing a connection.
 
      * ``classic``: The classic VPR lookahead
      * ``map``: A more advanced lookahead which accounts for diverse wire types and their connectivity
+     * ``compressed_map``: The algorithm is similar to map lookahead with the exception of sparse sampling of the chip to reduce the run-time to build the router lookahead and also its memory footprint.
+     * ``extended_map``: A more advanced and extended lookahead which accounts for a more exhaustive node sampling method.
+     * ``separable``: An experimental lookahead which estimates delay and congestion by combining independently profiled costs along the x and y axes. It uses the map lookahead for SOURCE/OPIN estimates and as a fallback for unsampled wire costs. Flat routing and reading or writing lookahead files are currently unsupported.
+     * ``simple``: A purely distance-based lookahead loaded from an external file using :option:`--read_router_lookahead`. This lookahead returns a cost estimate for channel nodes by querying a lookup table, while for any other node type it returns zero.
 
-     **Default:** ``classic``
+     **Default:** ``map``
+
+.. option:: --generate_router_lookahead_report {on | off}
+
+   If turned on, generates a detailed report on the router lookahead: report_router_lookahead.rpt
+
+   This report contains information on how accurate the router lookahead is and
+   if and when it overestimates the cost from a node to a target node. It does
+   this by doing a set of trial routes and comparing the estimated cost from the
+   router lookahead to the actual cost of the route path.
+
+   **Default:** ``off``
+
+.. option:: --router_initial_acc_cost_chan_congestion_threshold <float>
+
+    Utilization threshold above which initial accumulated routing cost (acc_cost) is increased to penalize congested channels.
+    Used to bias routing away from highly utilized regions during early routing iterations.
+
+    **Default:** ``0.5``
+
+.. option:: --router_initial_acc_cost_chan_congestion_weight <float>
+
+    Weight applied to the excess channel utilization (above threshold) when computing the initial accumulated cost (acc_cost)of routing resources.
+
+    Higher values make the router more sensitive to early congestion.
+
+    **Default:** ``0.5``
 
 .. option:: --router_max_convergence_count <float>
 
     Controls how many times the router is allowed to converge to a legal routing before halting.
     If multiple legal solutions are found the best quality implementation is used.
-    
+
     **Default:** ``1``
 
 .. option:: --router_reconvergence_cpd_threshold <float>
 
-    Specifies the minimum potential CPD improvement for which the router will continue to attempt re-convergent routing. 
+    Specifies the minimum potential CPD improvement for which the router will continue to attempt re-convergent routing.
 
     For example, a value of 0.99 means the router will not give up on reconvergent routing if it thinks a > 1% CPD reduction is possible.
-    
+
      **Default:** ``0.99``
 
 .. option:: --router_initial_timing {all_critical | lookahead}
@@ -1180,14 +2333,14 @@ The following options are only valid when the router is in timing-driven mode (t
 
 .. option:: --router_first_iter_timing_report <file>
 
-    Name of the timing report file to generate after the first routing iteration completes (not generated if unspecfied).
+    Name of the timing report file to generate after the first routing iteration completes (not generated if unspecified).
 
 .. option:: --router_debug_net <int>
 
     .. note:: This option is likely only of interest to developers debugging the routing algorithm
 
     Controls which net the router produces detailed debug information for.
-    
+
     * For values >= 0, the value is the net ID for which detailed router debug information should be produced.
     * For value == -1, detailed router debug information is produced for all nets.
     * For values < -1, no router debug output is produced.
@@ -1196,7 +2349,7 @@ The following options are only valid when the router is in timing-driven mode (t
 
     **Default:** ``-2``
 
-.. option:: --router_debug_sink_rr ROUTER_DEBUG_SINK_RR
+.. option:: --router_debug_sink_rr <int>
 
     .. note:: This option is likely only of interest to developers debugging the routing algorithm
 
@@ -1206,8 +2359,15 @@ The following options are only valid when the router is in timing-driven mode (t
      * For values < 0, sink-based router debug output is disabled.
 
     .. warning:: VPR must have been compiled with `VTR_ENABLE_DEBUG_LOGGING` on to get any debug output from this option.
-    
+
     **Default:** ``-2``
+
+.. option:: --router_lookahead_interposer_base_cut_multiplier
+    .. note:: This option only works affects the map router lookahead and devices that have interposer cuts
+
+    A multiplier that's applied to the base cost of interposer wires for the router lookahead.
+
+    **Default:** ``2``
 
 .. _analysis_options:
 
@@ -1237,6 +2397,54 @@ Analysis Options
 
     **Default:** ``off``
 
+.. option:: --gen_post_implementation_merged_netlist { on | off }
+
+    This option is based on ``--gen_post_synthesis_netlist``.
+    The difference is that ``--gen_post_implementation_merged_netlist`` generates a single verilog file with merged top module multi-bit ports of the implemented circuit.
+    The name of the file is ``<basename>_merged_post_implementation.v``
+
+    **Default:** ``off``
+
+.. option:: --gen_post_implementation_sdc { on | off }
+
+    Generates an SDC file including a list of constraints that would
+    replicate the timing constraints that the timing analysis within
+    VPR followed during the flow. This can be helpful for flows that
+    use external timing analysis tools that have additional capabilities
+    or more detailed delay models than what VPR uses.
+
+    **Default:** ``off``
+
+.. option:: --post_synth_netlist_unconn_inputs { unconnected | nets | gnd | vcc }
+
+    Controls how unconnected input cell ports are handled in the post-synthesis netlist
+
+     * unconnected: leave unconnected
+     * nets: connect each unconnected input pin to its own separate undriven net named: ``__vpr__unconn<ID>``, where ``<ID>`` is index assigned to this occurrence of unconnected port in design
+     * gnd: tie all to ground (``1'b0``)
+     * vcc: tie all to VCC (``1'b1``)
+
+    **Default:** ``unconnected``
+
+.. option:: --post_synth_netlist_unconn_outputs { unconnected | nets }
+
+    Controls how unconnected output cell ports are handled in the post-synthesis netlist
+
+     * unconnected: leave unconnected
+     * nets: connect each unconnected output pin to its own separate undriven net named: ``__vpr__unconn<ID>``, where ``<ID>`` is index assigned to this occurrence of unconnected port in design
+
+    **Default:** ``unconnected``
+
+.. option:: --post_synth_netlist_module_parameters { on | off }
+
+    Controls whether the post-synthesis netlist output by VTR can use Verilog parameters
+    or not. When using the post-synthesis netlist for external timing analysis,
+    some tools cannot accept the netlist if it contains parameters. By setting
+    this option to ``off``, VPR will try to represent the netlist using non-parameterized
+    modules.
+
+    **Default:** ``on``
+
 .. option:: --timing_report_npaths <int>
 
     Controls how many timing paths are reported.
@@ -1256,7 +2464,7 @@ Analysis Options
           For example:
 
             .. code-block:: none
-                
+
                 #Path 2
                 Startpoint: FFC.Q[0] (.latch clocked by clk)
                 Endpoint  : out:out1.outpad[0] (.output clocked by virtual_io_clock)
@@ -1326,9 +2534,9 @@ Analysis Options
             where each line prefixed with ``|`` (pipe character) represent a sub-delay of an edge within the timing graph.
 
             For instance:
-            
+
             .. code-block:: none
-                
+
                 FFC.Q[0] (.latch at (3,3)) [clock-to-output]                     0.000     0.166
                 | (intra 'clb' routing)                                          0.045     0.211
                 | (inter-block routing)                                          0.491     0.703
@@ -1351,15 +2559,15 @@ Analysis Options
 
         * ``detailed``: Like ``aggregated``, the timing reports show netlist pins, and an aggregated summary of intra-block. In addition, it includes a detailed breakdown of the inter-block routing delays.
 
-          It is important to note that detailed timing report can only list the components of a non-global 
-          net, otherwise, it reports inter-block routing as well as an incremental delay of 0, just as in the 
+          It is important to note that detailed timing report can only list the components of a non-global
+          net, otherwise, it reports inter-block routing as well as an incremental delay of 0, just as in the
           aggregated and netlist reports.
-          
+
 
           For example:
-            
+
             .. code-block:: none
- 
+
                 #Path 2
                 Startpoint: FFC.Q[0] (.latch at (3,3) clocked by clk)
                 Endpoint  : out:out1.outpad[0] (.output at (3,4) clocked by virtual_io_clock)
@@ -1399,19 +2607,19 @@ Analysis Options
                 --------------------------------------------------------------------------------
                 slack (VIOLATED)                                                          -0.717
 
-            where each line prefixed with ``|`` (pipe character) represent a sub-delay of an edge within the timing graph. 
-            In the detailed mode, the inter-block routing has now been replaced by the net components. 
+            where each line prefixed with ``|`` (pipe character) represent a sub-delay of an edge within the timing graph.
+            In the detailed mode, the inter-block routing has now been replaced by the net components.
 
             For OPINS and IPINS, this is the format of the name:
             | (``ROUTING_RESOURCE_NODE_TYPE:ROUTING_RESOURCE_NODE_ID`` ``side:SIDE`` ``(START_COORDINATES)->(END_COORDINATES)``)
- 
+
             For CHANX and CHANY, this is the format of the name:
             | (``ROUTING_RESOURCE_NODE_TYPE:ROUTING_RESOURCE_NODE_ID`` ``SEGMENT_NAME`` ``length:LENGTH`` ``(START_COORDINATES)->(END_COORDINATES)``)
-            
+
             Here is an example of the breakdown:
-            
+
             .. code-block:: none
-                
+
                 FFC.Q[0] (.latch at (3,3)) [clock-to-output]                     0.000     0.166
                 | (intra 'clb' routing)                                          0.045     0.211
                 | (OPIN:1479 side:TOP (3,3))                                     0.000     0.211
@@ -1429,14 +2637,14 @@ Analysis Options
               * ``45`` ps from the ``.latch`` output pin to an output pin of a ``clb`` block,
               * ``0`` ps from the ``clb`` output pin to the ``CHANX:2073`` wire,
               * ``95`` ps from the ``CHANX:2073`` to the ``CHANY:2139`` wire,
-              * ``75`` ps from the ``CHANY:2139`` to the ``CHANX:2040`` wore, 
+              * ``75`` ps from the ``CHANY:2139`` to the ``CHANX:2040`` wore,
               * ``95`` ps from the ``CHANX:2040`` to the ``CHANY:2166`` wire,
-              * ``76`` ps from the ``CHANY:2166`` to the ``CHANX:2076`` wire, 
+              * ``76`` ps from the ``CHANY:2166`` to the ``CHANX:2076`` wire,
               * ``78`` ps from the ``CHANX:2076`` to the input pin of a ``io`` block,
               * ``14`` ps input pin of a ``io`` block to ``.output``.
 
             In the initial description we referred to the existence of global nets, which also occur in this net:
-            
+
             .. code-block:: none
 
                 clk.inpad[0] (.input at (4,2))                                   0.000     0.000
@@ -1446,16 +2654,16 @@ Analysis Options
                 FFC.clk[0] (.latch at (3,3))                                     0.000     0.042
 
             Global nets are unrouted nets, and their route trees happen to be null.
-            
-            Finally, is interesting to note that the consecutive channel components may not seem to connect. There are two types of occurences:
+
+            Finally, is interesting to note that the consecutive channel components may not seem to connect. There are two types of occurrences:
 
             1. The preceding channel's ending coordinates extend past the following channel's starting coordinates (example from a different path):
 
             .. code-block:: none
-            
+
                 | (chany:2113 unnamed_segment_0 length:2 (1, 3) -> (1, 1))       0.116     0.405
                 | (chanx:2027 unnamed_segment_0 length:0 (1, 2) -> (1, 2))       0.078     0.482
-            
+
             It is possible that by opening a switch between (1,2) to (1,1), CHANY:2113 actually only extends from (1,3) to (1,2).
 
             2. The preceding channel's ending coordinates have no relation to the following channel's starting coordinates.
@@ -1465,22 +2673,22 @@ Analysis Options
             .. _fig_path_2:
 
             .. figure:: path_2.*
-             
+
              Illustration of Path #2 with insight into the coordinate system.
 
             :numref:`fig_path_2` shows the routing resources used in Path #2 and their locations on the FPGA.
 
-            1. The signal emerges from near the top-right corner of the block to_FFC (OPIN:1479)  and joins the topmost horizontal segment of length 1 (CHANX:2073). 
+            3. The signal emerges from near the top-right corner of the block to_FFC (OPIN:1479)  and joins the topmost horizontal segment of length 1 (CHANX:2073).
 
-            2. The signal proceeds to the left, then connects to the outermost, blue vertical segment of length 0 (CHANY:2139). 
+            4. The signal proceeds to the left, then connects to the outermost, blue vertical segment of length 0 (CHANY:2139).
 
-            3. The signal continues downward and attaches to the horizontal segment of length 1 (CHANX:2040). 
+            5. The signal continues downward and attaches to the horizontal segment of length 1 (CHANX:2040).
 
-            4. Of the aforementioned horizontal segment, after travelling one linear unit to the right, the signal jumps on a vertical segment of length 0 (CHANY:2166).
+            6. Of the aforementioned horizontal segment, after travelling one linear unit to the right, the signal jumps on a vertical segment of length 0 (CHANY:2166).
 
-            5. The signal travels upward and promptly connects to a horizontal segment of length 0 (CHANX:2076).
+            7. The signal travels upward and promptly connects to a horizontal segment of length 0 (CHANX:2076).
 
-            6. This segment connects to the green destination io (3,4).
+            8. This segment connects to the green destination io (3,4).
 
         * ``debug``: Like ``detailed``, but includes additional VPR internal debug information such as timing graph node IDs (``tnode``) and routing SOURCE/SINK nodes.
 
@@ -1501,7 +2709,38 @@ Analysis Options
 
     **Default:** ``off``
 
-        
+.. option:: --timing_report_path_categories {all | <category> [<category> ...]}
+
+    Controls which categories of timing paths are included in the timing reports (``report_timing.setup.rpt`` and ``report_timing.hold.rpt``) and the clock skew reports (see :option:`--timing_report_skew`).
+
+    A timing path is categorized by its startpoint and endpoint, where a register is any clocked primitive (e.g. a flip-flop or the clocked ports of a RAM):
+
+    * ``in2reg``: From a primary input to a register.
+    * ``reg2reg``: From a register to a register.
+    * ``reg2out``: From a register to a primary output.
+    * ``in2out``: From a primary input to a primary output (i.e. purely combinational).
+
+    The values can be:
+
+    * ``all``: All timing paths are reported.
+    * ``<category> [<category> ...]``: Only the timing paths in the listed categories are reported.
+
+    The paths are filtered before choosing the worst :option:`--timing_report_npaths` paths, and filtered reports state which categories they contain.
+    This option only filters the reported paths; it does not affect the slack or criticality calculations (and hence the optimization), or the timing summary printed to the log.
+
+    For example, the following reports only the register to register paths, which is useful when looking at the clock skew between registers:
+
+    .. code-block:: none
+
+        --timing_report_skew on --timing_report_path_categories reg2reg
+
+    .. note:: Only the worst path into each endpoint (for each pair of launch and capture clock domains) is considered, so each endpoint is categorized by its worst path.
+              For example, a register whose worst incoming path starts at a primary input is not included in a ``reg2reg`` report, even if it is also reached from other registers.
+              Constraining the primary inputs and outputs on their own (virtual) clock in the SDC file separates these paths, so that both are reported.
+
+    **Default:** ``all``
+
+
 .. _power_estimation_options:
 
 Power Estimation Options
@@ -1523,13 +2762,46 @@ The following options are used to enable power estimation in VPR.
 
 .. option:: --activity_file <file>
 
-    File containing signal activites for all of the nets in the circuit.  The file must be in the format::
+    File containing signal activities for all of the nets in the circuit.  The file must be in the format::
 
         <net name1> <signal probability> <transition density>
         <net name2> <signal probability> <transition density>
         ...
 
     Instructions on generating this file are provided in :ref:`power_estimation`.
+
+Server Mode Options
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+If VPR is in server mode, it listens on a socket for commands from a client. Currently, this is used to enable interactive timing analysis and visualization of timing paths in the VPR UI under the control of a separate client.
+
+The following options are used to enable server mode in VPR.
+
+.. seealso:: :ref:`server_mode` for more details.
+
+.. option:: --server
+
+    Run in server mode. Accept single client application connection and respond to client requests
+
+    **Default:** ``off``
+
+.. option:: --port PORT
+
+    Server port number.
+
+    **Default:** ``60555``
+
+.. seealso:: :ref:`interactive_path_analysis_client`
+
+
+Show Architecture Resources
+^^^^^^^^^^^^^^^^^^^^^^^^
+.. option:: --show_arch_resources
+
+    Print the architecture resource report for each device layout and exit normally.
+
+    **Default:** ``off``
+
 
 Command-line Auto Completion
 ----------------------------

@@ -1,87 +1,39 @@
-FROM ubuntu:trusty as builder
-
-RUN apt-get update 
-RUN apt-get install -y \
-    software-properties-common
-
-# add auto gpg key other lauchpad ppa
-RUN add-apt-repository ppa:nilarimogard/webupd8
-RUN apt-get update && apt-get install -y \
-    launchpad-getkeys
-
-# add llvm PPA
-RUN printf "\n\
-deb http://ppa.launchpad.net/george-edison55/precise-backports/ubuntu precise main \n\
-deb http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu trusty main \n\
-deb https://apt.llvm.org/precise llvm-toolchain-precise-3.6 main \n\
-deb https://apt.llvm.org/trusty llvm-toolchain-trusty-6.0 main \n\
-deb https://apt.llvm.org/trusty llvm-toolchain-trusty-7 main \n\
-deb https://apt.llvm.org/trusty llvm-toolchain-trusty-8 main \n\
-" >> /etc/apt/sources.list
-
-# grab llvm keys
-RUN launchpad-getkeys
-
-RUN apt-get update
-RUN apt-get install -y \
-    ninja \
-    libssl-dev \
-    autoconf \
-    automake \
-    bash \
-    bison \
-    binutils \
-    binutils-gold \
-    build-essential \
-    ctags \
-    curl \
-    doxygen \
-    flex \
-    fontconfig \
-    gdb \
-    git \
-    gperf \
-    libcairo2-dev \
-    libgtk-3-dev \
-    libevent-dev \
-    libfontconfig1-dev \
-    liblist-moreutils-perl \
-    libncurses5-dev \
-    libx11-dev \
-    libxft-dev \
-    libxml++2.6-dev \
-    perl \
-    python \
-    python-lxml \
-    texinfo \
-    time \
-    valgrind \
-    zip \
-    qt5-default \
-    clang-format-7 \
-    g++-5 \
-    gcc-5 \
-    g++-6 \
-    gcc-6 \
-    g++-7 \
-    gcc-7 \
-    g++-8 \
-    gcc-8 \
-    g++-9 \
-    gcc-9 \
-    clang-6.0 \
-    clang-8
-
-# install CMake
-WORKDIR /tmp
-ENV CMAKE=cmake-3.17.0
-RUN curl -s https://cmake.org/files/v3.17/${CMAKE}.tar.gz | tar xvzf -
-RUN cd ${CMAKE} && ./configure && make && make install
-
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
 # set out workspace
 ENV WORKSPACE=/workspace
 RUN mkdir -p ${WORKSPACE}
-VOLUME ${WORKSPACE}
 WORKDIR ${WORKSPACE}
-
-CMD [ "/bin/bash" ]
+COPY . ${WORKSPACE}
+ENV VIRTUAL_ENV=${WORKSPACE}/.venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+# Install and cleanup is done in one command to minimize the build cache size
+RUN apt-get update -qq \
+# Extract package names from install_apt_packages.sh
+    && sed '/sudo/d' install_apt_packages.sh | sed '/#/d' | sed '/packages_to_install/d' | sed '/)/d' | sed '/if\s.*then$/d' | sed '/else$/d' | sed '/fi$/d' | sed '/echo\s/d' | sed '/install_dev/d' | sed '/for /d' | sed '/^done$/d' | sed 's/ \\//g' | sed '/^$/d' | sed '/^[[:space:]]*$/d' | sed 's/\s//g' \
+# Install packages
+    | xargs apt-get -y install --no-install-recommends \
+# Additional packages not listed in install_apt_packages.sh
+    && apt-get -y install --no-install-recommends \
+    wget \
+    ninja-build \
+    python3-pip \
+    python3-venv \
+    time \
+    verilator \
+# Install python packages
+    && python3 -m venv ${VIRTUAL_ENV} \
+    && pip install -r requirements.txt \
+    && echo "[ -f ${VIRTUAL_ENV}/bin/activate ] && . ${VIRTUAL_ENV}/bin/activate" > /etc/profile.d/vtr-venv.sh \
+    && echo "[ -f ${VIRTUAL_ENV}/bin/activate ] && . ${VIRTUAL_ENV}/bin/activate" >> /etc/bash.bashrc \
+# Cleanup
+    && apt-get autoclean && apt-get clean && apt-get -y autoremove \
+    && rm -rf /var/lib/apt/lists/*
+# Provision the Qt6 SDK exactly like CI: dev/ensure_qt6_sdk.sh installs it
+# (no sudo) into the repo-local prefix, which CMake auto-detects — so no
+# CMAKE_PREFIX_PATH is needed.
+RUN bash dev/ensure_qt6_sdk.sh
+# Build VTR
+RUN rm -rf build && make -j$(nproc) && make install
+# Container's default launch command
+SHELL ["/bin/bash", "-c"]

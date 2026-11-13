@@ -8,9 +8,9 @@
 #include "vtr_time.h"
 
 #if defined(VPR_USE_TBB)
-#    include <tbb/task_group.h>
-#    include <tbb/parallel_for_each.h>
-#    include <tbb/combinable.h>
+#include <tbb/task_group.h>
+#include <tbb/parallel_for_each.h>
+#include <tbb/combinable.h>
 #endif
 
 template<typename T>
@@ -31,11 +31,17 @@ constexpr bool INCR_UPDATE_ATOM_SLACK = true;
 constexpr bool INCR_UPDATE_ATOM_MAX_REQ_WORST_SLACK = true;
 constexpr bool INCR_UPDATE_ATOM_CRIT = true;
 
-SetupSlackCrit::SetupSlackCrit(const AtomNetlist& netlist, const AtomLookup& netlist_lookup)
+SetupSlackCrit::SetupSlackCrit(const AtomNetlist& netlist, const AtomLookup& netlist_lookup, size_t num_clock_domains)
     : netlist_(netlist)
     , netlist_lookup_(netlist_lookup)
     , pin_slacks_(netlist_.pins().size(), NAN)
-    , pin_criticalities_(netlist_.pins().size(), NAN) {
+    , pin_criticalities_(netlist_.pins().size(), NAN)
+    , max_req_(num_clock_domains)
+    , worst_slack_(num_clock_domains)
+    , max_req_node_(num_clock_domains)
+    , worst_slack_node_(num_clock_domains)
+    , prev_max_req_(num_clock_domains)
+    , prev_worst_slack_(num_clock_domains) {
     //We are doing some kind of full (i.e. non-incremental updates), record
     //all the relevant timing graph nodes
     all_nodes_.reserve(netlist.pins().size());
@@ -93,31 +99,13 @@ void SetupSlackCrit::update_slacks(const tatum::SetupTimingAnalyzer& analyzer) {
 
     pins_with_modified_slacks_.clear();
 
-#if defined(VPR_USE_TBB)
-    tbb::combinable<std::vector<AtomPinId>> modified_pins; //Per-thread vectors
-
-    tbb::parallel_for_each(nodes.begin(), nodes.end(), [&, this](tatum::NodeId node) {
-        AtomPinId modified_pin = this->update_pin_slack(node, analyzer);
-
-        if (modified_pin) {
-            modified_pins.local().push_back(modified_pin); //Insert into per-thread vector
-        }
-    });
-
-    //Merge per-thread modified pins vectors
-    modified_pins.combine_each([&](const std::vector<AtomPinId>& pins) {
-        pins_with_modified_slacks_.insert(pins_with_modified_slacks_.end(),
-                                          pins.begin(), pins.end());
-    });
-
-#else
+    /** We could do this in parallel, but the overhead of combining the results is not worth it */
     for (tatum::NodeId node : nodes) {
         AtomPinId modified_pin = update_pin_slack(node, analyzer);
         if (modified_pin) {
             pins_with_modified_slacks_.push_back(modified_pin);
         }
     }
-#endif
 
     ++incr_slack_updates_;
     incr_slack_update_time_sec_ += timer.elapsed_sec();
@@ -232,7 +220,7 @@ bool SetupSlackCrit::incr_update_max_req_and_worst_slack(const tatum::TimingGrap
      * number the incremental update can be more efficient.
      *
      * This is essentially the same calculation as recompute_max_req_and_worst_slack() (which iterates
-     * over *all* primary). By interating only over the modified nodes, this will produce the correct 
+     * over *all* primary). By interacting only over the modified nodes, this will produce the correct 
      * result *except* when the previous max-required/worst-slack have changed.
      *
      * In such as case, if the previously dominant node has had it's required time decreased (or worst 
@@ -255,10 +243,10 @@ bool SetupSlackCrit::incr_update_max_req_and_worst_slack(const tatum::TimingGrap
 
             float req = tag.time().value();
 
-            VTR_ASSERT_SAFE(max_req_.count(domain_pair));
+            VTR_ASSERT_SAFE(max_req_.contains(domain_pair));
             float prev_req = max_req_[domain_pair];
 
-            VTR_ASSERT_SAFE(max_req_node_.count(domain_pair));
+            VTR_ASSERT_SAFE(max_req_node_.contains(domain_pair));
             tatum::NodeId prev_node = max_req_node_[domain_pair];
 
             if (prev_node == node && prev_req > req) {
@@ -269,8 +257,8 @@ bool SetupSlackCrit::incr_update_max_req_and_worst_slack(const tatum::TimingGrap
             }
 
             if (max_req_[domain_pair] < req) {
-                max_req_[domain_pair] = req;
-                max_req_node_[domain_pair] = node;
+                max_req_.set(domain_pair, req);
+                max_req_node_.set(domain_pair, node);
             }
         }
 
@@ -282,10 +270,10 @@ bool SetupSlackCrit::incr_update_max_req_and_worst_slack(const tatum::TimingGrap
             VTR_ASSERT_SAFE_MSG(!std::isnan(slack), "Slack should not be nan");
             VTR_ASSERT_SAFE_MSG(std::isfinite(slack), "Slack should not be infinite");
 
-            VTR_ASSERT_SAFE(worst_slack_.count(domain_pair));
+            VTR_ASSERT_SAFE(worst_slack_.contains(domain_pair));
             float prev_slack = worst_slack_[domain_pair];
 
-            VTR_ASSERT_SAFE(worst_slack_node_.count(domain_pair));
+            VTR_ASSERT_SAFE(worst_slack_node_.contains(domain_pair));
             tatum::NodeId prev_node = worst_slack_node_[domain_pair];
 
             if (prev_node == node && slack > prev_slack) {
@@ -296,8 +284,8 @@ bool SetupSlackCrit::incr_update_max_req_and_worst_slack(const tatum::TimingGrap
             }
 
             if (slack < worst_slack_[domain_pair]) {
-                worst_slack_[domain_pair] = slack;
-                worst_slack_node_[domain_pair] = node;
+                worst_slack_.set(domain_pair, slack);
+                worst_slack_node_.set(domain_pair, node);
             }
         }
     }
@@ -327,9 +315,9 @@ void SetupSlackCrit::recompute_max_req_and_worst_slack(const tatum::TimingGraph&
             auto domain_pair = DomainPair(tag.launch_clock_domain(), tag.capture_clock_domain());
 
             float req = tag.time().value();
-            if (!max_req_.count(domain_pair) || max_req_[domain_pair] < req) {
-                max_req_[domain_pair] = req;
-                max_req_node_[domain_pair] = node; //Record dominant node to help later  incremental updates
+            if (!max_req_.contains(domain_pair) || max_req_[domain_pair] < req) {
+                max_req_.set(domain_pair, req);
+                max_req_node_.set(domain_pair, node); // Record dominant node to help later  incremental updates
             }
         }
 
@@ -341,9 +329,9 @@ void SetupSlackCrit::recompute_max_req_and_worst_slack(const tatum::TimingGraph&
             VTR_ASSERT_SAFE_MSG(!std::isnan(slack), "Slack should not be nan");
             VTR_ASSERT_SAFE_MSG(std::isfinite(slack), "Slack should not be infinite");
 
-            if (!worst_slack_.count(domain_pair) || slack < worst_slack_[domain_pair]) {
-                worst_slack_[domain_pair] = slack;
-                worst_slack_node_[domain_pair] = node; //Record dominant node to help later  incremental updates
+            if (!worst_slack_.contains(domain_pair) || slack < worst_slack_[domain_pair]) {
+                worst_slack_.set(domain_pair, slack);
+                worst_slack_node_.set(domain_pair, node); // Record dominant node to help later  incremental updates
             }
         }
     }
@@ -356,31 +344,13 @@ template<typename NodeRange>
 void SetupSlackCrit::update_pin_criticalities_from_nodes(const NodeRange& nodes, const tatum::SetupTimingAnalyzer& analyzer) {
     pins_with_modified_criticalities_.clear();
 
-#if defined(VPR_USE_TBB)
-    tbb::combinable<std::vector<AtomPinId>> modified_pins; //Per-thread vectors
-
-    tbb::parallel_for_each(nodes.begin(), nodes.end(), [&, this](tatum::NodeId node) {
-        AtomPinId modified_pin = update_pin_criticality(node, analyzer);
-
-        if (modified_pin) {
-            modified_pins.local().push_back(modified_pin); //Insert into per-thread vector
-        }
-    });
-
-    //Merge per-thread modified pins vectors
-    modified_pins.combine_each([&](const std::vector<AtomPinId>& pins) {
-        pins_with_modified_criticalities_.insert(pins_with_modified_criticalities_.end(),
-                                                 pins.begin(), pins.end());
-    });
-
-#else
+    /** We could do this in parallel, but the overhead of combining the results is not worth it */
     for (tatum::NodeId node : nodes) {
         AtomPinId modified_pin = update_pin_criticality(node, analyzer);
         if (modified_pin) {
             pins_with_modified_criticalities_.push_back(modified_pin);
         }
     }
-#endif
 }
 
 AtomPinId SetupSlackCrit::update_pin_criticality(const tatum::NodeId node,
@@ -472,31 +442,26 @@ bool SetupSlackCrit::verify_pin_criticalities(const tatum::TimingGraph& timing_g
 
 bool SetupSlackCrit::verify_max_req_worst_slack(const tatum::TimingGraph& timing_graph, const tatum::SetupTimingAnalyzer& analyzer) {
     auto calc_max_req = max_req_;
-    auto calc_max_req_node = max_req_node_;
-
     auto calc_worst_slack = worst_slack_;
-    auto calc_worst_slack_node = worst_slack_node_;
 
     recompute_max_req_and_worst_slack(timing_graph, analyzer);
 
+    // NOTE: We only check if the required time and the worst slack matches, we
+    //       do not check if the max required nodes or the worst slack nodes
+    //       match. This is because the incremental timing analysis and the non-
+    //       incremental timing analysis do not break ties deterministically,
+    //       so they may get different nodes; but they should always get the same
+    //       required time and worst slack. If the incremental timing analysis
+    //       gets different nodes, this will not change the results of the
+    //       timing analysis.
     if (calc_max_req != max_req_) {
         VPR_ERROR(VPR_ERROR_TIMING,
                   "Calculated max required times does not match value calculated from scratch");
         return false;
     }
-    if (calc_max_req_node != max_req_node_) {
-        VPR_ERROR(VPR_ERROR_TIMING,
-                  "Calculated max required nodes does not match value calculated from scratch");
-        return false;
-    }
     if (calc_worst_slack != worst_slack_) {
         VPR_ERROR(VPR_ERROR_TIMING,
                   "Calculated worst slack does not match value calculated from scratch");
-        return false;
-    }
-    if (calc_worst_slack_node != worst_slack_node_) {
-        VPR_ERROR(VPR_ERROR_TIMING,
-                  "Calculated worst slack nodes does not match value calculated from scratch");
         return false;
     }
 

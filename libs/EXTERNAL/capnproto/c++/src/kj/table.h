@@ -21,10 +21,6 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "common.h"
 #include "tuple.h"
 #include "vector.h"
@@ -39,16 +35,29 @@
 #endif
 #endif
 
+#if KJ_DEBUG_TABLE_IMPL
+#include "debug.h"
+#define KJ_TABLE_IREQUIRE KJ_REQUIRE
+#define KJ_TABLE_IASSERT KJ_ASSERT
+#else
+#define KJ_TABLE_IREQUIRE KJ_IREQUIRE
+#define KJ_TABLE_IASSERT KJ_IASSERT
+#endif
+
+KJ_BEGIN_HEADER
+
 namespace kj {
+
+class String;
 
 namespace _ {  // private
 
-template <typename Inner, typename Mapping>
-class MappedIterable;
 template <typename Row>
 class TableMapping;
 template <typename Row, typename Inner>
 using TableIterable = MappedIterable<Inner, TableMapping<Row>>;
+template <typename Row, typename Inner>
+using TableIterator = MappedIterator<Inner, TableMapping<Row>>;
 
 }  // namespace _ (private)
 
@@ -122,8 +131,8 @@ class Table {
   //     // Optional. Implements Table::find<Index>(...).
   //
   //     template <typename... SearchParams>
-  //     Iterable range(kj::ArrayPtr<const Row> table, SearchParams&&...) const;
-  //     // Optional. Implements Table::range<Index>(...).
+  //     Iterator seek(kj::ArrayPtr<const Row> table, SearchParams&&...) const;
+  //     // Optional. Implements Table::seek<Index>() and Table::range<Index>(...).
   //
   //     Iterator begin() const;
   //     Iterator end() const;
@@ -187,12 +196,12 @@ public:
   //   beginning of an argument list, but we define a hack to support it below. Don't worry about
   //   it.
 
-  template <typename Index, typename... Params>
-  auto range(Params&&... params);
-  template <typename Index, typename... Params>
-  auto range(Params&&... params) const;
+  template <typename Index, typename BeginKey, typename EndKey>
+  auto range(BeginKey&& begin, EndKey&& end);
+  template <typename Index, typename BeginKey, typename EndKey>
+  auto range(BeginKey&& begin, EndKey&& end) const;
   // Using the given index, look up a range of values, returning an iterable. What parameters are
-  // accepted depends on the index. Not all indexes support this method (in particular, unique
+  // accepted depends on the index. Not all indexes support this method (in particular, unordered
   // indexes normally don't).
 
   template <typename Index>
@@ -203,12 +212,24 @@ public:
   // support this method.
 
   template <typename Index, typename... Params>
+  auto seek(Params&&... params);
+  template <typename Index, typename... Params>
+  auto seek(Params&&... params) const;
+  // Takes same parameters as find(), but returns an iterator at the position where the search
+  // key should go. That is, this returns an iterator that points to the matching entry or, if
+  // there is no matching entry, points at the next entry after the key, in order. Or, if there
+  // is no such entry, the returned iterator is the same as ordered().end().
+  //
+  // seek() is only supported by indexes that support ordered(). It returns the same kind of
+  // iterator that ordered() uses.
+
+  template <typename Index, typename... Params>
   bool eraseMatch(Params&&... params);
   // Erase the row that would be matched by `find<Index>(params)`. Returns true if there was a
   // match.
 
-  template <typename Index, typename... Params>
-  size_t eraseRange(Params&&... params);
+  template <typename Index, typename BeginKey, typename EndKey>
+  size_t eraseRange(BeginKey&& begin, EndKey&& end);
   // Erase the row that would be matched by `range<Index>(params)`. Returns the number of
   // elements erased.
 
@@ -239,18 +260,22 @@ public:
   kj::Maybe<const Row&> find(Params&&... params) const;
   template <size_t index = 0, typename... Params, typename Func>
   Row& findOrCreate(Params&&... params, Func&& createFunc);
-  template <size_t index = 0, typename... Params>
-  auto range(Params&&... params);
-  template <size_t index = 0, typename... Params>
-  auto range(Params&&... params) const;
+  template <size_t index = 0, typename BeginKey, typename EndKey>
+  auto range(BeginKey&& begin, EndKey&& end);
+  template <size_t index = 0, typename BeginKey, typename EndKey>
+  auto range(BeginKey&& begin, EndKey&& end) const;
   template <size_t index = 0>
   _::TableIterable<Row, TypeOfIndex<index, Tuple<Indexes...>>&> ordered();
   template <size_t index = 0>
   _::TableIterable<const Row, const TypeOfIndex<index, Tuple<Indexes...>>&> ordered() const;
   template <size_t index = 0, typename... Params>
-  bool eraseMatch(Params&&... params);
+  auto seek(Params&&... params);
   template <size_t index = 0, typename... Params>
-  size_t eraseRange(Params&&... params);
+  auto seek(Params&&... params) const;
+  template <size_t index = 0, typename... Params>
+  bool eraseMatch(Params&&... params);
+  template <size_t index = 0, typename BeginKey, typename EndKey>
+  size_t eraseRange(BeginKey&& begin, EndKey&& end);
   // Methods which take an index type as a template parameter can also take an index number. This
   // is useful particularly when you have multiple indexes of the same type but different runtime
   // properties. Additionally, you can omit the template parameter altogether to use the first
@@ -311,7 +336,7 @@ class HashIndex;
 //     // methods to match this row.
 //
 //     bool matches(const Row&, SearchParams&&...) const;
-//     // Returns true if the row on the left matches thes search params on the right.
+//     // Returns true if the row on the left matches the search params on the right.
 //
 //     uint hashCode(SearchParams&&...) const;
 //     // Computes the hash code of the given search params. Matching rows (as determined by
@@ -362,72 +387,6 @@ inline void tryReserveSize(Params&&...) {}
 // If `src` has a `.size()` method, call dst.reserve(dst.size() + src.size()).
 // Otherwise, do nothing.
 
-template <typename Inner, class Mapping>
-class MappedIterator: private Mapping {
-  // An iterator that wraps some other iterator and maps the values through a mapping function.
-  // The type `Mapping` must define a method `map()` which performs this mapping.
-  //
-  // TODO(cleanup): This seems generally useful. Should we put it somewhere resuable?
-
-public:
-  template <typename... Params>
-  MappedIterator(Inner inner, Params&&... params)
-      : Mapping(kj::fwd<Params>(params)...), inner(inner) {}
-
-  inline auto operator->() const { return &Mapping::map(*inner); }
-  inline decltype(auto) operator* () const { return Mapping::map(*inner); }
-  inline decltype(auto) operator[](size_t index) const { return Mapping::map(inner[index]); }
-  inline MappedIterator& operator++() { ++inner; return *this; }
-  inline MappedIterator  operator++(int) { return MappedIterator(inner++, *this); }
-  inline MappedIterator& operator--() { --inner; return *this; }
-  inline MappedIterator  operator--(int) { return MappedIterator(inner--, *this); }
-  inline MappedIterator& operator+=(ptrdiff_t amount) { inner += amount; return *this; }
-  inline MappedIterator& operator-=(ptrdiff_t amount) { inner -= amount; return *this; }
-  inline MappedIterator  operator+ (ptrdiff_t amount) const {
-    return MappedIterator(inner + amount, *this);
-  }
-  inline MappedIterator  operator- (ptrdiff_t amount) const {
-    return MappedIterator(inner - amount, *this);
-  }
-  inline ptrdiff_t operator- (const MappedIterator& other) const { return inner - other.inner; }
-
-  inline bool operator==(const MappedIterator& other) const { return inner == other.inner; }
-  inline bool operator!=(const MappedIterator& other) const { return inner != other.inner; }
-  inline bool operator<=(const MappedIterator& other) const { return inner <= other.inner; }
-  inline bool operator>=(const MappedIterator& other) const { return inner >= other.inner; }
-  inline bool operator< (const MappedIterator& other) const { return inner <  other.inner; }
-  inline bool operator> (const MappedIterator& other) const { return inner >  other.inner; }
-
-private:
-  Inner inner;
-};
-
-template <typename Inner, typename Mapping>
-class MappedIterable: private Mapping {
-  // An iterable that wraps some other iterable and maps the values through a mapping function.
-  // The type `Mapping` must define a method `map()` which performs this mapping.
-  //
-  // TODO(cleanup): This seems generally useful. Should we put it somewhere resuable?
-
-public:
-  template <typename... Params>
-  MappedIterable(Inner inner, Params&&... params)
-      : Mapping(kj::fwd<Params>(params)...), inner(inner) {}
-
-  typedef Decay<decltype(instance<Inner>().begin())> InnerIterator;
-  typedef MappedIterator<InnerIterator, Mapping> Iterator;
-  typedef Decay<decltype(instance<const Inner>().begin())> InnerConstIterator;
-  typedef MappedIterator<InnerConstIterator, Mapping> ConstIterator;
-
-  inline Iterator begin() { return { inner.begin(), (Mapping&)*this }; }
-  inline Iterator end() { return { inner.end(), (Mapping&)*this }; }
-  inline ConstIterator begin() const { return { inner.begin(), (const Mapping&)*this }; }
-  inline ConstIterator end() const { return { inner.end(), (const Mapping&)*this }; }
-
-private:
-  Inner inner;
-};
-
 template <typename Row>
 class TableMapping {
 public:
@@ -448,6 +407,23 @@ public:
 private:
   Row* table;
 };
+
+template <typename Iterator>
+class IterRange {
+public:
+  inline IterRange(Iterator b, Iterator e): b(b), e(e) {}
+
+  inline Iterator begin() const { return b; }
+  inline Iterator end() const { return e; }
+private:
+  Iterator b;
+  Iterator e;
+};
+
+template <typename Iterator>
+inline IterRange<Decay<Iterator>> iterRange(Iterator b, Iterator e) {
+  return { b, e };
+}
 
 }  // namespace _ (private)
 
@@ -640,11 +616,15 @@ public:
       return table.rows[*existing];
     } else {
       bool success = false;
+      KJ_DEFER({
+        if (!success) {
+          get<index>(table.indexes).erase(table.rows.asPtr(), pos, params...);
+        }
+      });
       auto& newRow = table.rows.add(createFunc());
       KJ_DEFER({
         if (!success) {
           table.rows.removeLast();
-          get<index>(table.indexes).erase(table.rows.asPtr(), pos, params...);
         }
       });
       if (Table<Row, Indexes...>::template Impl<>::insert(table, pos, newRow, index) == nullptr) {
@@ -683,25 +663,29 @@ Row& Table<Row, Indexes...>::findOrCreate(First&& first, Rest&&... rest) {
 }
 
 template <typename Row, typename... Indexes>
-template <typename Index, typename... Params>
-auto Table<Row, Indexes...>::range(Params&&... params) {
-  return range<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
+template <typename Index, typename BeginKey, typename EndKey>
+auto Table<Row, Indexes...>::range(BeginKey&& begin, EndKey&& end) {
+  return range<indexOfType<Index, Tuple<Indexes...>>()>(
+      kj::fwd<BeginKey>(begin), kj::fwd<EndKey>(end));
 }
 template <typename Row, typename... Indexes>
-template <size_t index, typename... Params>
-auto Table<Row, Indexes...>::range(Params&&... params) {
-  auto inner = get<index>(indexes).range(rows.asPtr(), kj::fwd<Params>(params)...);
+template <size_t index, typename BeginKey, typename EndKey>
+auto Table<Row, Indexes...>::range(BeginKey&& begin, EndKey&& end) {
+  auto inner = _::iterRange(get<index>(indexes).seek(rows.asPtr(), kj::fwd<BeginKey>(begin)),
+                            get<index>(indexes).seek(rows.asPtr(), kj::fwd<EndKey>(end)));
   return _::TableIterable<Row, decltype(inner)>(kj::mv(inner), rows.begin());
 }
 template <typename Row, typename... Indexes>
-template <typename Index, typename... Params>
-auto Table<Row, Indexes...>::range(Params&&... params) const {
-  return range<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
+template <typename Index, typename BeginKey, typename EndKey>
+auto Table<Row, Indexes...>::range(BeginKey&& begin, EndKey&& end) const {
+  return range<indexOfType<Index, Tuple<Indexes...>>()>(
+      kj::fwd<BeginKey>(begin), kj::fwd<EndKey>(end));
 }
 template <typename Row, typename... Indexes>
-template <size_t index, typename... Params>
-auto Table<Row, Indexes...>::range(Params&&... params) const {
-  auto inner = get<index>(indexes).range(rows.asPtr(), kj::fwd<Params>(params)...);
+template <size_t index, typename BeginKey, typename EndKey>
+auto Table<Row, Indexes...>::range(BeginKey&& begin, EndKey&& end) const {
+  auto inner = _::iterRange(get<index>(indexes).seek(rows.asPtr(), kj::fwd<BeginKey>(begin)),
+                            get<index>(indexes).seek(rows.asPtr(), kj::fwd<EndKey>(end)));
   return _::TableIterable<const Row, decltype(inner)>(kj::mv(inner), rows.begin());
 }
 
@@ -729,6 +713,29 @@ Table<Row, Indexes...>::ordered() const {
 
 template <typename Row, typename... Indexes>
 template <typename Index, typename... Params>
+auto Table<Row, Indexes...>::seek(Params&&... params) {
+  return seek<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
+}
+template <typename Row, typename... Indexes>
+template <size_t index, typename... Params>
+auto Table<Row, Indexes...>::seek(Params&&... params) {
+  auto inner = get<index>(indexes).seek(rows.asPtr(), kj::fwd<Params>(params)...);
+  return _::TableIterator<Row, decltype(inner)>(kj::mv(inner), rows.begin());
+}
+template <typename Row, typename... Indexes>
+template <typename Index, typename... Params>
+auto Table<Row, Indexes...>::seek(Params&&... params) const {
+  return seek<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
+}
+template <typename Row, typename... Indexes>
+template <size_t index, typename... Params>
+auto Table<Row, Indexes...>::seek(Params&&... params) const {
+  auto inner = get<index>(indexes).seek(rows.asPtr(), kj::fwd<Params>(params)...);
+  return _::TableIterator<Row, decltype(inner)>(kj::mv(inner), rows.begin());
+}
+
+template <typename Row, typename... Indexes>
+template <typename Index, typename... Params>
 bool Table<Row, Indexes...>::eraseMatch(Params&&... params) {
   return eraseMatch<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
 }
@@ -744,14 +751,17 @@ bool Table<Row, Indexes...>::eraseMatch(Params&&... params) {
 }
 
 template <typename Row, typename... Indexes>
-template <typename Index, typename... Params>
-size_t Table<Row, Indexes...>::eraseRange(Params&&... params) {
-  return eraseRange<indexOfType<Index, Tuple<Indexes...>>()>(kj::fwd<Params>(params)...);
+template <typename Index, typename BeginKey, typename EndKey>
+size_t Table<Row, Indexes...>::eraseRange(BeginKey&& begin, EndKey&& end) {
+  return eraseRange<indexOfType<Index, Tuple<Indexes...>>()>(
+      kj::fwd<BeginKey>(begin), kj::fwd<EndKey>(end));
 }
 template <typename Row, typename... Indexes>
-template <size_t index, typename... Params>
-size_t Table<Row, Indexes...>::eraseRange(Params&&... params) {
-  return eraseAllImpl(get<index>(indexes).range(rows.asPtr(), kj::fwd<Params>(params)...));
+template <size_t index, typename BeginKey, typename EndKey>
+size_t Table<Row, Indexes...>::eraseRange(BeginKey&& begin, EndKey&& end) {
+  auto inner = _::iterRange(get<index>(indexes).seek(rows.asPtr(), kj::fwd<BeginKey>(begin)),
+                            get<index>(indexes).seek(rows.asPtr(), kj::fwd<EndKey>(end)));
+  return eraseAllImpl(inner);
 }
 
 template <typename Row, typename... Indexes>
@@ -762,7 +772,7 @@ void Table<Row, Indexes...>::verify() {
 
 template <typename Row, typename... Indexes>
 void Table<Row, Indexes...>::erase(Row& row) {
-  KJ_IREQUIRE(&row >= rows.begin() && &row < rows.end(), "row is not a member of this table");
+  KJ_TABLE_IREQUIRE(&row >= rows.begin() && &row < rows.end(), "row is not a member of this table");
   eraseImpl(&row - rows.begin());
 }
 template <typename Row, typename... Indexes>
@@ -778,7 +788,7 @@ void Table<Row, Indexes...>::eraseImpl(size_t pos) {
 
 template <typename Row, typename... Indexes>
 Row Table<Row, Indexes...>::release(Row& row) {
-  KJ_IREQUIRE(&row >= rows.begin() && &row < rows.end(), "row is not a member of this table");
+  KJ_TABLE_IREQUIRE(&row >= rows.begin() && &row < rows.end(), "row is not a member of this table");
   size_t pos = &row - rows.begin();
   Impl<>::erase(*this, pos, row);
   Row result = kj::mv(row);
@@ -811,7 +821,7 @@ size_t Table<Row, Indexes...>::eraseAll(Predicate&& predicate) {
 template <typename Row, typename... Indexes>
 template <typename Collection, typename, bool>
 size_t Table<Row, Indexes...>::eraseAll(Collection&& collection) {
-  return eraseAllImpl(_::MappedIterable<Collection&, _::TableUnmapping<Row>>(
+  return eraseAllImpl(MappedIterable<Collection&, _::TableUnmapping<Row>>(
       collection, rows.begin()));
 }
 
@@ -864,7 +874,7 @@ struct HashBucket {
   inline const Row& getRow(ArrayPtr<const Row> table) const { return table[getPos()]; }
   inline bool isPos(uint pos) const { return pos + 2 == value; }
   inline uint getPos() const {
-    KJ_IASSERT(value >= 2);
+    KJ_TABLE_IASSERT(value >= 2);
     return value - 2;
   }
   inline void setEmpty() { value = 0; }
@@ -890,9 +900,14 @@ uint chooseBucket(uint hash, uint count);
 template <typename Callbacks>
 class HashIndex {
 public:
-  HashIndex() KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY
+  HashIndex() = default;
   template <typename... Params>
   HashIndex(Params&&... params): cb(kj::fwd<Params>(params)...) {}
+
+  size_t capacity() {
+    // This method is for testing.
+    return buckets.size();
+  }
 
   void reserve(size_t size) {
     if (buckets.size() < size * 2) {
@@ -902,7 +917,7 @@ public:
 
   void clear() {
     erasedCount = 0;
-    memset(buckets.begin(), 0, buckets.asBytes().size());
+    if (buckets.size() > 0) memset(buckets.begin(), 0, buckets.asBytes().size());
   }
 
   template <typename Row>
@@ -913,8 +928,12 @@ public:
   template <typename Row, typename... Params>
   kj::Maybe<size_t> insert(kj::ArrayPtr<Row> table, size_t pos, Params&&... params) {
     if (buckets.size() * 2 < (table.size() + 1 + erasedCount) * 3) {
-      // Load factor is more than 2/3, let's rehash.
-      rehash(kj::max(buckets.size() * 2, (table.size() + 1) * 2));
+      // Load factor is more than 2/3, let's rehash so that it's 1/3, i.e. double the buckets.
+      // Note that rehashing also cleans up erased entries, so we may not actually be doubling if
+      // there are a lot of erasures. Nevertheless, this gives us amortized constant time -- it
+      // would take at least O(table.size()) more insertions (whether or not erasures occur)
+      // before another rehash is needed.
+      rehash((table.size() + 1) * 3);
     }
 
     uint hashCode = cb.hashCode(params...);
@@ -1008,6 +1027,7 @@ private:
 
   void rehash(size_t targetSize) {
     buckets = _::rehash(buckets, targetSize);
+    erasedCount = 0;
   }
 };
 
@@ -1066,6 +1086,10 @@ public:
 
   BTreeImpl();
   ~BTreeImpl() noexcept(false);
+
+  KJ_DISALLOW_COPY(BTreeImpl);
+  BTreeImpl(BTreeImpl&& other);
+  BTreeImpl& operator=(BTreeImpl&& other);
 
   void logInconsistency() const;
 
@@ -1153,11 +1177,13 @@ public:
   inline MaybeUint& operator=(decltype(nullptr)) { i = 0; return *this; }
   inline MaybeUint& operator=(uint j) { i = j + 1; return *this; }
 
-  inline uint operator*() const { KJ_IREQUIRE(i != 0); return i - 1; }
+  inline uint operator*() const { KJ_TABLE_IREQUIRE(i != 0); return i - 1; }
 
   template <typename Func>
   inline bool check(Func& func) const { return i != 0 && func(i - 1); }
   // Equivalent to *this != nullptr && func(**this)
+
+  kj::String toString() const;
 
 private:
   uint i;
@@ -1177,14 +1203,14 @@ struct BTreeImpl::Leaf {
   inline bool isHalfFull() const;
 
   inline void insert(uint i, uint newRow) {
-    KJ_IREQUIRE(rows[Leaf::NROWS - 1] == nullptr);  // check not full
+    KJ_TABLE_IREQUIRE(rows[Leaf::NROWS - 1] == nullptr);  // check not full
 
     amove(rows + i + 1, rows + i, Leaf::NROWS - (i + 1));
     rows[i] = newRow;
   }
 
   inline void erase(uint i) {
-    KJ_IREQUIRE(rows[0] != nullptr);  // check not empty
+    KJ_TABLE_IREQUIRE(rows[0] != nullptr);  // check not empty
 
     amove(rows + i, rows + i + 1, Leaf::NROWS - (i + 1));
     rows[Leaf::NROWS - 1] = nullptr;
@@ -1228,6 +1254,12 @@ struct BTreeImpl::Parent {
   static constexpr size_t NKEYS = 7;
   MaybeUint keys[NKEYS];
   // Pointers to table rows, offset by 1 so that 0 is an empty value.
+  //
+  // Each keys[i] specifies the table row which is the "last" row found under children[i].
+  //
+  // Note that `keys` has size 7 but `children` has size 8. `children[8]`'s "last row" is not
+  // recorded here, because the Parent's Parent records it instead. (Or maybe the Parent's Parent's
+  // Parent, if this Parent is `children[8]` of its own Parent. And so on.)
 
   static constexpr size_t NCHILDREN = NKEYS + 1;
   uint children[NCHILDREN];
@@ -1311,7 +1343,7 @@ bool BTreeImpl::Leaf::isMostlyFull() const {
   return rows[Leaf::NROWS / 2] != nullptr;
 }
 bool BTreeImpl::Leaf::isHalfFull() const {
-  KJ_IASSERT(rows[Leaf::NROWS / 2 - 1] != nullptr);
+  KJ_TABLE_IASSERT(rows[Leaf::NROWS / 2 - 1] != nullptr);
   return rows[Leaf::NROWS / 2] == nullptr;
 }
 
@@ -1322,7 +1354,7 @@ bool BTreeImpl::Parent::isMostlyFull() const {
   return keys[Parent::NKEYS / 2] != nullptr;
 }
 bool BTreeImpl::Parent::isHalfFull() const {
-  KJ_IASSERT(keys[Parent::NKEYS / 2 - 1] != nullptr);
+  KJ_TABLE_IASSERT(keys[Parent::NKEYS / 2 - 1] != nullptr);
   return keys[Parent::NKEYS / 2] == nullptr;
 }
 
@@ -1332,13 +1364,13 @@ public:
       : tree(tree), leaf(leaf), row(row) {}
 
   size_t operator*() const {
-    KJ_IREQUIRE(row < Leaf::NROWS && leaf->rows[row] != nullptr,
+    KJ_TABLE_IREQUIRE(row < Leaf::NROWS && leaf->rows[row] != nullptr,
         "tried to dereference end() iterator");
     return *leaf->rows[row];
   }
 
   inline Iterator& operator++() {
-    KJ_IREQUIRE(leaf->rows[row] != nullptr, "B-tree iterator overflow");
+    KJ_TABLE_IREQUIRE(leaf->rows[row] != nullptr, "B-tree iterator overflow");
     ++row;
     if (row >= Leaf::NROWS || leaf->rows[row] == nullptr) {
       if (leaf->next == 0) {
@@ -1358,7 +1390,7 @@ public:
 
   inline Iterator& operator--() {
     if (row == 0) {
-      KJ_IREQUIRE(leaf->prev != 0, "B-tree iterator underflow");
+      KJ_TABLE_IREQUIRE(leaf->prev != 0, "B-tree iterator underflow");
       leaf = &tree[leaf->prev].leaf;
       row = leaf->size() - 1;
     } else {
@@ -1384,17 +1416,17 @@ public:
   }
 
   void insert(BTreeImpl& impl, uint newRow) {
-    KJ_IASSERT(impl.tree == tree);
+    KJ_TABLE_IASSERT(impl.tree == tree);
     const_cast<Leaf*>(leaf)->insert(row, newRow);
   }
 
   void erase(BTreeImpl& impl) {
-    KJ_IASSERT(impl.tree == tree);
+    KJ_TABLE_IASSERT(impl.tree == tree);
     const_cast<Leaf*>(leaf)->erase(row);
   }
 
   void replace(BTreeImpl& impl, uint newRow) {
-    KJ_IASSERT(impl.tree == tree);
+    KJ_TABLE_IASSERT(impl.tree == tree);
     const_cast<Leaf*>(leaf)->rows[row] = newRow;
   }
 
@@ -1403,23 +1435,6 @@ private:
   const Leaf* leaf;
   uint row;
 };
-
-template <typename Iterator>
-class IterRange {
-public:
-  inline IterRange(Iterator b, Iterator e): b(b), e(e) {}
-
-  inline Iterator begin() const { return b; }
-  inline Iterator end() const { return e; }
-private:
-  Iterator b;
-  Iterator e;
-};
-
-template <typename Iterator>
-inline IterRange<Decay<Iterator>> iterRange(Iterator b, Iterator e) {
-  return { b, e };
-}
 
 inline BTreeImpl::Iterator BTreeImpl::begin() const {
   return { tree, &tree[beginLeaf].leaf, 0 };
@@ -1434,7 +1449,7 @@ inline BTreeImpl::Iterator BTreeImpl::end() const {
 template <typename Callbacks>
 class TreeIndex {
 public:
-  TreeIndex() KJ_DEFAULT_CONSTRUCTOR_VS2015_BUGGY
+  TreeIndex() = default;
   template <typename... Params>
   TreeIndex(Params&&... params): cb(kj::fwd<Params>(params)...) {}
 
@@ -1469,7 +1484,7 @@ public:
 
   template <typename Row, typename... Params>
   void erase(kj::ArrayPtr<Row> table, size_t pos, Params&&... params) {
-    impl.erase(pos, searchKey(table, params...));
+    impl.erase(pos, searchKeyForErase(table, pos, params...));
   }
 
   template <typename Row, typename... Params>
@@ -1488,13 +1503,9 @@ public:
     }
   }
 
-  template <typename Row, typename Begin, typename End>
-  _::IterRange<_::BTreeImpl::Iterator> range(
-      kj::ArrayPtr<Row> table, Begin&& begin, End&& end) const {
-    return {
-      impl.search(searchKey(table, begin)),
-      impl.search(searchKey(table, end  ))
-    };
+  template <typename Row, typename... Params>
+  _::BTreeImpl::Iterator seek(kj::ArrayPtr<Row> table, Params&&... params) const {
+    return impl.search(searchKey(table, params...));
   }
 
 private:
@@ -1526,6 +1537,16 @@ private:
     auto predicate = [&](uint i) { return cb.isBefore(table[i], params...); };
     return SearchKeyImpl<decltype(predicate)>(kj::mv(predicate));
   }
+
+  template <typename Row, typename... Params>
+  inline auto searchKeyForErase(kj::ArrayPtr<Row>& table, uint pos, Params&... params) const {
+    // When erasing, the table entry for the erased row may already be invalid, so we must avoid
+    // accessing it.
+    auto predicate = [&,pos](uint i) {
+      return i != pos && cb.isBefore(table[i], params...);
+    };
+    return SearchKeyImpl<decltype(predicate)>(kj::mv(predicate));
+  }
 };
 
 // -----------------------------------------------------------------------------
@@ -1538,6 +1559,10 @@ class InsertionOrderIndex {
   struct Link;
 public:
   InsertionOrderIndex();
+  InsertionOrderIndex(const InsertionOrderIndex&) = delete;
+  InsertionOrderIndex& operator=(const InsertionOrderIndex&) = delete;
+  InsertionOrderIndex(InsertionOrderIndex&& other);
+  InsertionOrderIndex& operator=(InsertionOrderIndex&& other);
   ~InsertionOrderIndex() noexcept(false);
 
   class Iterator {
@@ -1546,7 +1571,7 @@ public:
         : links(links), pos(pos) {}
 
     inline size_t operator*() const {
-      KJ_IREQUIRE(pos != 0, "can't derefrence end() iterator");
+      KJ_TABLE_IREQUIRE(pos != 0, "can't dereference end() iterator");
       return pos - 1;
     };
 
@@ -1623,3 +1648,5 @@ private:
 };
 
 } // namespace kj
+
+KJ_END_HEADER

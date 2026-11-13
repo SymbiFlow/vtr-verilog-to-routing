@@ -316,7 +316,7 @@ struct Bootstrap {
   # A Vat may export multiple bootstrap interfaces. In this case, `deprecatedObjectId` specifies
   # which one to return. If this pointer is null, then the default bootstrap interface is returned.
   #
-  # As of verison 0.5, use of this field is deprecated. If a service wants to export multiple
+  # As of version 0.5, use of this field is deprecated. If a service wants to export multiple
   # bootstrap interfaces, it should instead define a single bootstrap interface that has methods
   # that return each of the other interfaces.
   #
@@ -352,7 +352,7 @@ struct Bootstrap {
   # - Overloading "Restore" also had a security problem: Often, "main" or "well-known"
   #   capabilities exported by a vat are in fact not public: they are intended to be accessed only
   #   by clients who are capable of forming a connection to the vat. This can lead to trouble if
-  #   the client itself has other clients and wishes to foward some `Restore` requests from those
+  #   the client itself has other clients and wishes to forward some `Restore` requests from those
   #   external clients -- it has to be very careful not to allow through `Restore` requests
   #   addressing the default capability.
   #
@@ -414,6 +414,30 @@ struct Call {
   # Indicates whether or not the receiver is allowed to send a `Return` containing
   # `acceptFromThirdParty`.  Level 3 implementations should set this true.  Otherwise, the callee
   # will have to proxy the return in the case of a tail call to a third-party vat.
+
+  noPromisePipelining @9 :Bool = false;
+  # If true, the sender promises that it won't make any promise-pipelined calls on the results of
+  # this call. If it breaks this promise, the receiver may throw an arbitrary error from such
+  # calls.
+  #
+  # The receiver may use this as an optimization, by skipping the bookkeeping needed for pipelining
+  # when no pipelined calls are expected. The sender typically sets this to false when the method's
+  # schema does not specify any return capabilities.
+
+  onlyPromisePipeline @10 :Bool = false;
+  # If true, the sender only plans to use this call to make pipelined calls. The receiver need not
+  # send a `Return` message (but is still allowed to do so).
+  #
+  # Since the sender does not know whether a `Return` will be sent, it must release all state
+  # related to the call when it sends `Finish`. However, in the case that the callee does not
+  # recognize this hint and chooses to send a `Return`, then technically the caller is not allowed
+  # to reuse the question ID until it receives said `Return`. This creates a conundrum: How does
+  # the caller decide when it's OK to reuse the ID? To sidestep the problem, the C++ implementation
+  # uses high-numbered IDs (with the high-order bit set) for such calls, and cycles through the
+  # IDs in order. If all 2^31 IDs in this space are used without ever seeing a `Return`, then the
+  # implementation assumes that the other end is in fact honoring the hint, and the ID counter is
+  # allowed to loop around. If a `Return` is ever seen when `onlyPromisePipeline` was set, then
+  # the implementation stops using this hint.
 
   params @4 :Payload;
   # The call parameters.  `params.content` is a struct whose fields correspond to the parameters of
@@ -496,6 +520,13 @@ struct Return {
   # The receiver should act as if the sender had sent a release message with count=1 for each
   # CapDescriptor in the original Call message.
 
+  noFinishNeeded @8 :Bool = false;
+  # If true, the sender does not need the receiver to send a `Finish` message; its answer table
+  # entry has already been cleaned up. This implies that the results do not contain any
+  # capabilities, since the `Finish` message would normally release those capabilities from
+  # promise pipelining responsibility. The caller may still send a `Finish` message if it wants,
+  # which will be silently ignored by the callee.
+
   union {
     results @2 :Payload;
     # The result.
@@ -564,6 +595,20 @@ struct Finish {
   # should always set this true.  This defaults true because if level 0 implementations forget to
   # set it they'll never notice (just silently leak caps), but if level >=1 implementations forget
   # set it false they'll quickly get errors.
+
+  requireEarlyCancellationWorkaround @2 :Bool = true;
+  # If true, if the RPC system receives this Finish message before the original call has even been
+  # delivered, it should defer cancellation util after delivery. In particular, this gives the
+  # destination object a chance to opt out of cancellation, e.g. as controlled by the
+  # `allowCancellation` annotation defined in `c++.capnp`.
+  #
+  # This is a work-around. Versions 1.0 and up of Cap'n Proto always set this to false. However,
+  # older versions of Cap'n Proto unintentionally exhibited this errant behavior by default, and
+  # as a result programs built with older versions could be inadvertently relying on their peers
+  # to implement the behavior. The purpose of this flag is to let newer versions know when the
+  # peer is an older version, so that it can attempt to work around the issue.
+  #
+  # See also comments in handleFinish() in rpc.c++ for more details.
 }
 
 # Level 1 message types ----------------------------------------------
@@ -614,7 +659,7 @@ struct Resolve {
     #
     # The sender promises that from this point forth, until `promiseId` is released, it shall
     # simply forward all messages to the capability designated by `cap`.  This is true even if
-    # `cap` itself happens to desigate another promise, and that other promise later resolves --
+    # `cap` itself happens to designate another promise, and that other promise later resolves --
     # messages sent to `promiseId` shall still go to that other promise, not to its resolution.
     # This is important in the case that the receiver of the `Resolve` ends up sending a
     # `Disembargo` message towards `promiseId` in order to control message ordering -- that
@@ -707,6 +752,10 @@ struct Disembargo {
   # is expected that people sending messages to P will shortly start sending them to R instead and
   # drop P. P is at end-of-life anyway, so it doesn't matter if it ignores chances to further
   # optimize its path.
+  #
+  # Note well: the Tribble 4-way race condition does not require each vat to be *distinct*; as long
+  # as each resolution crosses a network boundary the race can occur -- so this concerns even level
+  # 1 implementations, not just level 3 implementations.
 
   target @0 :MessageTarget;
   # What is to be disembargoed.
@@ -855,7 +904,7 @@ struct Join {
   # - Dana receives the first request and sees that the JoinKeyPart is one of two.  She notes that
   #   she doesn't have the other part yet, so she records the request and responds with a
   #   JoinResult.
-  # - Alice relays the JoinAswer back to Bob.
+  # - Alice relays the JoinAnswer back to Bob.
   # - Carol is also proxying a capability from Dana, and so forwards her Join request to Dana as
   #   well.
   # - Dana receives Carol's request and notes that she now has both parts of a JoinKey.  She
@@ -988,6 +1037,63 @@ struct CapDescriptor {
     # Level 1 and 2 implementations that receive a `thirdPartyHosted` may simply send calls to its
     # `vine` instead.
   }
+
+  attachedFd @6 :UInt8 = 0xff;
+  # If the RPC message in which this CapDescriptor was delivered also had file descriptors
+  # attached, and `fd` is a valid index into the list of attached file descriptors, then
+  # that file descriptor should be attached to this capability. If `attachedFd` is out-of-bounds
+  # for said list, then no FD is attached.
+  #
+  # For example, if the RPC message arrived over a Unix socket, then file descriptors may be
+  # attached by sending an SCM_RIGHTS ancillary message attached to the data bytes making up the
+  # raw message. Receivers who wish to opt into FD passing should arrange to receive SCM_RIGHTS
+  # whenever receiving an RPC message. Senders who wish to send FDs need not verify whether the
+  # receiver knows how to receive them, because the operating system will automatically discard
+  # ancillary messages like SCM_RIGHTS if the receiver doesn't ask to receive them, including
+  # automatically closing any FDs.
+  #
+  # It is up to the application protocol to define what capabilities are expected to have file
+  # descriptors attached, and what those FDs mean. But, for example, an application could use this
+  # to open a file on disk and then transmit the open file descriptor to a sandboxed process that
+  # does not otherwise have permission to access the filesystem directly. This is usually an
+  # optimization: the sending process could instead provide an RPC interface supporting all the
+  # operations needed (such as reading and writing a file), but by passing the file descriptor
+  # directly, the recipient can often perform operations much more efficiently. Application
+  # designers are encouraged to provide such RPC interfaces and automatically fall back to them
+  # when FD passing is not available, so that the application can still work when the parties are
+  # remote over a network.
+  #
+  # An attached FD is most often associated with a `senderHosted` descriptor. It could also make
+  # sense in the case of `thirdPartyHosted`: in this case, the sender is forwarding the FD that
+  # they received from the third party, so that the receiver can start using it without first
+  # interacting with the third party. This is an optional optimization -- the middleman may choose
+  # not to forward capabilities, in which case the receiver will need to complete the handshake
+  # with the third party directly before receiving the FD. If an implementation receives a second
+  # attached FD after having already received one previously (e.g. both in a `thirdPartyHosted`
+  # CapDescriptor and then later again when receiving the final capability directly from the
+  # third party), the implementation should discard the later FD and stick with the original. At
+  # present, there is no known reason why other capability types (e.g. `receiverHosted`) would want
+  # to carry an attached FD, but we reserve the right to define a meaning for this in the future.
+  #
+  # Each file descriptor attached to the message must be used in no more than one CapDescriptor,
+  # so that the receiver does not need to use dup() or refcounting to handle the possibility of
+  # multiple capabilities using the same descriptor. If multiple CapDescriptors do point to the
+  # same FD index, then the receiver can arbitrarily choose which capability ends up having the
+  # FD attached.
+  #
+  # To mitigate DoS attacks, RPC implementations should limit the number of FDs they are willing to
+  # receive in a single message to a small value. If a message happens to contain more than that,
+  # the list is truncated. Moreover, in some cases, FD passing needs to be blocked entirely for
+  # security or implementation reasons, in which case the list may be truncated to zero. Hence,
+  # `attachedFd` might point past the end of the list, which the implementation should treat as if
+  # no FD was attached at all.
+  #
+  # The type of this field was chosen to be UInt8 because Linux supports sending only a maximum
+  # of 253 file descriptors in an SCM_RIGHTS message anyway, and CapDescriptor had two bytes of
+  # padding left -- so after adding this, there is still one byte for a future feature.
+  # Conveniently, this also means we're able to use 0xff as the default value, which will always
+  # be out-of-range (of course, the implementation should explicitly enforce that 255 descriptors
+  # cannot be sent at once, rather than relying on Linux to do so).
 }
 
 struct PromisedAnswer {
@@ -1129,7 +1235,7 @@ struct Exception {
     # start over. This should in turn cause the server to obtain a new copy of the capability that
     # it lost, thus making everything work.
     #
-    # If the client receives another `disconnencted` error in the process of rebuilding the
+    # If the client receives another `disconnected` error in the process of rebuilding the
     # capability and retrying the call, it should treat this as an `overloaded` error: the network
     # is currently unreliable, possibly due to load or other temporary issues.
 
@@ -1144,6 +1250,11 @@ struct Exception {
 
   obsoleteDurability @2 :UInt16;
   # OBSOLETE. See `type` instead.
+
+  trace @4 :Text;
+  # Stack trace text from the remote server. The format is not specified. By default,
+  # implementations do not provide stack traces; the application must explicitly enable them
+  # when desired.
 }
 
 # ========================================================================================
@@ -1231,7 +1342,7 @@ using SturdyRef = AnyPointer;
 # - How to authenticate the vat after connecting (e.g. a public key fingerprint).
 # - The identity of a specific object hosted by the vat. Generally, this is an opaque pointer whose
 #   format is defined by the specific vat -- the client has no need to inspect the object ID.
-#   It is important that the objec ID be unguessable if the object is not public (and objects
+#   It is important that the object ID be unguessable if the object is not public (and objects
 #   should almost never be public).
 #
 # The above are only suggestions. Some networks might work differently. For example, a private
@@ -1256,6 +1367,11 @@ using RecipientId = AnyPointer;
 #
 # In a network where each vat has a public/private key pair, this could simply be the public key
 # fingerprint of the recipient along with a nonce matching the one in the `ProvisionId`.
+#
+# As another example, when communicating between processes on the same machine over Unix sockets,
+# RecipientId could simply refer to a file descriptor attached to the message via SCM_RIGHTS.
+# This file descriptor would be one end of a newly-created socketpair, with the other end having
+# been sent to the capability's recipient in ThirdPartyCapId.
 
 using ThirdPartyCapId = AnyPointer;
 # **(level 3)**
@@ -1266,6 +1382,11 @@ using ThirdPartyCapId = AnyPointer;
 # third party's public key fingerprint, hints on how to connect to the third party (e.g. an IP
 # address), and the nonce used in the corresponding `Provide` message's `RecipientId` as sent
 # to that third party (used to identify which capability to pick up).
+#
+# As another example, when communicating between processes on the same machine over Unix sockets,
+# ThirdPartyCapId could simply refer to a file descriptor attached to the message via SCM_RIGHTS.
+# This file descriptor would be one end of a newly-created socketpair, with the other end having
+# been sent to the process hosting the capability in RecipientId.
 
 using JoinKeyPart = AnyPointer;
 # **(level 4)**

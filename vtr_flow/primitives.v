@@ -7,13 +7,13 @@
 //If you wish to do back-annotated timing simulation you will need
 //to link with this file during simulation.
 //
-//To ensure currect result when performing back-annoatation with 
+//To ensure correct result when performing back-annoatation with 
 //Modelsim see the notes at the end of this comment.
 //
 //Specifying Timing Edges
 //=======================
 //To perform timing back-annotation the simulator must know the delay 
-//dependancies (timing edges) between the ports on each primitive.
+//dependencies (timing edges) between the ports on each primitive.
 //
 //During back-annotation the simulator will attempt to annotate SDF delay
 //values onto the timing edges.  It should give a warning if was unable
@@ -33,7 +33,7 @@
 //      (in[1] => out[1]) = "";
 //  endspecify
 //
-//This states that there are the following timing edges (dependancies):
+//This states that there are the following timing edges (dependencies):
 //  * from in[0] to out[0]
 //  * from in[1] to out[1]
 //
@@ -62,7 +62,7 @@
 //      (in *> out) = "";
 //  endspecify
 //
-//states that there are the following timing edges (dependancies):
+//states that there are the following timing edges (dependencies):
 //  * from in[0] to out[0]
 //  * from in[0] to out[1]
 //  * from in[0] to out[2]
@@ -91,11 +91,11 @@
 //This forces it to apply specify statements using multi-bit operands to
 //each bit of the operand (i.e. according to the Verilog standard).
 //
-//Confirming back-annotation is occuring correctly
+//Confirming back-annotation is occurring correctly
 //------------------------------------------------
 //
 //Another useful option is '+sdf_verbose' which produces extra output about
-//SDF annotation, which can be used to verify annotation occured correctly.
+//SDF annotation, which can be used to verify annotation occurred correctly.
 //
 //For example:
 //
@@ -125,7 +125,7 @@
 //K-input Look-Up Table
 module LUT_K #(
     //The Look-up Table size (number of inputs)
-    parameter K, 
+    parameter K = 1, 
 
     //The lut mask.  
     //Left-most (MSB) bit corresponds to all inputs logic one. 
@@ -145,6 +145,7 @@ module LUT_K #(
 endmodule
 
 //D-FlipFlop module
+//The clock port is named 'clock' instead of 'clk' to match vpr's post-synthesis netlists.
 module DFF #(
     parameter INITIAL_VALUE=1'b0    
 ) (
@@ -159,8 +160,9 @@ module DFF #(
         $hold(posedge clock, D, "");
     endspecify
 
+    // non-blocking assignments in initial blocks are unsupported
     initial begin
-        Q <= INITIAL_VALUE;
+        Q = INITIAL_VALUE;
     end
 
     always@(posedge clock) begin
@@ -217,7 +219,7 @@ module adder #(
    assign {cout, sumout} = a + b + cin;
    
 endmodule
-   
+
 //nxn multiplier module
 module multiply #(
     //The width of input signals
@@ -238,14 +240,15 @@ module multiply #(
 endmodule // mult
 
 //single_port_ram module
+(* keep_hierarchy *)
 module single_port_ram #(
     parameter ADDR_WIDTH = 1,
     parameter DATA_WIDTH = 1
 ) (
+    input clk,
     input [ADDR_WIDTH-1:0] addr,
     input [DATA_WIDTH-1:0] data,
     input we,
-    input clock,
     output reg [DATA_WIDTH-1:0] out
 );
 
@@ -254,30 +257,31 @@ module single_port_ram #(
     reg [DATA_WIDTH-1:0] Mem[MEM_DEPTH-1:0];
 
     specify
-        (clock*>out)="";
-        $setup(addr, posedge clock, "");
-        $setup(data, posedge clock, "");
-        $setup(we, posedge clock, "");
-        $hold(posedge clock, addr, "");
-        $hold(posedge clock, data, "");
-        $hold(posedge clock, we, "");
+        (clk*>out)="";
+        $setup(addr, posedge clk, "");
+        $setup(data, posedge clk, "");
+        $setup(we, posedge clk, "");
+        $hold(posedge clk, addr, "");
+        $hold(posedge clk, data, "");
+        $hold(posedge clk, we, "");
     endspecify
    
-    always@(posedge clock) begin
+    always@(posedge clk) begin
         if(we) begin
-            Mem[addr] = data;
+            Mem[addr] <= data;
         end
-    	out = Mem[addr]; //New data read-during write behaviour (blocking assignments)
+    	out <= Mem[addr]; //Old data read-first behaviour (non-blocking assignments)
     end
    
 endmodule // single_port_RAM
 
 //dual_port_ram module
+(* keep_hierarchy *)
 module dual_port_ram #(
     parameter ADDR_WIDTH = 1,
     parameter DATA_WIDTH = 1
 ) (
-    input clock,
+    input clk,
 
     input [ADDR_WIDTH-1:0] addr1,
     input [ADDR_WIDTH-1:0] addr2,
@@ -294,34 +298,34 @@ module dual_port_ram #(
     reg [DATA_WIDTH-1:0] Mem[MEM_DEPTH-1:0];
 
     specify
-        (clock*>out1)="";
-        (clock*>out2)="";
-        $setup(addr1, posedge clock, "");
-        $setup(addr2, posedge clock, "");
-        $setup(data1, posedge clock, "");
-        $setup(data2, posedge clock, "");
-        $setup(we1, posedge clock, "");
-        $setup(we2, posedge clock, "");
-        $hold(posedge clock, addr1, "");
-        $hold(posedge clock, addr2, "");
-        $hold(posedge clock, data1, "");
-        $hold(posedge clock, data2, "");
-        $hold(posedge clock, we1, "");
-        $hold(posedge clock, we2, "");
+        (clk*>out1)="";
+        (clk*>out2)="";
+        $setup(addr1, posedge clk, "");
+        $setup(addr2, posedge clk, "");
+        $setup(data1, posedge clk, "");
+        $setup(data2, posedge clk, "");
+        $setup(we1, posedge clk, "");
+        $setup(we2, posedge clk, "");
+        $hold(posedge clk, addr1, "");
+        $hold(posedge clk, addr2, "");
+        $hold(posedge clk, data1, "");
+        $hold(posedge clk, data2, "");
+        $hold(posedge clk, we1, "");
+        $hold(posedge clk, we2, "");
     endspecify
    
-    always@(posedge clock) begin //Port 1
+    always@(posedge clk) begin //Port 1
         if(we1) begin
-            Mem[addr1] = data1;
+            Mem[addr1] <= data1;
         end
-        out1 = Mem[addr1]; //New data read-during write behaviour (blocking assignments)
+        out1 <= Mem[addr1]; //Old data read-first behaviour (non-blocking assignments)
     end
 
-    always@(posedge clock) begin //Port 2
+    always@(posedge clk) begin //Port 2
         if(we2) begin
-            Mem[addr2] = data2;
+            Mem[addr2] <= data2;
         end
-        out2 = Mem[addr2]; //New data read-during write behaviour (blocking assignments)
+        out2 <= Mem[addr2]; //Old data read-first behaviour (non-blocking assignments)
     end
    
 endmodule // dual_port_ram

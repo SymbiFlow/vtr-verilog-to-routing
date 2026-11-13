@@ -1,0 +1,1182 @@
+name: Test
+
+on:
+  # We want to run the CI when anything is pushed to master.
+  # Since master is a protected branch this only happens when a PR is merged.
+  # This is a double check in case the PR was stale and had some issues.
+  push:
+    branches:
+      - master
+    paths-ignore: # Prevents from running if only docs are updated
+      - 'doc/**'
+      - '**/*README*'
+      - '**.md'
+      - '**.rst'
+  pull_request:
+    paths-ignore: # Prevents from running if only docs are updated
+      - 'doc/**'
+      - '**/*README*'
+      - '**.md'
+      - '**.rst'
+  workflow_dispatch:
+  schedule:
+  - cron: '0 0 * * *' # daily
+
+# We want to cancel previous runs for a given PR or branch / ref if another CI
+# run is requested.
+# See: https://docs.github.com/en/actions/using-jobs/using-concurrency
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # default compiler for all non-compatibility tests
+  MATRIX_EVAL: "CC=gcc-13 && CXX=g++-13"
+  # install_apt_packages.sh installs the apt packages. Jobs that build the GUI
+  # additionally run dev/ensure_qt6_sdk.sh to provision a Qt6 SDK (>= the
+  # supported floor). CMake discovers Qt and bakes its location into the
+  # binaries, so no CMAKE_PREFIX_PATH or runtime Qt env is needed anywhere.
+
+jobs:
+  BuildVTR:
+    name: 'B: Building VTR Release'
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}
+
+    - name: Build
+      env:
+        CMAKE_PARAMS: "-DCMAKE_COMPILE_WARNING_AS_ERROR=on -DVTR_IPO_BUILD=off -DVTR_ASSERT_LEVEL=3"
+        BUILD_TYPE: release
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+
+    # Here we pack the build to store it as a build artifact. We exclude specific files
+    # to keep the build artifact reasonably low (to speed up file download times in the
+    # CI). Beyond the executables, some files need to be kept such as CTestTestFile.cmake
+    # files which are used by the unit tests CI run.
+    - name: Pack Build
+      shell: bash
+      run: |
+        tar -czvf build.tar.gz --exclude='CMakeFiles' --exclude='*.a' --exclude='cmake_install.cmake' build/
+
+    - name: Store Build Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-release.tar.gz
+        path: build.tar.gz
+        retention-days: 1
+
+
+  BuildVTRWithOdin:
+    name: 'B: Building VTR Release With Odin'
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    # NOTE: BlifExplorer requires Qt5 to build. We do not currently actually
+    #       run the executable as part of the CI, but we at least want to test
+    #       that it can be compiled.
+    - name: Install dependencies
+      run: |
+        ./install_apt_packages.sh
+        sudo apt-get update
+        sudo apt-get install qtbase5-dev
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}
+
+    - name: Build
+      env:
+        CMAKE_PARAMS: "-DCMAKE_COMPILE_WARNING_AS_ERROR=on -DVTR_IPO_BUILD=off -DVTR_ASSERT_LEVEL=3 -DWITH_BLIFEXPLORER=on -DWITH_PARMYS=OFF -DWITH_ODIN=on"
+        BUILD_TYPE: release
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+
+    # We pack the build similar to the default release build.
+    - name: Pack Build
+      shell: bash
+      run: |
+        tar -czvf build.tar.gz --exclude='CMakeFiles' --exclude='*.a' --exclude='cmake_install.cmake' build/
+
+    - name: Store Build Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-release-with-odin.tar.gz
+        path: build.tar.gz
+        retention-days: 1
+
+
+  Format:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: 'C/C++',       script: 'check-format.sh'   , with_python: 'yes', with_submodules: 'true', all_vtr_pkgs: 'yes', pkgs: 'clang-format-18' }
+        - { name: 'Python',      script: 'check-format-py.sh', with_python: 'yes', with_submodules: 'true', all_vtr_pkgs: 'yes', pkgs: '' }
+    name: 'F: ${{ matrix.name }}'
+    steps:
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: ${{ matrix.with_submodules }}
+      # NOTE: We usually do not need sub-modules. We do not check sub-modules
+      #       for formatting. However we may need to build make-format which
+      #       requires building VTR which will not build without submodules.
+      # TODO: We should relax this requirement.
+
+      # In order to perform a cpp format of VTR, make format is used which requires
+      # all of the vpr dependencies to be installed.
+      # TODO: This should be fixed so this test is not as heavy. We do not need
+      #       these dependencies to perform a simple format.
+    - name: Install dependencies
+      if: ${{ matrix.all_vtr_pkgs == 'yes' }}
+      run: ./install_apt_packages.sh
+
+    # TODO: This should be on the same version of Python as would be found on
+    #       Ubuntu 24.04 (3.12.3); however that version has some linting errors.
+    #         - The version of Pylint in requirements.txt is not compatible with
+    #           python version 3.12.3. Pylint needs to be updated to move to this version.
+    - uses: actions/setup-python@v7
+      if: ${{ matrix.with_python == 'yes' }}
+      with:
+        python-version: 3.10.10
+
+    - name: Build Python Virtual Env
+      run: |
+        python -m venv .venv
+
+    - name: Install Python Requirements
+      if: ${{ matrix.with_python == 'yes' }}
+      run: |
+        source .venv/bin/activate
+        pip install -r requirements.txt
+
+    - name: Install dependencies
+      if: ${{ matrix.pkgs }}
+      run: sudo apt install -y ${{ matrix.pkgs }}
+
+    - name: Test
+      run: |
+        source .venv/bin/activate
+        ./dev/${{ matrix.script }}
+
+
+  VerifyTestSuites:
+    runs-on: ubuntu-24.04
+    name: 'Verify Test Suites'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - uses: actions/checkout@v7
+      # NOTE: We do not need sub-modules. This only verifies the tests, does not run them.
+
+    - name: 'Run test suite verification'
+      run: |
+        ./dev/vtr_test_suite_verifier/verify_test_suites.py \
+            -vtr_regression_tests_dir vtr_flow/tasks/regression_tests \
+            -test_suite_info dev/vtr_test_suite_verifier/test_suites_info.json
+
+
+  UnitTests:
+    name: 'U: C++ Unit Tests'
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    steps:
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      run: |
+        cd build
+        make test -j${{ steps.cpu-cores.outputs.count }}
+
+
+  # GUITests — Plan §7.9 — runs the full GUI test pyramid on ubuntu-24.04.
+  # Builds with -DVPR_USE_EZGL=on so the local and CI command lines match:
+  #
+  #     make CMAKE_PARAMS="-DVPR_USE_EZGL=on" gui-tests
+  GUITests:
+    name: 'T: GUI Tests (Layers 1+3+4+5)'
+    runs-on: ubuntu-24.04
+    steps:
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    # Cache the repo-local Qt6 SDK so aqt only downloads it on a cache miss
+    # (first run / when ensure_qt6_sdk.sh changes). On a hit, the next step is a
+    # near-instant no-op thanks to the script's idempotency check.
+    - name: Cache Qt6 SDK
+      uses: actions/cache@v6
+      with:
+        path: qt6
+        key: qt6-sdk-${{ runner.os }}-${{ hashFiles('dev/ensure_qt6_sdk.sh') }}
+
+    - name: Provision Qt6 SDK (>=6.9.3)
+      run: ./dev/ensure_qt6_sdk.sh
+
+    - name: Install GUI test dependencies
+      run: ./dev/install_gui_test_deps.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}
+
+    # Plan §7.9 #4 — local and CI command lines identical. Top-level
+    # Makefile forwards `gui-tests` to the cmake-generated build dir.
+    - name: Build GUI test binaries
+      env:
+        BUILD_TYPE: release
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make CMAKE_PARAMS="-DVPR_USE_EZGL=on" -j${{ steps.cpu-cores.outputs.count }}
+
+    # Drives all four registered GUI ctest entries:
+    #   Layer 1 — test_vpr_gui_smoke      (headless P&R smoke, --disp off)
+    #   Layer 3 — test_vpr_gui            (Catch2 widget tree + S8 unit tests)
+    #   Layer 4 — test_vpr_gui_interactive (S6 mouse/key dispatch)
+    #   Layer 5 — test_vpr_gui_visual     (SSIM compare vs goldens)
+    - name: Run GUI Test Layers 1 + 3 + 4 + 5
+      run: make CMAKE_PARAMS="-DVPR_USE_EZGL=on" gui-tests
+
+    # Plan §8.2 PR-merge exit criterion: `./run_reg_test.py vtr_reg_gui`
+    # must be green. Reuses the EZGL build above (vpr binary already
+    # produced) and exercises the four gui_* tasks defined under
+    # vtr_flow/tasks/regression_tests/vtr_reg_gui/.
+    - name: Run vtr_reg_gui regression suite
+      run: |
+        # run_reg_test.py needs the flow harness Python deps (prettytable,
+        # pandas, lxml, ...); install them into the setup-python environment.
+        pip install -r requirements.txt
+        ./run_reg_test.py vtr_reg_gui -show_failures
+
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: gui-tests-failure-logs
+        path: |
+          build/vpr/test/gui/Testing/Temporary/
+          /tmp/tmp.*
+        if-no-files-found: ignore
+        retention-days: 7
+
+
+  # GUICoverage — Plan §7.9 #5 — Linux-only (gcov toolchain stable on
+  # Ubuntu; macOS uses xcrun llvm-cov gcov and isn't a stable CI target
+  # for coverage yet). Runs the same `make gui-coverage` target the
+  # local flow uses; the wrapper script swallows DEF-010 (visual
+  # regression) so gcovr always emits its report and the regression
+  # gate (35 % line / 22 % branch — see DEF-014) is what gates this job.
+  #
+  # DISABLED (if: false): this job is a separate debug + coverage-instrumented
+  # full rebuild of VTR in its own build tree (no ccache reuse from the release
+  # legs), so it takes ~1 hour per run — by far the most expensive job here for
+  # the weakest signal (a coarse coverage floor set below an already-low
+  # baseline). It is not upstream and nothing depends on it; the GUI is still
+  # functionally exercised by the GUITests job. To conserve CI resources we
+  # disable it rather than delete it. The `gui-coverage` make target remains for
+  # local/on-demand runs:
+  #   make CMAKE_PARAMS="-DVPR_USE_EZGL=on -DVTR_ENABLE_COVERAGE=on" gui-coverage
+  # Re-enable here (or move to the nightly workflow) if a per-PR coverage gate is
+  # wanted again.
+  GUICoverage:
+    name: 'T: GUI Coverage (Linux, gcovr regression gate)'
+    if: false
+    runs-on: ubuntu-24.04
+    needs: [GUITests]
+    steps:
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    # Cache the repo-local Qt6 SDK so aqt only downloads it on a cache miss
+    # (first run / when ensure_qt6_sdk.sh changes). On a hit, the next step is a
+    # near-instant no-op thanks to the script's idempotency check.
+    - name: Cache Qt6 SDK
+      uses: actions/cache@v6
+      with:
+        path: qt6
+        key: qt6-sdk-${{ runner.os }}-${{ hashFiles('dev/ensure_qt6_sdk.sh') }}
+
+    - name: Provision Qt6 SDK (>=6.9.3)
+      run: ./dev/ensure_qt6_sdk.sh
+
+    - name: Install GUI test dependencies
+      run: ./dev/install_gui_test_deps.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}
+
+    # Coverage build is debug + -ftest-coverage and produces ~25-30 GB
+    # of .o/.gcno objects + final exes. The hosted runner image ships
+    # with only ~14 GB free on /, which is consumed before the final
+    # link of test_vpr_gui (observed: 'No space left on device' during
+    # ld). Free the unused tooling that ships with the image — Android
+    # SDK / .NET / Haskell / CodeQL / Swap together account for >20 GB.
+    - name: Free runner disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /usr/local/lib/android \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /usr/local/share/boost \
+                    "$AGENT_TOOLSDIRECTORY/CodeQL" \
+                    /opt/microsoft || true
+        sudo apt-get -y autoremove --purge azure-cli google-chrome-stable \
+                                            firefox powershell mono-devel \
+                                            'temurin-*-jdk' 'mongodb-*' || true
+        sudo apt-get clean
+        df -h /
+
+    # Coverage build — separate build/ tree so it does not poison
+    # ccache for the release legs.
+    - name: Build with coverage instrumentation
+      env:
+        BUILD_TYPE: debug
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make CMAKE_PARAMS="-DVPR_USE_EZGL=on -DVTR_ENABLE_COVERAGE=on" \
+             -j${{ steps.cpu-cores.outputs.count }}
+
+    - name: Run gui-coverage target (gcovr regression gate)
+      run: make CMAKE_PARAMS="-DVPR_USE_EZGL=on -DVTR_ENABLE_COVERAGE=on" gui-coverage
+
+    - name: Upload coverage HTML artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: gui-coverage-html
+        path: build/coverage_gui.html
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Upload coverage XML to Codecov
+      uses: codecov/codecov-action@v7
+      with:
+        files: build/coverage_gui.xml
+        flags: gui
+        fail_ci_if_error: false
+      continue-on-error: true
+
+    - name: Upload coverage failure logs
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: gui-coverage-failure-logs
+        path: |
+          build/coverage_gui.txt
+          build/vpr/test/gui/Testing/Temporary/
+        if-no-files-found: ignore
+        retention-days: 7
+
+
+  # This test builds different variations of VTR (with different CMake Params)
+  # and ensures that they can run the basic regression tests. This also ensures
+  # that these build variations are warning clean.
+  BuildVariations:
+    runs-on: ubuntu-24.04
+    name: 'B: Build Variations'
+    env:
+      # For the CI, we want all build variations to be warning clean.
+      # NOTE: Need to turn IPO off due to false warnings being produced.
+      COMMON_CMAKE_PARAMS: '-DCMAKE_COMPILE_WARNING_AS_ERROR=on -DVTR_IPO_BUILD=off'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: 'Get number of CPU cores'
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: 'Install dependencies'
+      run: ./install_apt_packages.sh
+
+    - name: 'Install Python Requirements'
+      run: |
+        pip install -r requirements.txt
+
+    - name: 'ccache'
+      uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}
+
+    - name: 'Test with VTR_ASSERT_LEVEL 4'
+      timeout-minutes: 120
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVTR_ASSERT_LEVEL=4"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with VTR_ASSERT_LEVEL 0'
+      timeout-minutes: 120
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVTR_ASSERT_LEVEL=0"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with NO_GRAPHICS'
+      timeout-minutes: 60
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVPR_USE_EZGL=off"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with NO_SERVER'
+      timeout-minutes: 60
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVPR_USE_SERVER=off"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with CAPNPROTO disabled'
+      timeout-minutes: 60
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVTR_ENABLE_CAPNPROTO=off"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with serial VPR_EXECUTION_ENGINE'
+      timeout-minutes: 60
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVPR_EXECUTION_ENGINE=serial -DTATUM_EXECUTION_ENGINE=serial"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: 'Test with VTR_ENABLE_DEBUG_LOGGING enabled'
+      timeout-minutes: 60
+      if: success() || failure()
+      env:
+        CMAKE_PARAMS: "${{ env.COMMON_CMAKE_PARAMS }} -DVTR_ENABLE_DEBUG_LOGGING=on"
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        rm -f build/CMakeCache.txt
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+        ./run_reg_test.py vtr_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+
+  Regression:
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [
+          {
+            name: 'Basic',
+            suite: 'vtr_reg_basic',
+            extra_pkgs: ''
+          },
+          {
+            name: 'Strong',
+            suite: 'vtr_reg_strong',
+            extra_pkgs: ''
+          },
+          {
+            name: 'Parallel',
+            suite: 'vtr_reg_parallel',
+            extra_pkgs: '',
+            num_cores: 2
+          },
+          {
+            name: 'SystemVerilog',
+            suite: 'vtr_reg_system_verilog',
+            extra_pkgs: ''
+          },
+          {
+            name: 'Valgrind Memory',
+            suite: 'vtr_reg_valgrind_small',
+            extra_pkgs: 'valgrind'
+          },
+          {
+            name: 'Functional Simulation',
+            suite: 'vtr_reg_func_sim',
+            extra_pkgs: 'verilator'
+          }
+        ]
+    name: 'R: ${{ matrix.name }}'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Install Extra Dependencies
+      if: ${{ matrix.extra_pkgs != '' }}
+      run: |
+        sudo apt update
+        sudo apt install -y ${{ matrix.extra_pkgs }}
+
+    - name: Install Python Requirements
+      run: |
+        pip install -r requirements.txt
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      timeout-minutes: 30
+      run: |
+        ./run_reg_test.py ${{ matrix.suite }} -show_failures -j${{ matrix.num_cores || steps.cpu-cores.outputs.count}}
+
+    - name: Upload regression run files
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_run_files
+        path: |
+          vtr_flow/**/*.out
+          # vtr_flow/**/*.blif  # Removed since it was taking too much space and was hardly used.
+          vtr_flow/**/*.p
+          vtr_flow/**/*.net
+          vtr_flow/**/*.r
+
+    - name: Upload regression results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_results
+        path: |
+          vtr_flow/**/*.log
+          vtr_flow/**/parse_results*.txt
+
+
+  RegressionWithOdin:
+    runs-on: ubuntu-24.04
+    needs: [BuildVTRWithOdin]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [
+          {
+            name: 'Basic_odin',
+            suite: 'vtr_reg_basic_odin',
+            extra_pkgs: ''
+          },
+          {
+            name: 'Strong_odin',
+            suite: 'vtr_reg_strong_odin',
+            extra_pkgs: ''
+          },
+          {
+            name: 'Valgrind Memory Odin',
+            suite: 'vtr_reg_valgrind_small_odin',
+            extra_pkgs: 'valgrind'
+          }
+        ]
+    name: 'R: ${{ matrix.name }}'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Install Extra Dependencies
+      if: ${{ matrix.extra_pkgs != '' }}
+      run: |
+        sudo apt update
+        sudo apt install -y ${{ matrix.extra_pkgs }}
+
+    - name: Install Python Requirements
+      run: |
+        pip install -r requirements.txt
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release-with-odin.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      timeout-minutes: 15
+      run: |
+        ./run_reg_test.py ${{ matrix.suite }} -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: Upload regression run files
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_run_files
+        path: |
+          vtr_flow/**/*.out
+          # vtr_flow/**/*.blif  # Removed since it was taking too much space and was hardly used.
+          vtr_flow/**/*.p
+          vtr_flow/**/*.net
+          vtr_flow/**/*.r
+
+    - name: Upload regression results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_results
+        path: |
+          vtr_flow/**/*.log
+          vtr_flow/**/parse_results*.txt
+
+
+  RegressionWithMosaic:
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [
+          {
+            name: 'Mosaic_regression',
+            suite: 'vtr_reg_basic_mosaic',
+            extra_pkgs: 'verilator'
+          }
+        ]
+    name: 'R: ${{ matrix.name }}'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Install Extra Dependencies
+      if: ${{ matrix.extra_pkgs != '' }}
+      run: |
+        sudo apt update
+        sudo apt install -y ${{ matrix.extra_pkgs }}
+
+    - name: Install Python Requirements
+      run: |
+        pip install -r requirements.txt
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      timeout-minutes: 60
+      run: |
+        ./run_reg_test.py ${{ matrix.suite }} -show_failures -j${{ steps.cpu-cores.outputs.count}}
+
+    - name: Require mosaic verilator-check pass
+      timeout-minutes: 5
+      run: |
+        python3 mosaic/scripts/verify_regression_vcheck.py --suite ${{ matrix.suite }}
+
+    - name: Compare Parmys and Mosaic hardblock BLIF models
+      timeout-minutes: 20
+      run: |
+        python3 mosaic/scripts/compare_frontend_blif_models.py --run \
+          --circuit vtr_flow/benchmarks/verilog/diffeq1.v \
+          --arch vtr_flow/arch/timing/k6_frac_N10_frac_chain_mem32K_40nm.xml \
+          --work-dir mosaic_blif_model_compare
+
+    - name: Upload regression run files
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_run_files
+        path: |
+          vtr_flow/**/*.out
+          # vtr_flow/**/*.blif  # Removed since it was taking too much space and was hardly used.
+          vtr_flow/**/*.p
+          vtr_flow/**/*.net
+          vtr_flow/**/*.r
+
+    - name: Upload regression results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{matrix.name}}_results
+        path: |
+          vtr_flow/**/*.log
+          vtr_flow/**/parse_results*.txt
+
+
+  Sanitized:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: [
+          {
+            name: 'Basic',
+            params: '-DVTR_ASSERT_LEVEL=3 -DVTR_ENABLE_SANITIZE=on -DVTR_IPO_BUILD=off -DWITH_BLIFEXPLORER=on -DWITH_PARMYS=OFF -DWITH_ODIN=on',
+            suite: 'vtr_reg_basic_odin'
+          }
+          #- { name: 'Strong', suite: 'vtr_reg_strong' } # SKIP Too long to run on GitHub Actions (max 6h)
+        ]
+
+
+    name: 'S: ${{ matrix.name }}'
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Install Python Requirements
+      run: |
+        pip install -r requirements.txt
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}-${{ matrix.suite }}
+
+    - name: Test
+      timeout-minutes: 60
+      env:
+        CMAKE_PARAMS: ${{ matrix.params }}
+        BUILD_TYPE: RelWithDebInfo
+        LSAN_OPTIONS: 'exitcode=42' #Use a non-standard exit code to ensure LSAN errors are detected
+        # In Ubuntu 20240310.1.0, the entropy of ASLR has increased (28 -> 32). LLVM 14 in this
+        # image is not compatible with this increased ASLR entropy. Apparently, memory sanitizer
+        # depends on LLVM and all CI tests where VTR_ENABLE_SANITIZE is enabled fail. For a temporary
+        # fix, we manually reduce the entropy. This quick fix should be removed in the future
+        # when github deploys a more stable Ubuntu image.
+        NUM_PROC: ${{ steps.cpu-cores.outputs.count }}
+      run: |
+        sudo sysctl -w vm.mmap_rnd_bits=28
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        ./.github/scripts/build.sh
+        # We skip QoR since we are only checking for errors in sanitizer runs
+        ./run_reg_test.py ${{ matrix.suite }} -show_failures -j${{ steps.cpu-cores.outputs.count }} -skip_qor
+
+
+  Parmys:
+    name: 'Parmys Basic Test'
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    steps:
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.12.3
+      - uses: actions/checkout@v7
+        with:
+          submodules: 'true'
+
+      - name: Get number of CPU cores
+        uses: SimenB/github-actions-cpu-cores@v3
+        id: cpu-cores
+
+      - name: Install dependencies
+        run: ./install_apt_packages.sh
+
+      - name: Install Python Requirements
+        run: |
+          pip install -r requirements.txt
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: build-release.tar.gz
+
+      - name: Unpack Build
+        shell: bash
+        run: |
+          tar -xvzf build.tar.gz
+
+      - name: Test
+        timeout-minutes: 30
+        run: |
+          ./run_reg_test.py parmys_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count }}
+
+
+  ODINII:
+    name: 'ODIN-II Basic Test'
+    runs-on: ubuntu-24.04
+    needs: [BuildVTRWithOdin]
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Install Python Requirements
+      run: |
+        pip install -r requirements.txt
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release-with-odin.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      timeout-minutes: 15
+      run: |
+        sudo sysctl -w vm.mmap_rnd_bits=28
+        ./run_reg_test.py odin_reg_basic -show_failures -j${{ steps.cpu-cores.outputs.count }}
+
+
+  VQM2BLIF:
+    name: 'VQM2BLIF Basic Tests'
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    steps:
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: 3.12.3
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: build-release.tar.gz
+
+    - name: Unpack Build
+      shell: bash
+      run: |
+        tar -xvzf build.tar.gz
+
+    - name: Test
+      run: |
+        ./utils/vqm2blif/test/scripts/test_vqm2blif.sh
+
+  Compatibility:
+    runs-on: ubuntu-24.04
+    needs: [BuildVTR]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { name: 'GCC 12 (Ubuntu Noble - 24.04)',    CC: 'gcc-12',   CXX: 'g++-12',     }
+        - { name: 'GCC 14 (Ubuntu Noble - 24.04)',    CC: 'gcc-14',   CXX: 'g++-14',     }
+        - { name: 'Clang 16 (Ubuntu Noble - 24.04)',  CC: 'clang-16', CXX: 'clang++-16', }
+        - { name: 'Clang 17 (Ubuntu Noble - 24.04)',  CC: 'clang-17', CXX: 'clang++-17', }
+        - { name: 'Clang 18 (Ubuntu Noble - 24.04)',  CC: 'clang-18', CXX: 'clang++-18', }
+        # Note: We do not include GCC-13 since it is the default and is already tested.
+        #       We also do not include GCC-11 since it is tested in the JammyCompatibility test.
+    name: 'B: ${{ matrix.name }}'
+    env:
+      CC: ${{ matrix.CC }}
+      CXX: ${{ matrix.CXX }}
+    steps:
+
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install dependencies
+      run: ./install_apt_packages.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}-${{ matrix.CC }}
+
+    - name: Build
+      env:
+        CMAKE_PARAMS: "-DVTR_ASSERT_LEVEL=3 -DVTR_IPO_BUILD=off"
+        BUILD_TYPE: release # Note: Found that release build caches way better than debug build for this test.
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+
+  JammyCompatibility:
+    name: 'Ubuntu Jammy - 22.04 Compatibility Test'
+    runs-on: ubuntu-22.04
+    needs: [BuildVTR]
+    env:
+      CC: gcc-11
+      CXX: g++-11
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install Dependencies
+      run: ./install_apt_packages.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}-gcc-11
+
+    - name: Build
+      env:
+        CMAKE_PARAMS: "-DVTR_ASSERT_LEVEL=3 -DCMAKE_COMPILE_WARNING_AS_ERROR=on -DVTR_IPO_BUILD=off"
+        BUILD_TYPE: release # Note: Found that release build caches way better than debug build for this test.
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+
+  ResoluteCompatibility:
+    name: 'Ubuntu Resolute - 26.04 Compatibility Test'
+    runs-on: ubuntu-26.04
+    needs: [BuildVTR]
+    env:
+      CC: gcc-15
+      CXX: g++-15
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'true'
+
+    - name: Get number of CPU cores
+      uses: SimenB/github-actions-cpu-cores@v3
+      id: cpu-cores
+
+    - name: Install Dependencies
+      run: ./install_apt_packages.sh
+
+    - uses: hendrikmuhs/ccache-action@v1.2.24
+      with:
+        key: ${{ github.job }}-gcc-15
+
+    - name: Build
+      env:
+        CMAKE_PARAMS: "-DVTR_ASSERT_LEVEL=3 -DCMAKE_COMPILE_WARNING_AS_ERROR=on -DVTR_IPO_BUILD=off"
+        BUILD_TYPE: release
+      run: |
+        export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+        make -j${{ steps.cpu-cores.outputs.count}}
+
+  MacosCompatibility:
+    name: 'MacOS 26 - Compatibility Test'
+    runs-on: macos-26
+    needs: [BuildVTR]
+    # Define the steps to run the build job
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: 'true'
+
+      - name: Show build environment
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          clang --version
+          clang++ --version
+          cmake --version
+          ninja --version
+
+      - name: Install dependencies
+        run: |
+          ./install_macos_packages.sh
+          # use the homebrew verions which meets the requirements
+          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+          echo "LDFLAGS=-L$(brew --prefix bison)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix bison)/include" >> $GITHUB_ENV
+          # Dynamically find the Qt prefix from Homebrew
+          QT_PREFIX="$(brew --prefix qt)"
+          echo "QT_PREFIX=$QT_PREFIX" >> $GITHUB_ENV
+          # Add Qt binaries to the system PATH for this and subsequent steps
+          echo "${QT_PREFIX}/bin" >> $GITHUB_PATH
+          # Append Qt to CMAKE_PREFIX_PATH so CMake can find find_package(Qt6)
+          echo "CMAKE_PREFIX_PATH=${QT_PREFIX}:${CMAKE_PREFIX_PATH:-}" >> $GITHUB_ENV
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.job }}-macos-26
+
+      - name: Get number of CPU cores
+        uses: SimenB/github-actions-cpu-cores@v3
+        id: cpu-cores
+
+      - name: Build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          make -j${{ steps.cpu-cores.outputs.count}}

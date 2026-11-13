@@ -1,11 +1,22 @@
-#include <cstdio>
-#include <cstring>
-#include <cmath>
-#include <set>
 
+#include "stats.h"
+
+#include <fstream>
+#include <vector>
+#include <algorithm>
+#include <string>
+#include <iomanip>
+#include <limits>
+#include <unordered_set>
+
+#include "physical_types.h"
+#include "physical_types_util.h"
+#include "route_tree.h"
+#include "rr_graph_view.h"
+#include "vpr_context.h"
+#include "vpr_utils.h"
 #include "vtr_assert.h"
 #include "vtr_log.h"
-#include "vtr_math.h"
 #include "vtr_ndmatrix.h"
 
 #include "vpr_types.h"
@@ -16,69 +27,112 @@
 #include "rr_graph_area.h"
 #include "segment_stats.h"
 #include "channel_stats.h"
-#include "stats.h"
-#include "net_delay.h"
-#include "read_xml_arch_file.h"
 #include "echo_files.h"
-
-#include "timing_info.h"
-#include "RoutingDelayCalculator.h"
-
-#include "timing_util.h"
-#include "tatum/TimingReporter.hpp"
+#include "interposer_routing_stats.h"
 
 /********************** Subroutines local to this module *********************/
 
-static void load_channel_occupancies(vtr::Matrix<int>& chanx_occ, vtr::Matrix<int>& chany_occ);
+/**
+ * @brief Loads the occupancy arrays with the total occupancy at each of the
+ *        channel segments in the FPGA.
+ */
+static void load_channel_occupancies(const Netlist<>& net_list,
+                                     vtr::NdMatrix<int, 3>& chanx_occ,
+                                     vtr::NdMatrix<int, 3>& chany_occ,
+                                     vtr::NdMatrix<int, 3>& chanz_occ);
 
-static void length_and_bends_stats();
+/**
+ * @brief Writes channel occupancy data to a file.
+ *
+ * Each row contains:
+ *   - (layer, x, y) coordinate
+ *   - Occupancy count
+ *   - Occupancy percentage (occupancy / capacity)
+ *   - Channel capacity
+ *
+ * @param filename      Output file path.
+ * @param occupancy     Matrix of occupancy counts.
+ * @param capacity      Channel capacities.
+ */
+static void write_channel_occupancy_table(std::string_view filename,
+                                          const vtr::NdMatrix<int, 3>& occupancy,
+                                          const vtr::NdMatrix<int, 3>& capacity);
 
-static void get_channel_occupancy_stats();
+/**
+ * @brief Figures out maximum, minimum and average number of bends
+ *        and net length in the routing.
+ */
+static void length_and_bends_stats(const Netlist<>& net_list, bool is_flat);
+
+/**
+ * @brief Writes the routed wire usage of each net to a file.
+ *
+ * Each row contains the routed wirelength, number of segments and bends of
+ * the net (as computed by get_num_bends_and_length, so the lengths sum to the
+ * total wirelength reported in the log), along with the bounding box of the
+ * placed tiles which the net connects. The net name is the last column.
+ *
+ *  @param filename     Output file path.
+ *  @param net_list     The netlist which was routed.
+ *  @param is_flat      Whether the routing is flat (net_list is the atom netlist).
+ */
+static void write_routed_net_wire_usage(const std::string& filename,
+                                        const Netlist<>& net_list,
+                                        bool is_flat);
+
+///@brief Determines how many tracks are used in each channel and prints out statistics
+static void get_channel_occupancy_stats(const Netlist<>& net_list);
 
 /************************* Subroutine definitions ****************************/
 
-/**
- * @brief Prints out various statistics about the current routing.
- *
- * Both a routing and an rr_graph must exist when you call this routine.
- */
-void routing_stats(bool full_stats, enum e_route_type route_type, std::vector<t_segment_inf>& segment_inf, float R_minW_nmos, float R_minW_pmos, float grid_logic_tile_area, enum e_directionality directionality, int wire_to_ipin_switch) {
-    float area, used_area;
+void routing_stats(const Netlist<>& net_list,
+                   bool full_stats,
+                   e_route_type route_type,
+                   std::vector<t_segment_inf>& segment_inf,
+                   float R_minW_nmos,
+                   float R_minW_pmos,
+                   float grid_logic_tile_area,
+                   e_directionality directionality,
+                   bool is_flat) {
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    auto& rr_graph = device_ctx.rr_graph;
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& block_locs = g_vpr_ctx.placement().block_locs();
 
-    auto& device_ctx = g_vpr_ctx.device();
-    auto& cluster_ctx = g_vpr_ctx.clustering();
+    int num_rr_switch = rr_graph.num_rr_switches();
 
-    int num_rr_switch = device_ctx.rr_switch_inf.size();
-
-    length_and_bends_stats();
-    print_channel_stats();
-    get_channel_occupancy_stats();
+    length_and_bends_stats(net_list, is_flat);
+    if (isEchoFileEnabled(E_ECHO_ROUTED_NET_WIRE_USAGE))
+        write_routed_net_wire_usage(getEchoFileName(E_ECHO_ROUTED_NET_WIRE_USAGE), net_list, is_flat);
+    print_channel_stats(is_flat);
+    get_channel_occupancy_stats(net_list);
+    print_interposer_routing_stats(net_list);
+    write_interposer_cut_channel_utilization(net_list, "interposer_cut_channel_utilization.txt");
 
     VTR_LOG("Logic area (in minimum width transistor areas, excludes I/Os and empty grid tiles)...\n");
 
-    area = 0;
-    for (size_t i = 0; i < device_ctx.grid.width(); i++) {
-        for (size_t j = 0; j < device_ctx.grid.height(); j++) {
-            auto type = device_ctx.grid[i][j].type;
-            if (device_ctx.grid[i][j].width_offset == 0
-                && device_ctx.grid[i][j].height_offset == 0
-                && !is_io_type(type)
-                && type != device_ctx.EMPTY_PHYSICAL_TILE_TYPE) {
-                if (type->area == UNDEFINED) {
-                    area += grid_logic_tile_area * type->width * type->height;
-                } else {
-                    area += type->area;
-                }
+    float area = 0;
+
+    for (const t_physical_tile_loc tile_loc : device_ctx.grid.all_locations()) {
+        t_physical_tile_type_ptr type = device_ctx.grid.get_physical_type(tile_loc);
+        int width_offset = device_ctx.grid.get_width_offset(tile_loc);
+        int height_offset = device_ctx.grid.get_height_offset(tile_loc);
+        if (width_offset == 0 && height_offset == 0 && !type->is_io() && !type->is_empty()) {
+            if (type->area == UNDEFINED) {
+                area += grid_logic_tile_area * type->width * type->height;
+            } else {
+                area += type->area;
             }
         }
     }
     /* Todo: need to add pitch of routing to blocks with height > 3 */
     VTR_LOG("\tTotal logic block area (Warning, need to add pitch of routing to blocks with height > 3): %g\n", area);
 
-    used_area = 0;
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-        auto type = physical_tile_type(blk_id);
-        if (!is_io_type(type)) {
+    float used_area = 0;
+    for (ClusterBlockId blk_id : cluster_ctx.clb_nlist.blocks()) {
+        t_pl_loc block_loc = block_locs[blk_id].loc;
+        auto type = physical_tile_type(block_loc);
+        if (!type->is_io()) {
             if (type->area == UNDEFINED) {
                 used_area += grid_logic_tile_area * type->width * type->height;
             } else {
@@ -88,41 +142,114 @@ void routing_stats(bool full_stats, enum e_route_type route_type, std::vector<t_
     }
     VTR_LOG("\tTotal used logic block area: %g\n", used_area);
 
-    if (route_type == DETAILED) {
-        count_routing_transistors(directionality, num_rr_switch, wire_to_ipin_switch,
-                                  segment_inf, R_minW_nmos, R_minW_pmos);
+    if (route_type == e_route_type::DETAILED) {
+        count_routing_transistors(directionality,
+                                  num_rr_switch,
+                                  segment_inf,
+                                  R_minW_nmos,
+                                  R_minW_pmos,
+                                  is_flat);
         get_segment_usage_stats(segment_inf);
     }
 
-    if (full_stats == true)
-        print_wirelen_prob_dist();
+    if (full_stats) {
+        print_wirelen_prob_dist(is_flat);
+    }
 }
 
-/**
- * @brief Figures out maximum, minimum and average number of bends
- *        and net length in the routing.
- */
-void length_and_bends_stats() {
-    int bends, total_bends, max_bends;
-    int length, total_length, max_length;
-    int segments, total_segments, max_segments;
-    float av_bends, av_length, av_segments;
-    int num_global_nets, num_clb_opins_reserved;
+static void write_routed_net_wire_usage(const std::string& filename,
+                                        const Netlist<>& net_list,
+                                        bool is_flat) {
+    std::ofstream os(filename);
+    if (!os) {
+        VTR_LOG_WARN("Unable to open routed net wire usage echo file '%s' for writing.\n", filename.c_str());
+        return;
+    }
 
-    auto& cluster_ctx = g_vpr_ctx.clustering();
+    os << "# Routed wire usage of each net.\n";
+    os << "#   num_pins:  Number of pins on the net.\n";
+    os << "#   status:    global (ignored by the router) | no_sinks | absorbed (no wires used) | routed.\n";
+    os << "#   num_tiles: Number of distinct placed tiles connected by the net (by tile root location).\n";
+    os << "#   bb_dx/dy:  Placed tile bounding box span, including the adjacent channel (+1).\n";
+    os << "#   bb_dz:     Number of layers crossed by the placed tile bounding box.\n";
+    os << "#   length:    Routed wirelength, in units of 1 tile wire segments.\n";
+    os << "#   segments:  Number of CHANX / CHANY wires used.\n";
+    os << "#   bends:     Number of bends in the routing.\n";
+    os << "num_pins status num_tiles bb_dx bb_dy bb_dz length segments bends net_name\n";
+    for (ParentNetId net_id : net_list.nets()) {
+        // Compute the bounding box over the root locations of the tiles which
+        // the pins of this net are placed in.
+        int min_x = std::numeric_limits<int>::max();
+        int max_x = std::numeric_limits<int>::lowest();
+        int min_y = std::numeric_limits<int>::max();
+        int max_y = std::numeric_limits<int>::lowest();
+        int min_z = std::numeric_limits<int>::max();
+        int max_z = std::numeric_limits<int>::lowest();
+        std::unordered_set<t_physical_tile_loc> net_tile_locs;
+        for (ParentPinId pin_id : net_list.net_pins(net_id)) {
+            t_pl_loc blk_loc = get_block_loc(net_list.pin_block(pin_id), is_flat).loc;
+            min_x = std::min(min_x, blk_loc.x);
+            max_x = std::max(max_x, blk_loc.x);
+            min_y = std::min(min_y, blk_loc.y);
+            max_y = std::max(max_y, blk_loc.y);
+            min_z = std::min(min_z, blk_loc.layer);
+            max_z = std::max(max_z, blk_loc.layer);
+            net_tile_locs.insert(t_physical_tile_loc(blk_loc.x, blk_loc.y, blk_loc.layer));
+        }
+        VTR_ASSERT(!net_tile_locs.empty());
 
-    max_bends = 0;
-    total_bends = 0;
-    max_length = 0;
-    total_length = 0;
-    max_segments = 0;
-    total_segments = 0;
-    num_global_nets = 0;
-    num_clb_opins_reserved = 0;
+        // Same convention as the placer: the x and y spans include the adjacent
+        // channel, and the z span only counts layer crossings.
+        int bb_dx = max_x - min_x + 1;
+        int bb_dy = max_y - min_y + 1;
+        int bb_dz = max_z - min_z;
 
-    for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-        if (!cluster_ctx.clb_nlist.net_is_ignored(net_id) && cluster_ctx.clb_nlist.net_sinks(net_id).size() != 0) { /* Globals don't count. */
-            get_num_bends_and_length(net_id, &bends, &length, &segments);
+        // Collect the routed wire usage, using the same criteria as the
+        // wirelength statistics printed in the log.
+        const char* status = "routed";
+        int bends = 0;
+        int length = 0;
+        int segments = 0;
+        if (net_list.net_is_ignored(net_id)) {
+            status = "global";
+        } else if (net_list.net_sinks(net_id).size() == 0) {
+            status = "no_sinks";
+        } else {
+            bool is_absorbed;
+            get_num_bends_and_length(net_id, &bends, &length, &segments, &is_absorbed);
+            if (is_absorbed)
+                status = "absorbed";
+        }
+
+        os << net_list.net_pins(net_id).size() << " "
+           << status << " "
+           << net_tile_locs.size() << " "
+           << bb_dx << " "
+           << bb_dy << " "
+           << bb_dz << " "
+           << length << " "
+           << segments << " "
+           << bends << " "
+           << net_list.net_name(net_id) << "\n";
+    }
+}
+
+void length_and_bends_stats(const Netlist<>& net_list, bool is_flat) {
+    int max_bends = 0;
+    int total_bends = 0;
+    int max_length = 0;
+    int total_length = 0;
+    int max_segments = 0;
+    int total_segments = 0;
+    int num_global_nets = 0;
+    int num_clb_opins_reserved = 0;
+    int num_absorbed_nets = 0;
+
+    for (ParentNetId net_id : net_list.nets()) {
+        if (!net_list.net_is_ignored(net_id) && net_list.net_sinks(net_id).size() != 0) { /* Globals don't count. */
+            int bends, length, segments;
+            bool is_absorbed;
+            get_num_bends_and_length(net_id, &bends, &length, &segments, &is_absorbed);
 
             total_bends += bends;
             max_bends = std::max(bends, max_bends);
@@ -132,137 +259,256 @@ void length_and_bends_stats() {
 
             total_segments += segments;
             max_segments = std::max(segments, max_segments);
-        } else if (cluster_ctx.clb_nlist.net_is_ignored(net_id)) {
+
+            if (is_absorbed) {
+                num_absorbed_nets++;
+            }
+        } else if (net_list.net_is_ignored(net_id)) {
             num_global_nets++;
-        } else {
+        } else if (!is_flat) {
+            /* If flat_routing is enabled, we don't need to count the number of reserved opins*/
             num_clb_opins_reserved++;
         }
     }
 
-    av_bends = (float)total_bends / (float)((int)cluster_ctx.clb_nlist.nets().size() - num_global_nets);
+    float av_bends = (float)total_bends / (float)((int)net_list.nets().size() - num_global_nets);
     VTR_LOG("\n");
     VTR_LOG("Average number of bends per net: %#g  Maximum # of bends: %d\n", av_bends, max_bends);
     VTR_LOG("\n");
 
-    av_length = (float)total_length / (float)((int)cluster_ctx.clb_nlist.nets().size() - num_global_nets);
+    float av_length = (float)total_length / (float)((int)net_list.nets().size() - num_global_nets);
     VTR_LOG("Number of global nets: %d\n", num_global_nets);
-    VTR_LOG("Number of routed nets (nonglobal): %d\n", (int)cluster_ctx.clb_nlist.nets().size() - num_global_nets);
+    VTR_LOG("Number of routed nets (nonglobal): %d\n", (int)net_list.nets().size() - num_global_nets);
     VTR_LOG("Wire length results (in units of 1 clb segments)...\n");
     VTR_LOG("\tTotal wirelength: %d, average net length: %#g\n", total_length, av_length);
     VTR_LOG("\tMaximum net length: %d\n", max_length);
     VTR_LOG("\n");
 
-    av_segments = (float)total_segments / (float)((int)cluster_ctx.clb_nlist.nets().size() - num_global_nets);
+    float av_segments = (float)total_segments / (float)((int)net_list.nets().size() - num_global_nets);
     VTR_LOG("Wire length results in terms of physical segments...\n");
     VTR_LOG("\tTotal wiring segments used: %d, average wire segments per net: %#g\n", total_segments, av_segments);
     VTR_LOG("\tMaximum segments used by a net: %d\n", max_segments);
     VTR_LOG("\tTotal local nets with reserved CLB opins: %d\n", num_clb_opins_reserved);
+
+    VTR_LOG("Total number of nets absorbed: %d\n", num_absorbed_nets);
 }
 
-///@brief Determines how many tracks are used in each channel.
-static void get_channel_occupancy_stats() {
-    auto& device_ctx = g_vpr_ctx.device();
+static void get_channel_occupancy_stats(const Netlist<>& net_list) {
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const DeviceGrid& grid = device_ctx.grid;
 
-    auto chanx_occ = vtr::Matrix<int>({{
-                                          device_ctx.grid.width(),     //[0 .. device_ctx.grid.width() - 1] (length of x channel)
-                                          device_ctx.grid.height() - 1 //[0 .. device_ctx.grid.height() - 2] (# x channels)
-                                      }},
-                                      0);
+    const size_t width = grid.width();
+    const size_t height = grid.height();
+    const size_t num_layers = grid.get_num_layers();
 
-    auto chany_occ = vtr::Matrix<int>({{
-                                          device_ctx.grid.width() - 1, //[0 .. device_ctx.grid.width() - 2] (# y channels)
-                                          device_ctx.grid.height()     //[0 .. device_ctx.grid.height() - 1] (length of y channel)
-                                      }},
-                                      0);
-    load_channel_occupancies(chanx_occ, chany_occ);
+    auto chanx_occ = vtr::NdMatrix<int, 3>({{
+                                               num_layers,
+                                               width,     // Length of each x channel
+                                               height - 1 // Total number of x channels. There is no CHANX above the top row.
+                                           }},
+                                           0);
 
-    VTR_LOG("\n");
-    VTR_LOG("X - Directed channels:   j max occ ave occ capacity\n");
-    VTR_LOG("                      ---- ------- ------- --------\n");
+    auto chany_occ = vtr::NdMatrix<int, 3>({{
+                                               num_layers,
+                                               width - 1, // Total number of y channels. There is no CHANY to the right of the most right column.
+                                               height     // Length of each y channel.
+                                           }},
+                                           0);
 
-    int total_x = 0;
-    for (size_t j = 0; j < device_ctx.grid.height() - 1; ++j) {
-        total_x += device_ctx.chan_width.x_list[j];
-        float ave_occ = 0.0;
-        int max_occ = -1;
-
-        for (size_t i = 1; i < device_ctx.grid.width(); ++i) {
-            max_occ = std::max(chanx_occ[i][j], max_occ);
-            ave_occ += chanx_occ[i][j];
-        }
-        ave_occ /= device_ctx.grid.width();
-        VTR_LOG("                      %4d %7d %7.3f %8d\n", j, max_occ, ave_occ, device_ctx.chan_width.x_list[j]);
+    vtr::NdMatrix<int, 3> chanz_occ;
+    if (num_layers > 1) {
+        chanz_occ = vtr::NdMatrix<int, 3>({{num_layers, width, height}}, 0);
     }
 
-    VTR_LOG("Y - Directed channels:   i max occ ave occ capacity\n");
-    VTR_LOG("                      ---- ------- ------- --------\n");
+    load_channel_occupancies(net_list, chanx_occ, chany_occ, chanz_occ);
 
-    int total_y = 0;
-    for (size_t i = 0; i < device_ctx.grid.width() - 1; ++i) {
-        total_y += device_ctx.chan_width.y_list[i];
-        float ave_occ = 0.0;
-        int max_occ = -1;
+    write_channel_occupancy_table("chanx_occupancy.txt", chanx_occ, device_ctx.rr_chan_segment_width.x);
+    write_channel_occupancy_table("chany_occupancy.txt", chany_occ, device_ctx.rr_chan_segment_width.y);
+    if (num_layers > 1) {
+        write_channel_occupancy_table("chanz_occupancy.txt", chanz_occ, device_ctx.rr_chan_segment_width.z);
+    }
 
-        for (size_t j = 1; j < device_ctx.grid.height(); ++j) {
-            max_occ = std::max(chany_occ[i][j], max_occ);
-            ave_occ += chany_occ[i][j];
+    int total_cap_x = 0;
+    int total_used_x = 0;
+    int total_cap_y = 0;
+    int total_used_y = 0;
+    int total_cap_z = 0;
+    int total_used_z = 0;
+
+    VTR_LOG("\n");
+    VTR_LOG("X - Directed channels: layer   y   max occ   ave occ   ave cap\n");
+    VTR_LOG("                        ----- ---- -------- -------- --------\n");
+
+    for (size_t layer = 0; layer < num_layers; ++layer) {
+        for (size_t y = 0; y < height - 1; y++) {
+            float ave_occ = 0.0f;
+            float ave_cap = 0.0f;
+            int max_occ = -1;
+
+            // It is assumed that there is no CHANX at x=0
+            for (size_t x = 1; x < width; x++) {
+                max_occ = std::max(chanx_occ[layer][x][y], max_occ);
+                ave_occ += chanx_occ[layer][x][y];
+                ave_cap += device_ctx.rr_chan_segment_width.x[layer][x][y];
+
+                total_cap_x += device_ctx.rr_chan_segment_width.x[layer][x][y];
+                total_used_x += chanx_occ[layer][x][y];
+            }
+            ave_occ /= width - 2;
+            ave_cap /= width - 2;
+            VTR_LOG("                        %5zu %4zu %8d %8.3f %8.0f\n",
+                    layer, y, max_occ, ave_occ, ave_cap);
         }
-        ave_occ /= device_ctx.grid.height();
-        VTR_LOG("                      %4d %7d %7.3f %8d\n", i, max_occ, ave_occ, device_ctx.chan_width.y_list[i]);
+    }
+
+    VTR_LOG("Y - Directed channels: layer   x   max occ   ave occ   ave cap\n");
+    VTR_LOG("                        ----- ---- -------- -------- --------\n");
+
+    for (size_t layer = 0; layer < num_layers; ++layer) {
+        for (size_t x = 0; x < width - 1; x++) {
+            float ave_occ = 0.0;
+            float ave_cap = 0.0;
+            int max_occ = -1;
+
+            // It is assumed that there is no CHANY at y=0
+            for (size_t y = 1; y < height; y++) {
+                max_occ = std::max(chany_occ[layer][x][y], max_occ);
+                ave_occ += chany_occ[layer][x][y];
+                ave_cap += device_ctx.rr_chan_segment_width.y[layer][x][y];
+
+                total_cap_y += device_ctx.rr_chan_segment_width.y[layer][x][y];
+                total_used_y += chany_occ[layer][x][y];
+            }
+            ave_occ /= height - 2;
+            ave_cap /= height - 2;
+            VTR_LOG("                        %5zu %4zu %8d %8.3f %8.0f\n",
+                    layer, x, max_occ, ave_occ, ave_cap);
+        }
+    }
+
+    if (num_layers > 1) {
+        for (size_t layer = 0; layer < num_layers; ++layer) {
+            for (size_t x = 0; x < width; ++x) {
+                for (size_t y = 0; y < height; ++y) {
+                    total_cap_z += device_ctx.rr_chan_segment_width.z[layer][x][y];
+                    total_used_z += chanz_occ[layer][x][y];
+                }
+            }
+        }
     }
 
     VTR_LOG("\n");
-    VTR_LOG("Total tracks in x-direction: %d, in y-direction: %d\n", total_x, total_y);
+
+    const int total_cap_all = total_cap_x + total_cap_y + total_cap_z;
+    const int total_used_all = total_used_x + total_used_y + total_used_z;
+
+    auto usage_percent = [](int used, int cap) -> float {
+        return cap > 0 ? 100.0 * used / cap : 0.0;
+    };
+
+    VTR_LOG("Total existing wires segments: CHANX %9d, CHANY %9d, CHANZ %9d, ALL %9d\n",
+            total_cap_x, total_cap_y, total_cap_z, total_cap_all);
+    VTR_LOG("Total used wires segments:     CHANX %9d, CHANY %9d, CHANZ %9d, ALL %9d\n",
+            total_used_x, total_used_y, total_used_z, total_used_all);
+    VTR_LOG("Usage percentage:              CHANX %8.1f%%, CHANY %8.1f%%, CHANZ %8.1f%%, ALL %8.1f%%\n",
+            usage_percent(total_used_x, total_cap_x),
+            usage_percent(total_used_y, total_cap_y),
+            usage_percent(total_used_z, total_cap_z),
+            usage_percent(total_used_all, total_cap_all));
+
     VTR_LOG("\n");
 }
 
-/**
- * @brief Loads the two arrays passed in with the total occupancy at each of the
- *        channel segments in the FPGA.
- */
-static void load_channel_occupancies(vtr::Matrix<int>& chanx_occ, vtr::Matrix<int>& chany_occ) {
-    int i, j, inode;
-    t_trace* tptr;
-    t_rr_type rr_type;
+static void write_channel_occupancy_table(std::string_view filename,
+                                          const vtr::NdMatrix<int, 3>& occupancy,
+                                          const vtr::NdMatrix<int, 3>& capacity) {
+    constexpr int w_coord = 6;
+    constexpr int w_value = 12;
+    constexpr int w_percent = 12;
 
-    auto& device_ctx = g_vpr_ctx.device();
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-    auto& route_ctx = g_vpr_ctx.routing();
+    std::ofstream file(filename.data());
+    if (!file.is_open()) {
+        VTR_LOG_WARN("Failed to open %s for writing.\n", filename.data());
+        return;
+    }
 
-    /* First set the occupancy of everything to zero. */
+    file << std::setw(w_coord) << "layer"
+         << std::setw(w_coord) << "x"
+         << std::setw(w_coord) << "y"
+         << std::setw(w_value) << "occupancy"
+         << std::setw(w_percent) << "%"
+         << std::setw(w_value) << "capacity"
+         << "\n";
+
+    for (size_t layer = 0; layer < occupancy.dim_size(0); ++layer) {
+        for (size_t x = 0; x < occupancy.dim_size(1); ++x) {
+            for (size_t y = 0; y < occupancy.dim_size(2); ++y) {
+                int occ = occupancy[layer][x][y];
+                int cap = capacity[layer][x][y];
+                float percent = (cap > 0) ? static_cast<float>(occ) / cap * 100.0f : 0.0f;
+
+                file << std::setw(w_coord) << layer
+                     << std::setw(w_coord) << x
+                     << std::setw(w_coord) << y
+                     << std::setw(w_value) << occ
+                     << std::setw(w_percent) << std::fixed << std::setprecision(3) << percent
+                     << std::setw(w_value) << cap
+                     << "\n";
+            }
+        }
+    }
+
+    file.close();
+}
+
+static void load_channel_occupancies(const Netlist<>& net_list,
+                                     vtr::NdMatrix<int, 3>& chanx_occ,
+                                     vtr::NdMatrix<int, 3>& chany_occ,
+                                     vtr::NdMatrix<int, 3>& chanz_occ) {
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const RRGraphView& rr_graph = device_ctx.rr_graph;
+    const RoutingContext& route_ctx = g_vpr_ctx.routing();
+
+    // First set the occupancy of everything to zero.
     chanx_occ.fill(0);
     chany_occ.fill(0);
+    if (!chanz_occ.empty()) {
+        chanz_occ.fill(0);
+    }
 
-    /* Now go through each net and count the tracks and pins used everywhere */
-    for (auto net_id : cluster_ctx.clb_nlist.nets()) {
-        /* Skip global and empty nets. */
-        if (cluster_ctx.clb_nlist.net_is_ignored(net_id) && cluster_ctx.clb_nlist.net_sinks(net_id).size() != 0)
+    // Now go through each net and count the tracks and pins used everywhere
+    for (ParentNetId net_id : net_list.nets()) {
+        // Skip global and empty nets.
+        if (net_list.net_is_ignored(net_id) && net_list.net_sinks(net_id).size() != 0) {
             continue;
+        }
 
-        tptr = route_ctx.trace[net_id].head;
-        while (tptr != nullptr) {
-            inode = tptr->index;
-            rr_type = device_ctx.rr_nodes[inode].type();
+        const vtr::optional<RouteTree>& tree = route_ctx.route_trees[net_id];
+        if (!tree) {
+            continue;
+        }
 
-            if (rr_type == SINK) {
-                tptr = tptr->next; /* Skip next segment. */
-                if (tptr == nullptr)
-                    break;
+        for (const RouteTreeNode& rt_node : tree.value().all_nodes()) {
+            RRNodeId inode = rt_node.inode;
+            e_rr_type rr_type = rr_graph.node_type(inode);
+
+            if (rr_type == e_rr_type::CHANX) {
+                int j = rr_graph.node_ylow(inode);
+                int layer = rr_graph.node_layer_low(inode);
+                for (int i = rr_graph.node_xlow(inode); i <= rr_graph.node_xhigh(inode); i++)
+                    chanx_occ[layer][i][j]++;
+            } else if (rr_type == e_rr_type::CHANY) {
+                int i = rr_graph.node_xlow(inode);
+                int layer = rr_graph.node_layer_low(inode);
+                for (int j = rr_graph.node_ylow(inode); j <= rr_graph.node_yhigh(inode); j++)
+                    chany_occ[layer][i][j]++;
+            } else if (rr_type == e_rr_type::CHANZ) {
+                VTR_ASSERT_SAFE(!chanz_occ.empty());
+                int x = rr_graph.node_xlow(inode);
+                int y = rr_graph.node_ylow(inode);
+                for (int layer = rr_graph.node_layer_low(inode); layer <= rr_graph.node_layer_high(inode); layer++)
+                    chanz_occ[layer][x][y]++;
             }
-
-            else if (rr_type == CHANX) {
-                j = device_ctx.rr_nodes[inode].ylow();
-                for (i = device_ctx.rr_nodes[inode].xlow(); i <= device_ctx.rr_nodes[inode].xhigh(); i++)
-                    chanx_occ[i][j]++;
-            }
-
-            else if (rr_type == CHANY) {
-                i = device_ctx.rr_nodes[inode].xlow();
-                for (j = device_ctx.rr_nodes[inode].ylow(); j <= device_ctx.rr_nodes[inode].yhigh(); j++)
-                    chany_occ[i][j]++;
-            }
-
-            tptr = tptr->next;
         }
     }
 }
@@ -271,57 +517,47 @@ static void load_channel_occupancies(vtr::Matrix<int>& chanx_occ, vtr::Matrix<in
  * @brief Counts and returns the number of bends, wirelength, and number of routing
  *        resource segments in net inet's routing.
  */
-void get_num_bends_and_length(ClusterNetId inet, int* bends_ptr, int* len_ptr, int* segments_ptr) {
+void get_num_bends_and_length(ParentNetId inet, int* bends_ptr, int* len_ptr, int* segments_ptr, bool* is_absorbed_ptr) {
     auto& route_ctx = g_vpr_ctx.routing();
     auto& device_ctx = g_vpr_ctx.device();
+    const auto& rr_graph = device_ctx.rr_graph;
 
-    t_trace *tptr, *prevptr;
-    int inode;
-    t_rr_type curr_type, prev_type;
-    int bends, length, segments;
+    int bends = 0;
+    int length = 0;
+    int segments = 0;
 
-    bends = 0;
-    length = 0;
-    segments = 0;
-
-    prevptr = route_ctx.trace[inet].head; /* Should always be SOURCE. */
-    if (prevptr == nullptr) {
+    const vtr::optional<RouteTree>& tree = route_ctx.route_trees[inet];
+    if (!tree) {
         VPR_FATAL_ERROR(VPR_ERROR_OTHER,
-                        "in get_num_bends_and_length: net #%lu has no traceback.\n", size_t(inet));
+                        "in get_num_bends_and_length: net #%lu has no routing.\n", size_t(inet));
     }
-    inode = prevptr->index;
-    prev_type = device_ctx.rr_nodes[inode].type();
 
-    tptr = prevptr->next;
+    e_rr_type prev_type = rr_graph.node_type(tree->root().inode);
+    RouteTree::iterator it = tree->all_nodes().begin();
+    RouteTree::iterator end = tree->all_nodes().end();
+    ++it; /* start from the next node after source */
 
-    while (tptr != nullptr) {
-        inode = tptr->index;
-        curr_type = device_ctx.rr_nodes[inode].type();
+    for (; it != end; ++it) {
+        const RouteTreeNode& rt_node = *it;
+        RRNodeId inode = rt_node.inode;
+        e_rr_type curr_type = rr_graph.node_type(inode);
 
-        if (curr_type == SINK) { /* Starting a new segment */
-            tptr = tptr->next;   /* Link to existing path - don't add to len. */
-            if (tptr == nullptr)
-                break;
-
-            curr_type = device_ctx.rr_nodes[tptr->index].type();
-        }
-
-        else if (curr_type == CHANX || curr_type == CHANY) {
+        if (curr_type == e_rr_type::CHANX || curr_type == e_rr_type::CHANY) {
             segments++;
-            length += 1 + device_ctx.rr_nodes[inode].xhigh() - device_ctx.rr_nodes[inode].xlow()
-                      + device_ctx.rr_nodes[inode].yhigh() - device_ctx.rr_nodes[inode].ylow();
+            length += rr_graph.node_length(inode);
 
-            if (curr_type != prev_type && (prev_type == CHANX || prev_type == CHANY))
+            if (curr_type != prev_type && (prev_type == e_rr_type::CHANX || prev_type == e_rr_type::CHANY))
                 bends++;
         }
 
-        prev_type = curr_type;
-        tptr = tptr->next;
+        /* The all_nodes iterator walks all nodes in the tree. If we are at a leaf and going back to the top, prev_type is invalid: just set it to SINK */
+        prev_type = rt_node.is_leaf() ? e_rr_type::SINK : curr_type;
     }
 
     *bends_ptr = bends;
     *len_ptr = length;
     *segments_ptr = segments;
+    *is_absorbed_ptr = (segments == 0);
 }
 
 /**
@@ -329,23 +565,24 @@ void get_num_bends_and_length(ClusterNetId inet, int* bends_ptr, int* len_ptr, i
  *        input pins on a net -- i.e. simulates 2-point net length probability
  *        distribution.
  */
-void print_wirelen_prob_dist() {
+void print_wirelen_prob_dist(bool is_flat) {
     auto& device_ctx = g_vpr_ctx.device();
     auto& cluster_ctx = g_vpr_ctx.clustering();
 
-    float* prob_dist;
     float norm_fac, two_point_length;
     int bends, length, segments, index;
     float av_length;
-    int prob_dist_size, i, incr;
+    int prob_dist_size, incr;
+    bool is_absorbed;
 
     prob_dist_size = device_ctx.grid.width() + device_ctx.grid.height() + 10;
-    prob_dist = (float*)vtr::calloc(prob_dist_size, sizeof(float));
+    std::vector<float> prob_dist(prob_dist_size, 0.0);
     norm_fac = 0.;
 
     for (auto net_id : cluster_ctx.clb_nlist.nets()) {
+        auto par_net_id = get_cluster_net_parent_id(g_vpr_ctx.atom().lookup(), net_id, is_flat);
         if (!cluster_ctx.clb_nlist.net_is_ignored(net_id) && cluster_ctx.clb_nlist.net_sinks(net_id).size() != 0) {
-            get_num_bends_and_length(net_id, &bends, &length, &segments);
+            get_num_bends_and_length(par_net_id, &bends, &length, &segments, &is_absorbed);
 
             /*  Assign probability to two integer lengths proportionately -- i.e.  *
              *  if two_point_length = 1.9, add 0.9 of the pins to prob_dist[2] and *
@@ -360,11 +597,12 @@ void print_wirelen_prob_dist() {
                 VTR_LOG_WARN("Index (%d) to prob_dist exceeds its allocated size (%d).\n",
                              index, prob_dist_size);
                 VTR_LOG("Realloc'ing to increase 2-pin wirelen prob distribution array.\n");
+
+                /*  Resized to prob_dist + incr. Elements after old prob_dist_size set
+                 *   to 0.0.  */
                 incr = index - prob_dist_size + 2;
                 prob_dist_size += incr;
-                prob_dist = (float*)vtr::realloc(prob_dist, prob_dist_size * sizeof(float));
-                for (i = prob_dist_size - incr; i < prob_dist_size; i++)
-                    prob_dist[i] = 0.0;
+                prob_dist.resize(prob_dist_size);
             }
             prob_dist[index] += (num_sinks) * (1 - two_point_length + index);
 
@@ -375,10 +613,8 @@ void print_wirelen_prob_dist() {
                 VTR_LOG("Realloc'ing to increase 2-pin wirelen prob distribution array.\n");
                 incr = index - prob_dist_size + 2;
                 prob_dist_size += incr;
-                prob_dist = (float*)vtr::realloc(prob_dist,
-                                                 prob_dist_size * sizeof(float));
-                for (i = prob_dist_size - incr; i < prob_dist_size; i++)
-                    prob_dist[i] = 0.0;
+
+                prob_dist.resize(prob_dist_size);
             }
             prob_dist[index] += (num_sinks) * (1 - index + two_point_length);
 
@@ -391,7 +627,7 @@ void print_wirelen_prob_dist() {
     VTR_LOG("\n");
     VTR_LOG("Probability distribution of 2-pin net lengths:\n");
     VTR_LOG("\n");
-    VTR_LOG("Length    p(Lenth)\n");
+    VTR_LOG("Length    p(Length)\n");
 
     av_length = 0;
 
@@ -405,8 +641,6 @@ void print_wirelen_prob_dist() {
     VTR_LOG("Number of 2-pin nets: ;%g;\n", norm_fac);
     VTR_LOG("Expected value of 2-pin net length (R): ;%g;\n", av_length);
     VTR_LOG("Total wirelength: ;%g;\n", norm_fac * av_length);
-
-    free(prob_dist);
 }
 
 /**
@@ -416,19 +650,18 @@ void print_wirelen_prob_dist() {
  * (i.e. the clock when it is marked global).
  */
 void print_lambda() {
-    int ipin, iclass;
     int num_inputs_used = 0;
-    float lambda;
 
     auto& cluster_ctx = g_vpr_ctx.clustering();
+    auto& block_locs = g_vpr_ctx.placement().block_locs();
 
-    for (auto blk_id : cluster_ctx.clb_nlist.blocks()) {
-        auto type = physical_tile_type(blk_id);
+    for (ClusterBlockId blk_id : cluster_ctx.clb_nlist.blocks()) {
+        t_pl_loc block_loc = block_locs[blk_id].loc;
+        auto type = physical_tile_type(block_loc);
         VTR_ASSERT(type != nullptr);
-        if (!is_io_type(type)) {
-            for (ipin = 0; ipin < type->num_pins; ipin++) {
-                iclass = type->pin_class[ipin];
-                if (type->class_inf[iclass].type == RECEIVER) {
+        if (!type->is_io()) {
+            for (int ipin = 0; ipin < type->num_pins; ipin++) {
+                if (get_pin_type_from_pin_physical_num(type, ipin) == e_pin_type::RECEIVER) {
                     ClusterNetId net_id = cluster_ctx.clb_nlist.block_net(blk_id, ipin);
                     if (net_id != ClusterNetId::INVALID())                 /* Pin is connected? */
                         if (!cluster_ctx.clb_nlist.net_is_ignored(net_id)) /* Not a global clock */
@@ -438,7 +671,7 @@ void print_lambda() {
         }
     }
 
-    lambda = (float)num_inputs_used / (float)cluster_ctx.clb_nlist.blocks().size();
+    float lambda = (float)num_inputs_used / (float)cluster_ctx.clb_nlist.blocks().size();
     VTR_LOG("Average lambda (input pins used per clb) is: %g\n", lambda);
 }
 
@@ -449,13 +682,134 @@ int count_netlist_clocks() {
     std::set<std::string> clock_names;
 
     //Loop through each clock pin and record the names in clock_names
-    for (auto blk_id : atom_ctx.nlist.blocks()) {
-        for (auto pin_id : atom_ctx.nlist.block_clock_pins(blk_id)) {
-            auto net_id = atom_ctx.nlist.pin_net(pin_id);
-            clock_names.insert(atom_ctx.nlist.net_name(net_id));
+    for (auto blk_id : atom_ctx.netlist().blocks()) {
+        for (auto pin_id : atom_ctx.netlist().block_clock_pins(blk_id)) {
+            auto net_id = atom_ctx.netlist().pin_net(pin_id);
+            clock_names.insert(atom_ctx.netlist().net_name(net_id));
         }
     }
 
     //Since std::set does not include duplicates, the number of clocks is the size of the set
     return static_cast<int>(clock_names.size());
+}
+
+float calculate_device_utilization(const DeviceGrid& grid, const std::map<t_logical_block_type_ptr, size_t>& instance_counts) {
+    // Record the resources of the grid
+    std::map<t_physical_tile_type_ptr, size_t> grid_resources;
+
+    for (const t_physical_tile_loc tile_loc : grid.all_locations()) {
+        int width_offset = grid.get_width_offset(tile_loc);
+        int height_offset = grid.get_height_offset(tile_loc);
+        if (width_offset == 0 && height_offset == 0) {
+            const t_physical_tile_type_ptr type = grid.get_physical_type(tile_loc);
+            ++grid_resources[type];
+        }
+    }
+
+    // Determine the area of grid in tile units
+    float grid_area = 0.;
+    for (auto& kv : grid_resources) {
+        t_physical_tile_type_ptr type = kv.first;
+        size_t count = kv.second;
+
+        float type_area = type->width * type->height;
+
+        grid_area += type_area * count;
+    }
+
+    // Determine the area of instances in tile units
+    float instance_area = 0.;
+    for (auto& kv : instance_counts) {
+        if (is_empty_type(kv.first)) {
+            continue;
+        }
+
+        t_physical_tile_type_ptr type = pick_physical_type(kv.first);
+
+        size_t count = kv.second;
+
+        float type_area = type->width * type->height;
+
+        //Instances of multi-capaicty blocks take up less space
+        if (type->capacity != 0) {
+            type_area /= type->capacity;
+        }
+
+        instance_area += type_area * count;
+    }
+
+    float utilization = instance_area / grid_area;
+
+    return utilization;
+}
+
+void print_resource_usage() {
+    auto& device_ctx = g_vpr_ctx.device();
+    const auto& clb_netlist = g_vpr_ctx.clustering().clb_nlist;
+    std::map<t_logical_block_type_ptr, size_t> num_type_instances;
+    for (auto blk_id : clb_netlist.blocks()) {
+        num_type_instances[clb_netlist.block_type(blk_id)]++;
+    }
+
+    VTR_LOG("\n");
+    VTR_LOG("Resource usage...\n");
+    for (const auto& type : device_ctx.logical_block_types) {
+        if (is_empty_type(&type)) continue;
+        size_t num_instances = num_type_instances.count(&type) > 0 ? num_type_instances.at(&type) : 0;
+        VTR_LOG("\tNetlist\n\t\t%d\tblocks of type: %s\n",
+                num_instances, type.name.c_str());
+
+        VTR_LOG("\tArchitecture\n");
+        for (const auto equivalent_tile : type.equivalent_tiles) {
+            //get the number of equivalent tile across all layers
+            num_instances = device_ctx.grid.num_instances(equivalent_tile, -1);
+
+            VTR_LOG("\t\t%d\tblocks of type: %s\n",
+                    num_instances, equivalent_tile->name.c_str());
+        }
+    }
+    VTR_LOG("\n");
+}
+
+void print_device_utilization(const float target_device_utilization) {
+    auto& device_ctx = g_vpr_ctx.device();
+    const auto& clb_netlist = g_vpr_ctx.clustering().clb_nlist;
+    std::map<t_logical_block_type_ptr, size_t> num_type_instances;
+    for (auto blk_id : clb_netlist.blocks()) {
+        num_type_instances[clb_netlist.block_type(blk_id)]++;
+    }
+
+    float device_utilization = calculate_device_utilization(device_ctx.grid, num_type_instances);
+    VTR_LOG("Device Utilization: %.2f (target %.2f)\n", device_utilization, target_device_utilization);
+    for (const auto& type : device_ctx.physical_tile_types) {
+        if (is_empty_type(&type)) {
+            continue;
+        }
+
+        if (device_ctx.grid.num_instances(&type, -1) != 0) {
+            VTR_LOG("\tPhysical Tile %s:\n", type.name.c_str());
+
+            auto equivalent_sites = get_equivalent_sites_set(&type);
+
+            for (auto logical_block : equivalent_sites) {
+                float util = 0.;
+                size_t num_inst = device_ctx.grid.num_instances(&type, -1);
+                if (num_inst != 0) {
+                    size_t num_netlist_instances = num_type_instances.count(logical_block) > 0 ? num_type_instances.at(logical_block) : 0;
+                    util = float(num_netlist_instances) / num_inst;
+                }
+                VTR_LOG("\tBlock Utilization: %.2f Logical Block: %s\n", util, logical_block->name.c_str());
+            }
+        }
+    }
+    VTR_LOG("\n");
+
+    if (!device_ctx.grid.limiting_resources().empty()) {
+        std::vector<std::string> limiting_block_names;
+        for (auto blk_type : device_ctx.grid.limiting_resources()) {
+            limiting_block_names.emplace_back(blk_type->name);
+        }
+        VTR_LOG("FPGA size limited by block type(s): %s\n", vtr::join(limiting_block_names, " ").c_str());
+        VTR_LOG("\n");
+    }
 }

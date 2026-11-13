@@ -1,3 +1,14 @@
+#pragma once
+/**
+ * @file intra_logic_block.h
+ * 
+ * This file manages the interactions between logic blocks, cluster blocks, and their sub blocks
+ * Contains declaration of selected_Sub_block_info struct, which holds the information on
+ * the currently selected/highlighted block
+ * 
+ * Authors: Long Yu Wang, Matthew J.P. Walker, Sebastian Lievano
+ */
+
 /* Author: Long Yu Wang
  * Date: August 2013
  *
@@ -5,23 +16,14 @@
  * Date: May,June 2014
  */
 
-#ifndef INTRA_LOGIC_BLOCK_H
-#define INTRA_LOGIC_BLOCK_H
-
 #ifndef NO_GRAPHICS
 
-#    include "vpr_types.h"
-#    include "draw_types.h"
-#    include "atom_netlist_fwd.h"
-#    include "route_tree_timing.h"
-#    include <unordered_set>
+#include "vpr_types.h"
+#include "atom_netlist_fwd.h"
+#include <unordered_set>
 
-#    include "ezgl/point.hpp"
-
-#    ifndef NO_GRAPHICS
-#        include "ezgl/graphics.hpp"
-#        include "ezgl/application.hpp"
-#    endif /* NO_GRAPHICS */
+#include "ezgl/point.hpp"
+#include "ezgl/graphics.hpp"
 
 struct t_selected_sub_block_info {
     struct clb_pin_tuple {
@@ -90,16 +92,6 @@ struct t_selected_sub_block_info {
     bool is_in_selected_subtree(const t_pb_graph_node* test, const ClusterBlockId clb_index) const;
 };
 
-/* Enable/disable clb internals drawing. Internals drawing is enabled with a click of the
- * "Blk Internal" button. With each consecutive click of the button, a lower level in the
- * pb_graph will be shown for every clb. When the number of clicks on the button exceeds
- * the maximum level of sub-blocks that exists in the pb_graph, internals drawing
- * will be disabled.
- */
-#    ifndef NO_GRAPHICS
-void toggle_blk_internal(GtkWidget* /*widget*/, gint /*response_id*/, gpointer data);
-
-#    endif /* NO_GRAPHICS */
 /* This function pre-allocates space to store bounding boxes for all sub-blocks. Each
  * sub-block is identified by its descriptor_type and a unique pin ID in the type.
  */
@@ -113,9 +105,7 @@ void draw_internal_init_blk();
 /* Top-level drawing routine for internal sub-blocks. The function traverses through all
  * grid tiles and calls helper function to draw inside each block.
  */
-#    ifndef NO_GRAPHICS
 void draw_internal_draw_subblk(ezgl::renderer* g);
-#    endif /* NO_GRAPHICS */
 
 /* Determines which part of a block to highlight, and stores it,
  * so that the other subblock drawing functions will obey it.
@@ -128,16 +118,23 @@ int highlight_sub_block(const ezgl::point2d& point_in_clb, const ClusterBlockId 
  */
 t_selected_sub_block_info& get_selected_sub_block_info();
 
+/**
+ * Draw the atom-level net flylines for the selected pb 
+ * (inputs: blue, outputs: red, internal: orange)
+ */
+void draw_selected_pb_flylines(ezgl::renderer* g);
+
 /*
  * Draws lines from the proper logical sources, to the proper logical sinks.
  * If the draw state says to show all logical connections, it will,
- * and if there is a selected sub-block, it will highlight it's conections
+ * and if there is a selected sub-block, it will highlight it's connections
  */
 
 void draw_logical_connections(ezgl::renderer* g);
 
 void find_pin_index_at_model_scope(const AtomPinId the_pin, const AtomBlockId lblk, int* pin_index, int* total_pins);
 
-#endif /* NO_GRAPHICS */
+//Returns pb ptr of given atom block name, given the pb of its containing block. Returns null if nothing found
+t_pb* find_atom_block_in_pb(const std::string& name, t_pb* pb);
 
-#endif /* INTRA_LOGIC_BLOCK_H */
+#endif /* NO_GRAPHICS */

@@ -168,6 +168,51 @@ TEST(Message, ReadWriteDataStruct) {
   checkTestMessageAllZero(defaultValue<TestAllTypes>());
 }
 
+KJ_TEST("clone()") {
+  MallocMessageBuilder builder(2048);
+  initTestMessage(builder.getRoot<TestAllTypes>());
+
+  auto copy = clone(builder.getRoot<TestAllTypes>().asReader());
+  checkTestMessage(*copy);
+}
+
+#if !CAPNP_ALLOW_UNALIGNED
+KJ_TEST("disallow unaligned") {
+  union {
+    char buffer[16];
+    word align;
+  };
+  memset(buffer, 0, sizeof(buffer));
+
+  auto unaligned = kj::arrayPtr(reinterpret_cast<word*>(buffer + 1), 1);
+
+  kj::ArrayPtr<const word> segments[1] = {unaligned};
+  SegmentArrayMessageReader message(segments);
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("unaligned", message.getRoot<TestAllTypes>());
+}
+#endif
+
+KJ_TEST("MessageBuilder::sizeInWords()") {
+  capnp::MallocMessageBuilder builder;
+  auto root = builder.initRoot<TestAllTypes>();
+  initTestMessage(root);
+
+  size_t expected = root.totalSize().wordCount + 1;
+
+  KJ_EXPECT(builder.sizeInWords() == expected);
+
+  auto segments = builder.getSegmentsForOutput();
+  size_t total = 0;
+  for (auto& segment: segments) {
+    total += segment.size();
+  }
+  KJ_EXPECT(total == expected);
+
+  capnp::SegmentArrayMessageReader reader(segments);
+  checkTestMessage(reader.getRoot<TestAllTypes>());
+  KJ_EXPECT(reader.sizeInWords() == expected);
+}
+
 // TODO(test):  More tests.
 
 }  // namespace

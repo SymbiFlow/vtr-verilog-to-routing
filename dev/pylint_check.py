@@ -23,7 +23,8 @@ repo_path = pathlib.Path(__file__).parent.parent.absolute()
 paths_to_lint = [
     (repo_path, False),
     (repo_path / "dev", True),
-    (repo_path / "ODIN_II", True),
+    (repo_path / "mosaic", True),
+    (repo_path / "odin_ii", True),
     (repo_path / "ace2", True),
     (repo_path / "doc", True),
     (repo_path / "vpr", True),
@@ -33,7 +34,6 @@ paths_to_lint = [
 # These python files existed before the linter.
 # At some point they should be cleaned up and removed from this list
 grandfathered_files = [
-    repo_path / "sweep_build_configs.py",
     repo_path / "dev/vtr_gdb_pretty_printers.py",
     repo_path / "dev/submit_slurm.py",
     repo_path / "dev/code_format_fixup.py",
@@ -41,25 +41,26 @@ grandfathered_files = [
     repo_path / "dev/autoformat.py",
     repo_path / "dev/vpr_animate.py",
     repo_path / "dev/external_subtrees.py",
-    repo_path / "ODIN_II/usefull_tools/restore_blackboxed_latches_from_blif_file.py",
-    repo_path / "ODIN_II/regression_test/parse_result/parse_result.py",
-    repo_path / "ODIN_II/regression_test/parse_result/conf/hooks.py",
-    repo_path / "ODIN_II/regression_test/tools/parse_odin_result.py",
-    repo_path / "ODIN_II/regression_test/tools/odin_script_util.py",
-    repo_path / "ODIN_II/regression_test/tools/ODIN_CONFIG.py",
-    repo_path / "ODIN_II/regression_test/tools/synth_using_quartus.py",
-    repo_path / "ODIN_II/regression_test/tools/odin_config_maker.py",
-    repo_path / "ODIN_II/regression_test/tools/synth_using_vl2mv.py",
-    repo_path / "ODIN_II/regression_test/tools/synth_using_odin.py",
-    repo_path / "ODIN_II/regression_test/tools/asr_vector_maker.py",
-    repo_path / "ODIN_II/regression_test/tools/8_bit_arithmetic_power_output.py",
-    repo_path / "ODIN_II/regression_test/tools/8_bit_input.py",
+    repo_path / "odin_ii/usefull_tools/restore_blackboxed_latches_from_blif_file.py",
+    repo_path / "odin_ii/regression_test/parse_result/parse_result.py",
+    repo_path / "odin_ii/regression_test/parse_result/conf/hooks.py",
+    repo_path / "odin_ii/regression_test/tools/parse_odin_result.py",
+    repo_path / "odin_ii/regression_test/tools/odin_script_util.py",
+    repo_path / "odin_ii/regression_test/tools/ODIN_CONFIG.py",
+    repo_path / "odin_ii/regression_test/tools/synth_using_quartus.py",
+    repo_path / "odin_ii/regression_test/tools/odin_config_maker.py",
+    repo_path / "odin_ii/regression_test/tools/synth_using_vl2mv.py",
+    repo_path / "odin_ii/regression_test/tools/synth_using_odin.py",
+    repo_path / "odin_ii/regression_test/tools/asr_vector_maker.py",
+    repo_path / "odin_ii/regression_test/tools/8_bit_arithmetic_power_output.py",
+    repo_path / "odin_ii/regression_test/tools/8_bit_input.py",
     repo_path / "ace2/scripts/extract_clk_from_blif.py",
     repo_path / "doc/src/vtr_version.py",
     repo_path / "doc/src/conf.py",
     repo_path / "doc/_exts/rrgraphdomain/__init__.py",
     repo_path / "doc/_exts/sdcdomain/__init__.py",
     repo_path / "doc/_exts/archdomain/__init__.py",
+    repo_path / "doc/_exts/constraintsdomain/__init__.py",
     repo_path / "vpr/scripts/compare_timing_reports.py",
     repo_path / "vpr/scripts/profile/util.py",
     repo_path / "vpr/scripts/profile/parse_and_plot_detailed.py",
@@ -84,13 +85,29 @@ grandfathered_files = [
     repo_path / "vtr_flow/scripts/spice/run_spice.py",
 ]
 
+# These python files are related to external repositories added as subtrees
+# to the vtr_flow directory. They should be skipped for the Linting process
+subtree_files = [
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/top/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/test/top_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/test/audio_param_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/test/audio_clock_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/test/spd_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/sim/top_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/sim/audio_param_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/sim/audio_clock_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/sim/spd_tb/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/src/Manifest.py",
+    repo_path / "vtr_flow/benchmarks/system_verilog/hdmi/Manifest.py",
+]
+
 ################################################################################
 ################################################################################
 ################################################################################
 
 
 class TermColor:
-    """ Terminal codes for printing in color """
+    """Terminal codes for printing in color"""
 
     # pylint: disable=too-few-public-methods
 
@@ -105,23 +122,23 @@ class TermColor:
 
 
 def error(*msg, returncode=-1):
-    """ Print an error message and exit program """
+    """Print an error message and exit program"""
 
     print(TermColor.RED + "ERROR:", " ".join(str(item) for item in msg), TermColor.END)
     sys.exit(returncode)
 
 
 def expand_paths():
-    """ Build a list of all python files to process by going through 'paths_to_lint' """
+    """Build a list of all python files to process by going through 'paths_to_lint'"""
 
     paths = []
-    for (path, is_recursive) in paths_to_lint:
+    for path, is_recursive in paths_to_lint:
         # Make sure all hard-coded paths point to .py files
         if path.is_file():
             if path.suffix.lower() != ".py":
                 print(path, "does note have extension '.py'")
                 sys.exit(-1)
-            paths.append(path)
+            paths.append(path.resolve())
 
         # If path is a directory, search for .py files
         elif path.is_dir():
@@ -132,9 +149,9 @@ def expand_paths():
             for glob_path in path.glob(glob_str):
                 paths.append(glob_path)
 
-        # Non-existant paths, and unhanlded file types error
+        # Non-existent paths, and unhanlded file types error
         elif not path.exists():
-            error("Non-existant path:", path)
+            error("Non-existent path:", path)
         else:
             error("Unhandled path:", path)
     return paths
@@ -151,11 +168,22 @@ def main():
         action="store_true",
         help="Also check grandfathered files for lint errors.",
     )
+    parser.add_argument("files", nargs="*", help="List of files to check using pylint.")
     args = parser.parse_args()
 
-    # Expand all paths
-    paths = expand_paths()
-    print(TermColor.BLUE + "Linting", len(paths), "python files.", TermColor.END)
+    # Check if we are doing all files, or user-provided list
+    if args.files:
+        # Check that all files exist, and build pathlib objects
+        paths = []
+        for file in args.files:
+            f_path = pathlib.Path(file).resolve()
+            if not f_path.is_file():
+                error(f_path, "does not exist")
+            paths.append(f_path)
+    else:
+        # Expand all paths
+        paths = expand_paths()
+    print(TermColor.BLUE + "Linting", len(paths), "python file(s).", TermColor.END)
 
     # Lint files
     num_error_files = 0
@@ -164,21 +192,41 @@ def main():
 
         if (path in grandfathered_files) and not args.check_grandfathered:
             print(
-                TermColor.YELLOW + relpath_str, "skipped (grandfathered)", TermColor.END,
+                TermColor.YELLOW + relpath_str,
+                "skipped (grandfathered)",
+                TermColor.END,
+            )
+            continue
+
+        if path in subtree_files:
+            print(
+                TermColor.YELLOW + relpath_str,
+                "skipped (external subtree python file)",
+                TermColor.END,
             )
             continue
 
         # Pylint checks to ignore
         ignore_list = []
 
-        # Ignore function argument indenting, which is currently incompabile with black
-        # https://github.com/psf/black/issues/48
-        ignore_list.append("C0330")
+        # Ignore consider-using-f-string.
+        # Many Python scripts in this repo use .format instead of f-strings.
+        # We should replace these in the future.
+        ignore_list.append("C0209")
 
         # Build pylint command
         cmd = ["pylint", path, "-s", "n"]
         if ignore_list:
             cmd.append("--disable=" + ",".join(ignore_list))
+        # Don't object to single-letter variable names (that's not in PEP8)
+        # see https://stackoverflow.com/q/21833872
+        cmd.append("--variable-rgx=[a-z][a-z0-9_]{0,40}$")
+
+        # Increase the max number of positional arguments.
+        # Many legacy functions in this codebase use 25+ positional arguments.
+        # We should refactor these functions to use fewer parameters or
+        # configuration objects in the future.
+        cmd.append("--max-positional-arguments=30")
 
         # Run pylint and check output
         process = subprocess.run(cmd, check=False, stdout=subprocess.PIPE)

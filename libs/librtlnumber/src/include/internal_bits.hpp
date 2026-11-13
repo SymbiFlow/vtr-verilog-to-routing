@@ -3,7 +3,7 @@
  *            Alexandrea Demmings (alexandrea.demmings@unb.ca, lxdemmings@gmail.com) and
  *             Dr. Kenneth B. Kent (ken@unb.ca)
  *             for the Reconfigurable Computing Research Lab at the
- *              Univerity of New Brunswick in Fredericton, New Brunswick, Canada
+ *              University of New Brunswick in Fredericton, New Brunswick, Canada
  */
 
 #ifndef INTERNAL_BITS_HPP
@@ -61,44 +61,37 @@ constexpr bit_value_t l_buf[4] = {
     _0, _1, _x, _x};
 _static_unused(l_buf)
 
-    constexpr bit_value_t l_not[4]
-    = {
+    constexpr bit_value_t l_not[4] = {
         /*   0   1   x   z 	<- a */
         _1, _0, _x, _x};
 _static_unused(l_not)
 
-    constexpr bit_value_t is_unk[4]
-    = {
+    constexpr bit_value_t is_unk[4] = {
         /*	 0   1   x   z  <- a*/
         _0, _0, _1, _1};
 _static_unused(is_unk)
 
-    constexpr bit_value_t is_x_bit[4]
-    = {
+    constexpr bit_value_t is_x_bit[4] = {
         /*	 0   1   x   z  <- a*/
         _0, _0, _1, _0};
 _static_unused(is_x_bit)
 
-    constexpr bit_value_t is_z_bit[4]
-    = {
+    constexpr bit_value_t is_z_bit[4] = {
         /*	 0   1   x   z  <- a*/
         _0, _0, _0, _1};
 _static_unused(is_z_bit)
 
-    constexpr bit_value_t is_one_bit[4]
-    = {
+    constexpr bit_value_t is_one_bit[4] = {
         /*	 0   1   x   z  <- a*/
         _0, _1, _0, _0};
 _static_unused(is_one_bit)
 
-    constexpr bit_value_t is_zero_bit[4]
-    = {
+    constexpr bit_value_t is_zero_bit[4] = {
         /*	 0   1   x   z  <- a*/
         _1, _0, _0, _0};
 _static_unused(is_zero_bit)
 
-    constexpr bit_value_t l_and[4][4]
-    = {
+    constexpr bit_value_t l_and[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_0, _0, _0, _0},
         /* 1 */ {_0, _1, _x, _x},
@@ -106,12 +99,10 @@ _static_unused(is_zero_bit)
         /* z */ {_0, _x, _x, _x}};
 _static_unused(l_and)
 
-    constexpr bit_value_t l_nand[4][4]
-    = unroll_2d_invert(l_and);
+    constexpr bit_value_t l_nand[4][4] = unroll_2d_invert(l_and);
 _static_unused(l_nand)
 
-    constexpr bit_value_t l_or[4][4]
-    = {
+    constexpr bit_value_t l_or[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_0, _1, _x, _x},
         /* 1 */ {_1, _1, _1, _1},
@@ -119,12 +110,10 @@ _static_unused(l_nand)
         /* z */ {_x, _1, _x, _x}};
 _static_unused(l_or)
 
-    constexpr bit_value_t l_nor[4][4]
-    = unroll_2d_invert(l_or);
+    constexpr bit_value_t l_nor[4][4] = unroll_2d_invert(l_or);
 _static_unused(l_nor)
 
-    constexpr bit_value_t l_xor[4][4]
-    = {
+    constexpr bit_value_t l_xor[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_0, _1, _x, _x},
         /* 1 */ {_1, _0, _x, _x},
@@ -132,12 +121,10 @@ _static_unused(l_nor)
         /* z */ {_x, _x, _x, _x}};
 _static_unused(l_xor)
 
-    constexpr bit_value_t l_xnor[4][4]
-    = unroll_2d_invert(l_xor);
+    constexpr bit_value_t l_xnor[4][4] = unroll_2d_invert(l_xor);
 _static_unused(l_xnor)
 
-    constexpr bit_value_t l_notif1[4][4]
-    = {
+    constexpr bit_value_t l_notif1[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_z, _1, _x, _x},
         /* 1 */ {_z, _0, _x, _x},
@@ -145,8 +132,7 @@ _static_unused(l_xnor)
         /* z */ {_z, _x, _x, _x}};
 _static_unused(l_notif1)
 
-    constexpr bit_value_t l_notif0[4][4]
-    = {
+    constexpr bit_value_t l_notif0[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_1, _z, _x, _x},
         /* 1 */ {_0, _z, _x, _x},
@@ -154,8 +140,7 @@ _static_unused(l_notif1)
         /* z */ {_x, _z, _x, _x}};
 _static_unused(l_notif0)
 
-    constexpr bit_value_t l_bufif1[4][4]
-    = {
+    constexpr bit_value_t l_bufif1[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_z, _0, _x, _x},
         /* 1 */ {_z, _1, _x, _x},
@@ -163,8 +148,7 @@ _static_unused(l_notif0)
         /* z */ {_z, _x, _x, _x}};
 _static_unused(l_bufif1)
 
-    constexpr bit_value_t l_bufif0[4][4]
-    = {
+    constexpr bit_value_t l_bufif0[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_0, _z, _x, _x},
         /* 1 */ {_1, _z, _x, _x},
@@ -176,8 +160,7 @@ _static_unused(l_bufif0)
      *  Tran NO SUPPORT FOR THESE YET 
      */
     /* cmos gates */
-    constexpr bit_value_t l_rpmos[4][4]
-    = {
+    constexpr bit_value_t l_rpmos[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_0, _z, _x, _x},
         /* 1 */ {_1, _z, _x, _x},
@@ -185,8 +168,7 @@ _static_unused(l_bufif0)
         /* z */ {_z, _z, _z, _z}};
 _static_unused(l_rpmos)
 
-    constexpr bit_value_t l_rnmos[4][4]
-    = {
+    constexpr bit_value_t l_rnmos[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_z, _0, _x, _x},
         /* 1 */ {_z, _1, _x, _x},
@@ -194,8 +176,7 @@ _static_unused(l_rpmos)
         /* z */ {_z, _z, _z, _z}};
 _static_unused(l_rnmos)
 
-    constexpr bit_value_t l_nmos[4][4]
-    = {
+    constexpr bit_value_t l_nmos[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_z, _0, _x, _x},
         /* 1 */ {_z, _1, _x, _x},
@@ -204,8 +185,7 @@ _static_unused(l_rnmos)
 _static_unused(l_nmos)
 
     // see table 5-21 p:54 IEEE 1364-2005
-    constexpr bit_value_t l_ternary[4][4]
-    = {
+    constexpr bit_value_t l_ternary[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_0, _x, _x, _x},
         /* 1 */ {_x, _1, _x, _x},
@@ -217,8 +197,7 @@ _static_unused(l_ternary)
      * these extend the library and simplify the process
      */
     /* helper */
-    constexpr bit_value_t l_unk[4][4]
-    = {
+    constexpr bit_value_t l_unk[4][4] = {
         /* in /	 0   1   x   z 	<-control */
         /* 0 */ {_x, _x, _x, _x},
         /* 1 */ {_x, _x, _x, _x},
@@ -226,8 +205,7 @@ _static_unused(l_ternary)
         /* z */ {_x, _x, _x, _x}};
 _static_unused(l_unk)
 
-    constexpr bit_value_t l_case_eq[4][4]
-    = {
+    constexpr bit_value_t l_case_eq[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_1, _0, _0, _0},
         /* 1 */ {_0, _1, _0, _0},
@@ -235,8 +213,7 @@ _static_unused(l_unk)
         /* z */ {_0, _0, _0, _1}};
 _static_unused(l_case_eq)
 
-    constexpr bit_value_t l_lt[4][4]
-    = {
+    constexpr bit_value_t l_lt[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_0, _1, _x, _x},
         /* 1 */ {_0, _0, _x, _x},
@@ -244,8 +221,7 @@ _static_unused(l_case_eq)
         /* z */ {_x, _x, _x, _x}};
 _static_unused(l_lt)
 
-    constexpr bit_value_t l_gt[4][4]
-    = {
+    constexpr bit_value_t l_gt[4][4] = {
         /* a  /	 0   1   x   z 	<-b */
         /* 0 */ {_0, _0, _x, _x},
         /* 1 */ {_1, _0, _x, _x},
@@ -253,12 +229,10 @@ _static_unused(l_lt)
         /* z */ {_x, _x, _x, _x}};
 _static_unused(l_gt)
 
-    constexpr bit_value_t l_eq[4][4]
-    = unroll_2d(l_xnor);
+    constexpr bit_value_t l_eq[4][4] = unroll_2d(l_xnor);
 _static_unused(l_eq)
 
-    constexpr bit_value_t l_sum[4][4][4]
-    = {
+    constexpr bit_value_t l_sum[4][4][4] = {
         /* c_in */
         /* 0 */ unroll_2d(l_xor),
         /* 1 */ unroll_2d(l_xnor),
@@ -266,8 +240,7 @@ _static_unused(l_eq)
         /* z */ unroll_2d(l_unk)};
 _static_unused(l_sum)
 
-    constexpr bit_value_t l_carry[4][4][4]
-    = {
+    constexpr bit_value_t l_carry[4][4][4] = {
         /* c_in */
         /* 0 */ unroll_2d(l_and),
         /* 1 */ unroll_2d(l_or),
@@ -275,12 +248,10 @@ _static_unused(l_sum)
         /* z */ unroll_2d(l_ternary)};
 _static_unused(l_carry)
 
-    constexpr bit_value_t l_half_carry[4][4]
-    = unroll_2d(l_carry[_0]);
+    constexpr bit_value_t l_half_carry[4][4] = unroll_2d(l_carry[_0]);
 _static_unused(l_half_carry)
 
-    constexpr bit_value_t l_half_sum[4][4]
-    = unroll_2d(l_sum[_0]);
+    constexpr bit_value_t l_half_sum[4][4] = unroll_2d(l_sum[_0]);
 _static_unused(l_half_sum)
 
     static char bit_to_c(bit_value_t bit, bool uppercase) {
@@ -383,7 +354,9 @@ class BitFields {
   public:
     BitFields(bit_value_t init_v) {
         this->bits = static_cast<T>(
-            (_0 == init_v) ? _All_0 : (_1 == init_v) ? _All_1 : (_z == init_v) ? _All_z : _All_x);
+            (_0 == init_v) ? _All_0 : (_1 == init_v) ? _All_1
+                                  : (_z == init_v)   ? _All_z
+                                                     : _All_x);
     }
 
     template<typename Addr_t>
@@ -728,7 +701,7 @@ class VNumber {
     VNumber(VNumber other, size_t length) {
         this->sign = other.sign;
         this->bitstring = other.bitstring.resize(other.get_padding_bit(), length);
-        // TODO this->defined_size = true?????;
+        this->defined_size = other.defined_size;
     }
 
     VNumber(const std::string& verilog_string) {
@@ -864,7 +837,7 @@ class VNumber {
     std::string to_vstring(char input_base) {
         std::string out = "";
         char base = tolower(input_base);
-        bool upercase = (base != input_base);
+        bool uppercase = (base != input_base);
         if (this->has_unknown() && (base == 'o' || base == 'h' || base == 'd')) {
             // hot swap to binary since that is all we can print
             base = 'b';
@@ -872,17 +845,17 @@ class VNumber {
 
         switch (base) {
             case 'b':
-                return this->to_string(false, upercase);
+                return this->to_string(false, uppercase);
             case 'z':
-                return this->to_string(false, upercase);
+                return this->to_string(false, uppercase);
             case 'u':
                 return this->to_Ustring(false);
             case 'o':
-                return this->to_log2radix(3, false, upercase);
+                return this->to_log2radix(3, false, uppercase);
             case 'd':
-                return this->to_base10(false, upercase);
+                return this->to_base10(false, uppercase);
             case 'h':
-                return this->to_log2radix(4, false, upercase);
+                return this->to_log2radix(4, false, uppercase);
             case 's':
                 return this->bitstring.to_printable();
             case 'c':

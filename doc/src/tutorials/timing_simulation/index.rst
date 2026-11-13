@@ -93,8 +93,8 @@ First is a snippet of the verilog netlist:
 
 Here we see three primitives instantiated:
 
-* ``fpga_interconnect`` represent connections between netlist primitives
-* ``LUT_K`` represent look-up tables (LUTs) (corresponding to ``.names`` in the BLIF netlist). Two parameters define the LUTs functionality:
+* ``fpga_interconnect`` represents connections between netlist primitives
+* ``LUT_K`` represents look-up tables (LUTs) (corresponding to ``.names`` in the BLIF netlist). Two parameters define the LUTs functionality:
 
      * ``K`` the number of inputs, and
      * ``LUT_MASK`` which defines the logic function.
@@ -108,7 +108,7 @@ Different circuits may produce other types of netlist primitives corresponding t
 .. note:: The different primitives produced by VPR are defined in ``$VTR_ROOT/vtr_flow/primitives.v``
 
 
-Lets now take a look at the Standard Delay Fromat (SDF) file:
+Lets now take a look at the Standard Delay Format (SDF) file:
 
 .. code-block:: none
     :linenos:

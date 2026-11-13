@@ -1,25 +1,31 @@
-#ifndef VTR_MATH_H
-#define VTR_MATH_H
+#pragma once
 
+#include <algorithm>
+#include <iterator>
 #include <map>
 #include <vector>
 #include <cmath>
 
-#include "vtr_assert.h"
+/**
+ * @file
+ *
+ * @brief This file defines some math operations
+ */
 
 namespace vtr {
 /*********************** Math operations *************************************/
+
+///@brief Calculates the value pow(base, exp)
 int ipow(int base, int exp);
 
-//Returns the median of an input vector.
-float median(std::vector<float> vector);
-
+///@brief Linear interpolation/Extrapolation
 template<typename X, typename Y>
 Y linear_interpolate_or_extrapolate(const std::map<X, Y>* xy_map, X requested_x);
 
+///@brief Integer rounding conversion for floats
 constexpr int nint(float val) { return static_cast<int>(val + 0.5); }
 
-//Returns a 'safe' ratio which evaluates to zero if the denominator is zero
+///@brief Returns a 'safe' ratio which evaluates to zero if the denominator is zero
 template<typename T>
 T safe_ratio(T numerator, T denominator) {
     if (denominator == T(0)) {
@@ -28,35 +34,72 @@ T safe_ratio(T numerator, T denominator) {
     return numerator / denominator;
 }
 
-template<typename InputIterator>
-double median(InputIterator first, InputIterator last) {
-    auto len = std::distance(first, last);
-    auto iter = first + len / 2;
+///@brief Returns the median of the elements in range [first, last)
+///       If there are an odd number of elements in the range, returns the
+///       average of the two middle elements (equal distance from the start and end).
+/// NOTE: This method assumes that the container that first and last point to are
+///       pre-sorted
+template<typename ResultTy = double, typename InputIterator>
+ResultTy median_presorted(const InputIterator first, const InputIterator last) {
+    // If the distance between first and last is 0 (meaning the set is empty),
+    // return a quiet NaN. This should be handled by the user of this code.
+    // NOTE: This returns a NaN of double type.
+    if (std::distance(first, last) == 0)
+        return std::nan("");
 
-    if (len % 2 == 0) {
-        return (*iter + *(iter + 1)) / 2;
-    } else {
+    // Get the distance from the first element to the last element that is included
+    // in the set of elements that we are getting the median of. Since "last" is
+    // implicitly not included in this set, this is the distance from first to
+    // last minus 1.
+    auto dist_to_last_inclusive = std::distance(first, last) - 1;
+
+    if (dist_to_last_inclusive % 2 == 0) {
+        // If the distance to the last inclusive element is even, then there is
+        // only a single median element. Return it.
+        auto iter = first + (dist_to_last_inclusive / 2);
         return *iter;
+    } else {
+        // If the distance to the last inclusive element is odd, then there are
+        // two median elements. Return the average of the two.
+        auto iter_1 = first + (dist_to_last_inclusive / 2);
+        auto iter_2 = first + (dist_to_last_inclusive / 2) + 1;
+        // Note: To ensure that the division works properly, need to cast one
+        //       of the operands to the result type.
+        return static_cast<ResultTy>(*iter_1 + *iter_2) / 2;
     }
 }
 
-template<typename Container>
-double median(Container c) {
-    return median(std::begin(c), std::end(c));
+///@brief Returns the median of a whole container, assuming the container has
+///       not been pre-sorted.
+/// Note: This function is pass by value since the container needs to be
+///       sorted. If the container is already sorted, use median_presorted to
+///       avoid the copy.
+template<typename ResultTy = double, typename Container>
+ResultTy median(Container c) {
+    std::sort(std::begin(c), std::end(c));
+    return median_presorted<ResultTy>(std::begin(c), std::end(c));
 }
 
-template<typename InputIterator>
-double geomean(InputIterator first, InputIterator last, double init = 1.) {
-    //Compute the geometric mean of the elments in range [first, last)
-    //
-    //To avoid potential round-off issues we transform the standard formula:
-    //
-    //      geomean = ( v_1 * v_2 * ... * v_n) ^ (1/n)
-    //
-    //by taking the log:
-    //
-    //      geomean = exp( (1 / n) * (log(v_1) + log(v_2) + ... + log(v_n)))
+///@brief Returns the median of a whole container, assuming that it is already
+///       sorted.
+template<typename ResultTy = double, typename Container>
+ResultTy median_presorted(const Container& c) {
+    return median_presorted<ResultTy>(std::begin(c), std::end(c));
+}
 
+/**
+ * @brief Returns the geometric mean of the elements in range [first, last)
+ *
+ * To avoid potential round-off issues we transform the standard formula:
+ *
+ *      geomean = ( v_1 * v_2 * ... * v_n) ^ (1/n)
+ *
+ * by taking the log:
+ *
+ *      geomean = exp( (1 / n) * (log(v_1) + log(v_2) + ... + log(v_n)))
+ */
+template<typename InputIterator>
+double geomean(const InputIterator first, const InputIterator last, double init = 1.) {
     double log_sum = std::log(init);
     size_t n = 0;
     for (auto iter = first; iter != last; ++iter) {
@@ -71,13 +114,15 @@ double geomean(InputIterator first, InputIterator last, double init = 1.) {
     }
 }
 
+///@brief Returns the geometric mean of a whole container
 template<typename Container>
-double geomean(Container c) {
+double geomean(const Container& c) {
     return geomean(std::begin(c), std::end(c));
 }
 
+///@brief Returns the arithmetic mean of the elements in range [first, last)
 template<typename InputIterator>
-double arithmean(InputIterator first, InputIterator last, double init = 0.) {
+double arithmean(const InputIterator first, const InputIterator last, double init = 0.) {
     double sum = init;
     size_t n = 0;
     for (auto iter = first; iter != last; ++iter) {
@@ -92,39 +137,16 @@ double arithmean(InputIterator first, InputIterator last, double init = 0.) {
     }
 }
 
+///@brief Returns the aritmatic mean of a whole container
 template<typename Container>
-double arithmean(Container c) {
+double arithmean(const Container& c) {
     return arithmean(std::begin(c), std::end(c));
-}
-
-//Return the greatest common divisor of x and y
-// Note that T should be an integral type
-template<typename T>
-static T gcd(T x, T y) {
-    static_assert(std::is_integral<T>::value, "T must be integral");
-    //Euclidean algorithm
-    if (y == 0) {
-        return x;
-    }
-    return gcd(y, x % y);
-}
-
-//Return the least common multiple of x and y
-// Note that T should be an integral type
-template<typename T>
-T lcm(T x, T y) {
-    static_assert(std::is_integral<T>::value, "T must be integral");
-
-    if (x == 0 && y == 0) {
-        return 0;
-    } else {
-        return (x / gcd(x, y)) * y;
-    }
 }
 
 constexpr double DEFAULT_REL_TOL = 1e-9;
 constexpr double DEFAULT_ABS_TOL = 0;
 
+///@brief Return true if a and b values are close to each other
 template<class T>
 bool isclose(T a, T b, T rel_tol, T abs_tol) {
     if (std::isinf(a) && std::isinf(b)) return (std::signbit(a) == std::signbit(b));
@@ -134,11 +156,10 @@ bool isclose(T a, T b, T rel_tol, T abs_tol) {
     return std::abs(a - b) <= std::max(rel_tol * abs_largest, abs_tol);
 }
 
+///@brief Return true if a and b values are close to each other (using the default tolerances)
 template<class T>
 bool isclose(T a, T b) {
     return isclose<T>(a, b, DEFAULT_REL_TOL, DEFAULT_ABS_TOL);
 }
 
 } // namespace vtr
-
-#endif

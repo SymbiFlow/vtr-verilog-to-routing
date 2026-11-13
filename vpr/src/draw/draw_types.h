@@ -1,4 +1,8 @@
-/* This file contains declarations of structures and types shared by all drawing
+#pragma once
+/**
+ * @file draw_types.h
+ * 
+ * This file contains declarations of structures and types shared by all drawing
  * routines.
  *
  * Key structures:
@@ -9,54 +13,31 @@
  *               - holds state variables that control drawing and highlighting of
  *				   architectural elements on the FPGA chip
  *
- * Author: Long Yu (Mike) Wang
- * Date: August 20, 2013
+ * Author: Long Yu (Mike) Wang, Sebastian Lievano
  */
-
-#ifndef DRAW_TYPES_H
-#define DRAW_TYPES_H
 
 #ifndef NO_GRAPHICS
 
-#    include <vector>
-#    include <memory>
-#    include "clustered_netlist.h"
-#    include "timing_info_fwd.h"
-#    include "vtr_util.h"
-#    include "vpr_types.h"
-#    include "vtr_color_map.h"
-#    include "vtr_vector.h"
-#    include "breakpoint.h"
+#include <vector>
+#include <memory>
+#include <optional>
+#include "timing_info_fwd.h"
+#include "vtr_util.h"
+#include "vpr_types.h"
+#include "vtr_color_map.h"
+#include "vtr_vector.h"
+#include "breakpoint.h"
+#include "manual_moves.h"
 
-#    include "ezgl/point.hpp"
-#    include "ezgl/rectangle.hpp"
-#    include "ezgl/color.hpp"
+#include "ezgl/rectangle.hpp"
+#include "ezgl/color.hpp"
+#include "ezgl/application.hpp"
+#include "draw_color.h"
 
-enum e_draw_crit_path {
-    DRAW_NO_CRIT_PATH,
-    DRAW_CRIT_PATH_FLYLINES,
-    DRAW_CRIT_PATH_FLYLINES_DELAYS,
-    DRAW_CRIT_PATH_ROUTING,
-    DRAW_CRIT_PATH_ROUTING_DELAYS
-};
-
+/// @brief Whether to draw routed nets or flylines (direct lines between sources and sinks).
 enum e_draw_nets {
-    DRAW_NO_NETS = 0,
-    DRAW_NETS,
-    DRAW_LOGICAL_CONNECTIONS
-};
-
-/* Draw rr_graph from less detailed to more detailed
- * in order to speed up drawing when toggle_rr is clicked
- * on for the first time.
- */
-enum e_draw_rr_toggle {
-    DRAW_NO_RR = 0,
-    DRAW_NODES_RR,
-    DRAW_NODES_SBOX_RR,
-    DRAW_NODES_SBOX_CBOX_RR,
-    DRAW_NODES_SBOX_CBOX_INTERNAL_RR,
-    DRAW_ALL_RR,
+    DRAW_ROUTED_NETS,
+    DRAW_FLYLINES
 };
 
 enum e_draw_congestion {
@@ -111,115 +92,421 @@ enum e_draw_net_type {
     HIGHLIGHTED
 };
 
-/* Chanx to chany or vice versa? */
-enum e_edge_dir {
+/// Chanx to chany or vice versa?
+enum class e_chan_edge_dir {
     FROM_X_TO_Y,
     FROM_Y_TO_X
 };
 
-/* Structure which stores state information of a rr_node. Used
- * for controling the drawing each rr_node when ROUTING is on screen.
+/// From inter-cluster pin to intra-cluster pin or vice versa?
+enum e_pin_edge_dir {
+    FROM_INTER_CLUSTER_TO_INTRA_CLUSTER,
+    FROM_INTRA_CLUSTER_TO_INTER_CLUSTER
+};
+
+/*
+ * Defines the type of drawings that can be generated for the NoC.
+ * DRAW_NO_NOC -> user did not select the option to draw the NoC
+ * DRAW_NOC_LINKS -> display the NoC links and how they are connected to each other
+ * DRAW_NOC_LINK_USAGE -> Display the NoC links (same as DRAW_NOC_LINKS) and color the links based on their bandwidth usage
+ */
+enum e_draw_noc {
+    DRAW_NO_NOC = 0,
+    DRAW_NOC_LINKS,
+    DRAW_NOC_LINK_USAGE
+};
+
+/// Different types of edges in the routing resource graph. Used to determine color of edges when drawn.
+enum class e_edge_type {
+    PIN_TO_OPIN,  // any pin to output pin
+    PIN_TO_IPIN,  // any pin to input pin
+    OPIN_TO_CHAN, // output pin to channel
+    CHAN_TO_IPIN, // channel to input pin
+    CHAN_TO_CHAN, // channel to channel
+    NUM_EDGE_TYPES
+};
+
+/// Maps edge types to the color with which they are visualized
+inline const vtr::array<e_edge_type, ezgl::color, (size_t)e_edge_type::NUM_EDGE_TYPES> EDGE_COLOR_MAP{
+    ezgl::LIGHT_PINK,
+    ezgl::MEDIUM_PURPLE,
+    ezgl::PINK,
+    ezgl::PURPLE,
+    blk_DARKGREEN};
+
+/**
+ * @brief Structure used to hold data passed into the toggle checkbox callback function.
+ */
+typedef struct {
+    ezgl::application* app; // Pointer to the ezgl application instance
+    bool* toggle_state;     // Pointer to the boolean variable that will be toggled
+} t_checkbox_data;
+
+/**
+ * @brief Structure used to store the state information of an rr_node. 
+ * Used to control drawing each rr_node when ROUTING is on screen.
  * color: Color of the rr_node
- * node_highlighted: Whether the node is highlighted. Useful for
- *					 highlighting routing resources on rr_graph
+ * node_highlighted: Whether the node is highlighted. Useful for highlighting routing resources on rr_graph.
  */
 typedef struct {
     ezgl::color color;
     bool node_highlighted;
 } t_draw_rr_node;
 
-/* Structure used to store state variables that control drawing and
- * highlighting.
- * pic_on_screen: What to draw on the screen (PLACEMENT, ROUTING, or
- *				  NO_PICTURE).
- * show_nets: Whether to show nets at placement and routing.
- * show_congestion: Controls if congestion is shown, when ROUTING is
- *					on screen.
- * show_routing_costs: Controls if routing congestion costs are shown,
- *                     when ROUTING is on screen.
- * draw_rr_toggle: Controls drawing of routing resources on screen,
- *				   if pic_on_screen is ROUTING.
- * show_blk_internal: If 0, no internal drawing is shown. Otherwise,
- *					  indicates how many levels of sub-pbs to be drawn
- * max_sub_blk_lvl: The maximum number of sub-block levels among all
- *                  physical block types in the FPGA.
- * show_graphics: Whether graphics is enabled.
- * gr_automode: How often is user input required. (0: each t, 1: each place, 2: never)
- * auto_proceed: Should we automatically finish drawing (instead of waiting in the event
- *               loop for user interaction?
- * draw_route_type: GLOBAL or DETAILED
- * default_message: default screen message on screen
- * net_color: color in which each net should be drawn.
- *			  [0..cluster_ctx.clb_nlist.nets().size()-1]
- * block_color: color in which each blocks should be drawn.
- *			    [0..cluster_ctx.clb_nlist.blocks().size()-1]
- * draw_rr_node: stores the state information of each routing resource.
- *				 Used to control drawing each routing resource when
- *				 ROUTING is on screen.
- *				 [0..device_ctx.rr_nodes.size()-1]
- * save_graphics: Whether to generate an output graphcis file
- * force_pause: Should we pause for user interaction (since the user requested it)
- * save_graphics_file_base: Base of save graphis file name (i.e. before extension)
- * pres_fac: present congestion cost factor
+/**
+ * @brief Structure used to store visibility and transparency state information for a specific layer (die) in the FPGA.
+ *        This structure is also used to store the state information of the cross-layer connections option in the UI.
+ */
+struct t_draw_layer_display {
+    ///@brief Whether the current layer should be visible.
+    bool visible = false;
+
+    ///@brief Transparency value ( 0 - transparent, 255 - Opaque)
+    ///@note The UI has the opposite definition to make it more intuitive for the user,
+    /// where increasing the value increases transparency. (255 - transparent, 0 - Opaque)
+    int alpha = 255;
+};
+
+/**
+ * @brief The drawing coordinates of the beginning and end of a flyline segment.
+ * 
+ * Includes a special boolean to tell if the two points are mapped to the same drawing coordinates.
+ */
+struct t_flyline_draw_coords {
+    /// True when start and end are mapped to the same drawing coordinates.
+    bool collapse_to_point = false;
+    ezgl::point2d start;
+    ezgl::point2d end;
+};
+
+/**
+ * @brief Structure used to allow the graphics to proceed by a custom number of steps and then pause for user interaction.
+ * 
+ * This structure corresponds to the "Proceed by Step" section under the "Misc." menu in the UI widget.
+ * 
+ * The definition of step varies with the flow stage during which this mode is used.
+ * During global analytical placement, step refers to every solver/legalizer iteration.
+ * During detailed simulated-annealing placement, step refers to every temperature update.
+ * During routing, step refers to every router iteration.
+ */
+struct t_proceed_by_step {
+    ///@brief If this mode is enabled. Tied to the "Proceed by Step" toggle switch in the Misc. menu.
+    bool enabled = false;
+    ///@brief The number of steps the graphics should proceed before it pauses for user interaction. Set by the user.
+    unsigned int steps_to_proceed = 1;
+    ///@brief The current count of steps.
+    /// Used for comparison with steps_to_proceed at every update_screen() to determine if the graphics should pause.
+    unsigned int step_counter = 0;
+};
+
+struct PartialPlacement;
+class AtomBlockAPBlockLookup;
+
+/**
+ * @brief Structure used to store variables related to highlighting/drawing
+ * 
+ * Stores a lot of different variables to reflect current draw state. Most callback functions/UI elements
+ * mutate some member in this struct, which then alters the draw state. Accessible through
+ * global function get_draw_state_vars() in draw_global.cpp. It is recommended to name the variable draw_state for consistent form.
+ * 
+ * @note t_draw_state is used in the same way as a Context, but cannot be a Context because Contexts are
+ * not copyable, while t_draw_state must be. (t_draw_state is copied to save a restore of the graphics state
+ * when running graphics commands.)
  */
 struct t_draw_state {
-    pic_type pic_on_screen = NO_PICTURE;
-    e_draw_nets show_nets = DRAW_NO_NETS;
-    e_draw_crit_path show_crit_path = DRAW_NO_CRIT_PATH;
+    /// @brief What to draw on the screen (ROUTING, PLACEMENT, NO_PICTURE)
+    e_pic_type pic_on_screen = e_pic_type::NO_PICTURE;
+
+    ///@brief Whether to draw nets or not
+    bool show_nets = false;
+
+    ///@brief Whether to draw flylines or routed nets
+    e_draw_nets draw_nets = DRAW_FLYLINES;
+
+    ///@brief Whether to show inter-cluster nets
+    bool draw_inter_cluster_nets = false;
+
+    /// @brief Whether to show intra-cluster nets
+    bool draw_intra_cluster_nets = false;
+
+    ///@brief Whether to show block fan-in and fan-out
+    bool highlight_fan_in_fan_out = false;
+
+    ///@brief Whether to show crit path
+    bool show_crit_path = false;
+    ///@brief Number of critical paths to be drawn simultaneously on screen.
+    std::size_t num_crit_paths = 1;
+    bool show_crit_path_flylines = false;
+    bool show_crit_path_delays = false;
+    bool show_crit_path_routing = false;
+
+    ///@brief Controls if congestion is shown, when ROUTING is on screen.
     e_draw_congestion show_congestion = DRAW_NO_CONGEST;
+
+    ///@brief Controls if routing congestion costs are shown, when ROUTING is on screen.
     e_draw_routing_costs show_routing_costs;
+
+    ///@brief Toggles whether block pin util is shown
     e_draw_block_pin_util show_blk_pin_util = DRAW_NO_BLOCK_PIN_UTIL;
+
+    ///@brief Toggles whether router expansion cost is shown
     e_draw_router_expansion_cost show_router_expansion_cost = DRAW_NO_ROUTER_EXPANSION_COST;
+
+    ///@brief Toggles whether placement macros are shown
     e_draw_placement_macros show_placement_macros = DRAW_NO_PLACEMENT_MACROS;
-    int show_routing_bb = OPEN;
+
+    int show_routing_bb = UNDEFINED;
+
+    ///@brief toggles whether routing util is shown
     e_draw_routing_util show_routing_util = DRAW_NO_ROUTING_UTIL;
-    e_draw_rr_toggle draw_rr_toggle = DRAW_NO_RR;
+
+    ///@brief Controls drawing of routing resources on screen.
+    bool show_rr = false;
+    /**
+     * @brief Enables level of detail drawing for routing resources
+     * 
+     * When enabled, level of detail algorithms check if the current zoom level is too high to draw routing resources meaningfully.
+     * If so, the "rr_decluttered" flag is set and the drawing of all routing resources will be skipped,
+     * 
+     * TODO: Currently this is always on, and wiring it to a UI button is required in the future.
+     */
+    bool enable_rr_decluttering = true;
+    ///@brief Tells the program that the drawing of routing resources is toggled but still skipped because the zoom level is too high.
+    bool rr_decluttered = false;
+
+    bool draw_channel_nodes = false;
+    bool draw_inter_cluster_pins = false;
+    bool draw_switch_box_edges = false;
+    bool draw_connection_box_edges = false;
+    bool draw_intra_cluster_nodes = false;
+    bool draw_intra_cluster_edges = false;
+    bool highlight_rr_edges = false;
+
+    ///@brief Whether routing util is shown
     bool clip_routing_util = false;
+
+    ///@brief Boolean that toggles block outlines are shown
     bool draw_block_outlines = true;
+
+    ///@brief Boolean that toggles block names
     bool draw_block_text = true;
+
+    ///@brief Boolean that toggles showing partitions
+    bool draw_partitions = false;
+
+    ///@brief integer value for net max fanout
     int draw_net_max_fanout = std::numeric_limits<int>::max();
+
+    ///@brief The maximum number of sub-block levels among all physical block types in the FPGA.
     int max_sub_blk_lvl = 0;
+
+    ///@brief If 0, no internal drawing is shown. Otherwise, indicates how many levels of sub-pbs to be drawn
     int show_blk_internal = 0;
+
+    ///@brief True if all block internals were drawn in the previous full redraw.
+    bool no_blk_internal_decluttered_yet = false;
+    ///@brief True if only the CLBs (top-level blocks) were drawn in the previous full redraw.
+    bool no_blk_internal_drawn_yet = false;
+
+    ///@brief Zoom threshold (world units / pixel) below which all block internals could be drawn, for the previous full redraw only.
+    double all_blk_internals_drawn_threshold = 0;
+    ///@brief Zoom threshold (world units / pixel) above which only the CLBs (top-level blocks) could be drawn, for the previous full redraw only.
+    double only_clbs_drawn_threshold = 0;
+
+    ///@brief Area of the smallest block internal recorded in the previous full redraw, defined in world coordinates.
+    double min_blk_internal_area = 0;
+    ///@brief Area of the largest block internal (non-CLB) recorded in the previous full redraw, defined in world coordinates.
+    double max_blk_internal_area = 0;
+
+    ///@brief Whether graphics are enabled
     bool show_graphics = false;
-    int gr_automode = 0;
+
+    ///@brief How often is user input required.
+    e_graphics_pause graphics_pause = e_graphics_pause::EVERY_UPDATE;
+
+    ///@brief Should we automatically finish drawing (instead of waiting in the event loop for user interaction?
     bool auto_proceed = false;
-    e_route_type draw_route_type = GLOBAL;
+
+    ///@brief GLOBAL or DETAILED
+    e_route_type draw_route_type = e_route_type::GLOBAL;
+
+    ///@brief default screen message on screen
     char default_message[vtr::bufsize];
-    vtr::vector<ClusterNetId, ezgl::color> net_color;
-    t_draw_rr_node* draw_rr_node = nullptr;
+
+    ///@brief color in which each net should be drawn. [0..cluster_ctx.clb_nlist.nets().size()-1]
+    vtr::vector<ParentNetId, ezgl::color> net_color;
+
+    ///@brief RR Nodes which the user has clicked on.
+    std::set<RRNodeId> hit_nodes;
+
+    /**
+     * @brief stores the state information of each routing resource.
+     * 
+     * Used to control drawing each routing resource when
+     * ROUTING is on screen.
+     * [0..device_ctx.rr_nodes.size()-1]
+     */
+    vtr::vector<RRNodeId, t_draw_rr_node> draw_rr_node;
+
     std::shared_ptr<const SetupTimingInfo> setup_timing_info;
+
+    ///@brief pointer to architecture info. const
     const t_arch* arch_info = nullptr;
+
     std::shared_ptr<const vtr::ColorMap> color_map = nullptr;
+
+    ///@brief Whether to generate an output graphics file
     bool save_graphics = false;
+
     std::string graphics_commands;
-    bool forced_pause = false;
+
+    ///@brief Tokenized form of `graphics_commands` (used for graphics
+    /// scripting); one inner vector per `;`-separated command. Built lazily by
+    /// run_graphics_commands on the first call (when this vector is still
+    /// empty); `graphics_commands` is set once at init and never mutated, so a
+    /// single parse is sufficient.
+    std::vector<std::vector<std::string>> parsed_graphics_cmds;
+
+    ///@brief Index of the next command to run in `parsed_graphics_cmds` (an
+    /// index into the outer `parsed_graphics_cmds` vector, i.e. which
+    /// `;`-separated command is next). Persists across run_graphics_commands()
+    /// invocations so that `wait_for_stage` barriers can split a script across
+    /// multiple update_screen() calls.
+    size_t graphics_cmd_index = 0;
+
+    ///@brief Rendering backend: "immediate", "deferred", or "rhi"
+    std::string renderer_type = "rhi";
+
+    ///@brief A mode that controls if the graphics can proceed by a custom number of steps
+    /// (e.g. temperature change, routing iteration) and then pause for user interaction.
+    t_proceed_by_step proceed_by_step;
+
     int sequence_number = 0;
-    float net_alpha = 0.1;
+
+    ///@brief net transparency factor (0 - Transparent, 255 - Opaque)
+    int net_alpha = 255;
+
+    ///@brief Present congestion cost factor used when drawing. Is a copy of router's current pres_fac
     float pres_fac = 1.;
+
+    ManualMovesState manual_moves_state;
+    bool is_flat = false;
+
+    ///@brief Whether we are showing the NOC button
+    bool show_noc_button = false;
+
+    ///@brief Draw state for NOC drawing
+    e_draw_noc draw_noc = DRAW_NO_NOC;
+
+    std::shared_ptr<const vtr::ColorMap> noc_usage_color_map = nullptr; // color map used to display noc link bandwidth usage
+
+    ///Tracks autocomplete enabling.
+    bool justEnabled = false;
 
     std::vector<Breakpoint> list_of_breakpoints;
 
+    ///@brief Stores visibility and transparency drawing controls for each layer [0 ... grid.num_layers -1]
+    std::vector<t_draw_layer_display> draw_layer_display;
+
+    ///@brief Visibility and transparency for elements that cross die layers
+    t_draw_layer_display cross_layer_display;
+
+    ///@brief base of save graphics file name (i.e before extension)
     std::string save_graphics_file_base = "vpr";
 
     t_draw_state() = default;
     t_draw_state(const t_draw_state&) = default;
     t_draw_state& operator=(const t_draw_state&) = default;
 
-    void reset_nets_congestion_and_rr();
-
-    bool showing_sub_blocks();
-
     ezgl::color block_color(ClusterBlockId blk) const;
     void set_block_color(ClusterBlockId blk, ezgl::color color);
     void reset_block_color(ClusterBlockId blk);
     void reset_block_colors();
 
+    ///@brief Refresh graphics resources' size after update to cluster blocks size
+    void refresh_graphic_resources_after_cluster_change();
+
     std::vector<std::pair<t_pl_loc, ezgl::color>> colored_locations;
+
+    /// @brief Stores UI checkbox struct for passing into the callback functions
+    std::list<t_checkbox_data> checkbox_data;
+
+    /**
+     * @brief Set the reference to placement location variable.
+     *
+     * @details During the placement stage, this reference should point to a
+     * local object in the placement stage because the placement stage does not change
+     * the global stage in place_ctx until the end of placement. After the placement
+     * is done, the reference should point to the global state stored in place_ctx.
+     *
+     * @param blk_loc_registry The PlaceLocVars that the reference will point to.
+     */
+    void set_graphics_blk_loc_registry_ref(const BlkLocRegistry& blk_loc_registry) {
+        blk_loc_registry_ref_ = std::ref(blk_loc_registry);
+    }
+
+    /**
+     * @brief Returns the reference to placement block location variables.
+     * @return A const reference to placement block location variables.
+     */
+    const BlkLocRegistry& get_graphics_blk_loc_registry_ref() const {
+        return blk_loc_registry_ref_->get();
+    }
+
+    /**
+     * @brief Set the internal reference to NoC link bandwidth utilization array.
+     * @param noc_link_bandwidth_usages The array that the internal reference will
+     * be pointing to.
+     */
+    void set_noc_link_bandwidth_usages_ref(const vtr::vector<NocLinkId, double>& noc_link_bandwidth_usages) {
+        noc_link_bandwidth_usages_ref_ = noc_link_bandwidth_usages;
+    }
+
+    /**
+     * @brief Returns the reference to NoC link bandwidth utilization array.
+     * @return A const reference to NoC link bandwidth utilization array.
+     */
+    const vtr::vector<NocLinkId, double>& get_noc_link_bandwidth_usages_ref() const {
+        return noc_link_bandwidth_usages_ref_->get();
+    }
 
   private:
     friend void alloc_draw_structs(const t_arch* arch);
     vtr::vector<ClusterBlockId, ezgl::color> block_color_;
     vtr::vector<ClusterBlockId, bool> use_default_block_color_;
+
+    /**
+     * @brief Stores a reference to a BlkLocRegistry to be used in the graphics code.
+     * @details This reference let us pass in a currently-being-optimized placement state,
+     * rather than using the global placement state in placement context that is valid only once placement is done
+     */
+    std::optional<std::reference_wrapper<const BlkLocRegistry>> blk_loc_registry_ref_;
+
+    /**
+     * @brief Stores a reference to NoC link bandwidth utilization to be used in the graphics codes.
+     */
+    std::optional<std::reference_wrapper<const vtr::vector<NocLinkId, double>>> noc_link_bandwidth_usages_ref_;
+
+    /**
+     * @brief Stores a temporary reference to the Analytical Placement partial placement (best placement).
+     * @details This is set by the AP global placer just before drawing and cleared immediately after.
+     */
+    const PartialPlacement* ap_partial_placement_ptr_;
+
+    /**
+     * @brief Stores a temporary reference to the atom block to AP block lookup.
+     * @details This is set by the AP global placer and has the same lifetime as the partial placement reference.
+     */
+    const AtomBlockAPBlockLookup* atom_block_ap_block_lookup_ptr_;
+
+  public:
+    // Set/clear/get the analytical placement variable references used during AP drawing.
+    void set_ap_partial_placement_ptr(const PartialPlacement* p) { ap_partial_placement_ptr_ = p; }
+    void clear_ap_partial_placement_ptr() { ap_partial_placement_ptr_ = nullptr; }
+    const PartialPlacement* get_ap_partial_placement_ptr() const { return ap_partial_placement_ptr_; }
+    void set_atom_block_ap_block_lookup_ptr(const AtomBlockAPBlockLookup* lookup) { atom_block_ap_block_lookup_ptr_ = lookup; }
+    void clear_atom_block_ap_block_lookup_ptr() { atom_block_ap_block_lookup_ptr_ = nullptr; }
+    const AtomBlockAPBlockLookup* get_atom_block_ap_block_lookup_ptr() const { return atom_block_ap_block_lookup_ptr_; }
 };
 
 /* For each cluster type, this structure stores drawing
@@ -231,61 +518,92 @@ struct t_draw_pb_type_info {
     ezgl::rectangle& get_pb_bbox_ref(const t_pb_graph_node& pb_gnode);
 };
 
-/* Structure used to store coordinates and dimensions for
- * grid tiles and logic blocks in the FPGA.
- * tile_x and tile_y: together form two axes that make a
- * COORDINATE SYSTEM for grid_tiles, which goes from
- * (tile_x[0],tile_y[0]) at the lower left corner of the FPGA
- * to (tile_x[device_ctx.grid.width()-1]+tile_width, tile_y[device_ctx.grid.height()-1]+tile_width) in
- * the upper right corner.
- * tile_width: Width (and height) of a grid_tile.s
- *			 Set when init_draw_coords is called.
- * gap_size: distance of the gap between two adjacent
- *           clbs; the literal channel "width" .
- * pin_size: The half-width or half-height of a pin.
- *			 Set when init_draw_coords is called.
- * blk_info: a list of drawing information for each type of
- *           block, one for each type. Access it with
- *           cluster_ctx.clb_nlist.block_type(block_id)->index
+/**
+ * @brief Global Struct that stores drawn coords/sizes of grid blocks/logic blocks
+ * 
+ * Structure used to store coordinates and dimensions for
+ * grid tiles and logic blocks in the FPGA. Accessible through the global
+ * function get_draw_coords_vars().
  */
 struct t_draw_coords {
-    float *tile_x, *tile_y;
+    /**
+     * @brief Form the axes of the chips coordinate system
+     * 
+     * tile_x and tile_y form two axes that make a
+     * COORDINATE SYSTEM for grid_tiles, which goes from
+     * (tile_x[0],tile_y[0]) at the lower left corner of the FPGA
+     * to (tile_x[device_ctx.grid.width()-1]+tile_width, tile_y[device_ctx.grid.height()-1]+tile_width) in
+     * the upper right corner.
+     */
+    std::vector<float> tile_x, tile_y;
+
+    ///@brief Half-width or Half-height of a pin. Set when init_draw_coords is called
     float pin_size;
 
+    /**
+     * @brief stores drawing information for different block types
+     * 
+     * a list of drawing information for each type of
+     * block, one for each type. Access it with
+     * cluster_ctx.clb_nlist.block_type(block_id)->index
+     */
     std::vector<t_draw_pb_type_info> blk_info;
+
+    ///@brief constructor
     t_draw_coords();
 
-    float get_tile_width();
-    float get_tile_height();
+    ///@brief Sets the tile width
+    inline void set_tile_width(float new_tile_width) {
+        tile_width = new_tile_width;
+    }
 
-    /**
-     * Retrieve the bounding box for the given pb in the given
-     * clb, from this data structure
-     */
+    ///@brief returns tile width
+    float get_tile_width() const;
+
+    ///@brief returns tile width
+    float get_tile_height() const;
+
+    ///@brief returns bounding box for given pb in given clb
     ezgl::rectangle get_pb_bbox(ClusterBlockId clb_index, const t_pb_graph_node& pb_gnode);
-    ezgl::rectangle get_pb_bbox(int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr type, const t_pb_graph_node& pb_gnode);
-    ezgl::rectangle get_pb_bbox(int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr type);
+
+    ///@brief returns bounding box of sub block at given location of given type w. given pb
+    ezgl::rectangle get_pb_bbox(int grid_layer, int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr type, const t_pb_graph_node& pb_gnode);
+
+    ///@brief returns pb of sub block of given idx/given type at location
+    ezgl::rectangle get_pb_bbox(int grid_layer, int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr type);
 
     /**
-     * Return a bounding box for the given pb in the given
-     * clb with absolute coordinates, that can be directtly drawn.
+     * @brief returns a bounding box for the given pb in the given
+     * clb with absolute coordinates, that can be directly drawn.
      */
     ezgl::rectangle get_absolute_pb_bbox(const ClusterBlockId clb_index, const t_pb_graph_node* pb_gnode);
 
     /**
-     * Return a bounding box for the clb at device_ctx.grid[grid_x][grid_y].blocks[sub_block_index],
+     * @brief returns a 2D point for the absolute location of the given pb_graph_pin in the entire graphics context.
+     * @param clb_index The index of the cluster block containing the pin.
+     * @param pb_graph_pin The pin for which the absolute location is requested.
+     * @return A point2d representing the absolute coordinates of the pin.
+     */
+    ezgl::point2d get_absolute_pin_location(const ClusterBlockId clb_index, const t_pb_graph_pin* pb_graph_pin);
+
+    ///@brief Returns bounding box for CLB of given idx/type
+    ezgl::rectangle get_absolute_clb_bbox(const ClusterBlockId clb_index, const t_logical_block_type_ptr type);
+
+    /**
+     * @brief Returns a bounding box for the clb at device_ctx.grid[grid_x][grid_y].blocks[sub_block_index],
      * even if it is empty.
      */
-    ezgl::rectangle get_absolute_clb_bbox(const ClusterBlockId clb_index, const t_logical_block_type_ptr type);
-    ezgl::rectangle get_absolute_clb_bbox(int grid_x, int grid_y, int sub_block_index);
+    ezgl::rectangle get_absolute_clb_bbox(int grid_layer, int grid_x, int grid_y, int sub_block_index);
 
-    ezgl::rectangle get_absolute_clb_bbox(int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr block_type);
+    /**
+     * @brief Returns a bounding box for the clb at device_ctx.grid[grid_x][grid_y].blocks[sub_block_index],
+     * of given type even if it is empty.
+     */
+    ezgl::rectangle get_absolute_clb_bbox(int grid_layer, int grid_x, int grid_y, int sub_block_index, const t_logical_block_type_ptr block_type);
 
   private:
     float tile_width;
-    friend void init_draw_coords(float);
+    friend void init_draw_coords(float width_val, const BlkLocRegistry& blk_loc_registry);
 };
 
 #endif // NO_GRAPHICS
-
-#endif

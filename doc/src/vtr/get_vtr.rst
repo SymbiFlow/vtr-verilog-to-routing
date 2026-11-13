@@ -6,20 +6,24 @@ Get VTR
 How to Cite
 ~~~~~~~~~~~
 
-Citations are important in academia, as they ensure contributors recieve credit for their efforts.
+Citations are important in academia, as they ensure contributors receive credit for their efforts.
 Therefore please use the following paper as a general citation whenever you use VTR:
-
-    K. E. Murray, O. Petelin, S. Zhong, J. M. Wang, M. ElDafrawy, J.-P. Legault, E. Sha, A. G. Graham, J. Wu, M. J. P. Walker, H. Zeng, P. Patros, J. Luu, K. B. Kent and V. Betz "VTR 8: High Performance CAD and Customizable FPGA Architecture Modelling", ACM TRETS, 2020
+    
+    M. A. Elgammal, A. Mohaghegh, S. G. Shahrouz, F. Mahmoudi, F. Koşar, K. Talaei, J. Fife, D. Khadivi, K. E. Murray, A. Boutros, K.B. Kent, J. Goeders, V. Betz "VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration" ACM TRETS, Vol. 13, No. 3, Sept. 2025, pp. 1 - 53.
 
 Bibtex:
 
 .. code-block:: none
 
-    @article{vtr8,
-      title={VTR 8: High Performance CAD and Customizable FPGA Architecture Modelling},
-      author={Murray, Kevin E. and Petelin, Oleg and Zhong, Sheng and Wang, Jai Min and ElDafrawy, Mohamed and Legault, Jean-Philippe and Sha, Eugene and Graham, Aaron G. and Wu, Jean and Walker, Matthew J. P. and Zeng, Hanqing and Patros, Panagiotis and Luu, Jason and Kent, Kenneth B. and Betz, Vaughn},
+    @article{vtr9,
+      title={VTR 9: Open-Source CAD for Fabric and Beyond FPGA Architecture Exploration},
+      author={Elgammal, Mohamed A. and Mohaghegh, Amin and Shahrouz, Soheil G. and Mahmoudi, Fatemehsadat and Kosar, Fahrican and Talaei, Kimia and Fife, Joshua and Khadivi, Daniel and Murray, Kevin and Boutros, Andrew and Kent, Kenneth B. and Goeders, Jeff and Betz, Vaughn},
       journal={ACM Trans. Reconfigurable Technol. Syst.},
-      year={2020}
+      issue_date = {September 2025},
+      volume = {18},
+      number = {3},
+      numpages = {53},
+      year={2025}
     }
 
 We are always interested in how VTR is being used, so feel free email the `vtr-users <https://verilogtorouting.org/contact/>`_ list with how you are using VTR.
@@ -30,6 +34,16 @@ Download
 The official VTR release is available from:
 
     https://verilogtorouting.org/download
+
+VTR Docker Image
+~~~~~~~~~~~~~~~~
+A docker image for VTR is available. This image provides all the required packages and python libraries required. However, this ease to compile and run comes at the cost of some runtime increase (<10%). To pull and run the docker image of latest VTR repository, you can run the following commands:
+
+.. code-block:: bash
+
+    > sudo docker pull mohamedelgammal/vtr-master:latest
+    > sudo docker run -it mohamedelgammal/vtr-master:latest
+
 
 Release
 ~~~~~~~
@@ -77,11 +91,11 @@ Here are some highlights of the |version| full release:
 
   Along with experiments for more conventional FPGAs, we also include an experiment that explores FPGAs with embedded floating-point cores investigated in :cite:`ho_floating_point_fpga` to illustrate the usage of the VTR framework to explore unconventional FPGA architectures.
 
-Development Trunk
-~~~~~~~~~~~~~~~~~
-The development trunk for the Verilog-to-Routing project is hosted at:
+Development Repository
+~~~~~~~~~~~~~~~~~~~~~~
+The development repository for the Verilog-to-Routing project is hosted at:
 
     https://github.com/verilog-to-routing/vtr-verilog-to-routing
 
-Unlike the nicely packaged offical releases the code in a constant state of flux.
+Unlike the nicely packaged official releases the code in a constant state of flux.
 You should expect that the tools are not always stable and that more work is needed to get the flow to run.

@@ -43,7 +43,7 @@ InstPort make_inst_port(pugi::xml_attribute attr, pugi::xml_node node, const pug
 void bad_tag(const pugi::xml_node node,
              const pugiutil::loc_data& loc_data,
              const pugi::xml_node parent_node,
-             const std::vector<std::string> expected_tags) {
+             const std::vector<std::string>& expected_tags) {
     std::string msg = "Unexpected tag ";
     msg += "<";
     msg += node.name();
@@ -76,7 +76,7 @@ void bad_tag(const pugi::xml_node node,
 void bad_attribute(const pugi::xml_attribute attr,
                    const pugi::xml_node node,
                    const pugiutil::loc_data& loc_data,
-                   const std::vector<std::string> expected_attributes) {
+                   const std::vector<std::string>& expected_attributes) {
     std::string msg = "Unexpected attribute ";
     msg += "'";
     msg += attr.name();
@@ -109,7 +109,7 @@ void bad_attribute(const pugi::xml_attribute attr,
 void bad_attribute_value(const pugi::xml_attribute attr,
                          const pugi::xml_node node,
                          const pugiutil::loc_data& loc_data,
-                         const std::vector<std::string> expected_values) {
+                         const std::vector<std::string>& expected_values) {
     std::string msg = "Invalid value '";
     msg += attr.value();
     msg += "'";
@@ -139,4 +139,56 @@ void bad_attribute_value(const pugi::xml_attribute attr,
     }
 
     throw ArchFpgaError(msg, loc_data.filename(), loc_data.line(node));
+}
+
+int get_number_of_layers(pugi::xml_node layout_type_tag, const pugiutil::loc_data& loc_data) {
+    int max_die_num = -1;
+
+    const auto& layer_tag = layout_type_tag.children("layer");
+    for (const auto& layer_child : layer_tag) {
+        int die_number = get_attribute(layer_child, "die", loc_data).as_int(0);
+        if (die_number > max_die_num) {
+            max_die_num = die_number;
+        }
+    }
+
+    if (max_die_num == -1) {
+        // For backwards compatibility, if no die number is specified, assume 1 layer
+        return 1;
+    } else {
+        return max_die_num + 1;
+    }
+}
+
+t_metadata_dict process_meta_data(vtr::string_internment& strings,
+                                  pugi::xml_node Parent,
+                                  const pugiutil::loc_data& loc_data) {
+    //	<metadata>
+    //	  <meta>CLBLL_L_</meta>
+    //	</metadata>
+    t_metadata_dict data;
+    pugi::xml_node metadata = get_single_child(Parent, "metadata", loc_data, ReqOpt::OPTIONAL);
+    if (metadata) {
+        pugi::xml_node meta_tag = get_first_child(metadata, "meta", loc_data);
+        while (meta_tag) {
+            std::string key = get_attribute(meta_tag, "name", loc_data).as_string();
+
+            std::string value = meta_tag.child_value();
+            data.add(strings.intern_string(key),
+                     strings.intern_string(value));
+            meta_tag = meta_tag.next_sibling(meta_tag.name());
+        }
+    }
+    return data;
+}
+
+int find_switch_by_name(const std::vector<t_arch_switch_inf>& switches,
+                        std::string_view switch_name) {
+    for (int iswitch = 0; iswitch < (int)switches.size(); ++iswitch) {
+        if (switches[iswitch].name == switch_name) {
+            return iswitch;
+        }
+    }
+
+    return ARCH_FPGA_UNDEFINED_VAL;
 }

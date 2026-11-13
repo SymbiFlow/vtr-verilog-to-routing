@@ -23,10 +23,14 @@
 #include "layout.h"
 #include <kj/debug.h>
 #include <exception>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 
 namespace capnp {
 
-UnalignedFlatArrayMessageReader::UnalignedFlatArrayMessageReader(
+FlatArrayMessageReader::FlatArrayMessageReader(
     kj::ArrayPtr<const word> array, ReaderOptions options)
     : MessageReader(options), end(array.end()) {
   if (array.size() < 1) {
@@ -98,7 +102,7 @@ size_t expectedSizeInWordsFromPrefix(kj::ArrayPtr<const word> array) {
   return totalSize;
 }
 
-kj::ArrayPtr<const word> UnalignedFlatArrayMessageReader::getSegment(uint id) {
+kj::ArrayPtr<const word> FlatArrayMessageReader::getSegment(uint id) {
   if (id == 0) {
     return segment0;
   } else if (id <= moreSegments.size()) {
@@ -106,15 +110,6 @@ kj::ArrayPtr<const word> UnalignedFlatArrayMessageReader::getSegment(uint id) {
   } else {
     return nullptr;
   }
-}
-
-kj::ArrayPtr<const word> FlatArrayMessageReader::checkAlignment(kj::ArrayPtr<const word> array) {
-  KJ_REQUIRE((uintptr_t)array.begin() % sizeof(void*) == 0,
-      "Input to FlatArrayMessageReader is not aligned. If your architecture supports unaligned "
-      "access (e.g. x86/x64/modern ARM), you may use UnalignedFlatArrayMessageReader instead, "
-      "though this may harm performance.");
-
-  return array;
 }
 
 kj::ArrayPtr<const word> initMessageBuilderFromFlatArrayCopy(
@@ -310,6 +305,15 @@ void writeMessage(kj::OutputStream& output, kj::ArrayPtr<const kj::ArrayPtr<cons
 StreamFdMessageReader::~StreamFdMessageReader() noexcept(false) {}
 
 void writeMessageToFd(int fd, kj::ArrayPtr<const kj::ArrayPtr<const word>> segments) {
+#ifdef _WIN32
+    auto oldMode = _setmode(fd, _O_BINARY);
+    if (oldMode != _O_BINARY) {
+      _setmode(fd, oldMode);
+      KJ_FAIL_REQUIRE("Tried to write a message to a file descriptor that is in text mode. Set the "
+          "file descriptor to binary mode by calling the _setmode Windows CRT function, or passing "
+          "_O_BINARY to _open().");
+    }
+#endif
   kj::FdOutputStream stream(fd);
   writeMessage(stream, segments);
 }

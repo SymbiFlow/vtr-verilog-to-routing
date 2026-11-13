@@ -1,0 +1,124 @@
+
+
+#include "PlacementDelayModelCreator.h"
+
+#include "place_delay_model.h"
+#include "router_lookahead_separable.h"
+#include "simple_delay_model.h"
+#include "delta_delay_model.h"
+#include "override_delay_model.h"
+#include "router_lookahead.h"
+#include "router_lookahead_map.h"
+#include "router_lookahead_compressed_map.h"
+#include "router_lookahead_extended_map.h"
+#include "router_lookahead_simple.h"
+
+#include "vtr_time.h"
+#include "physical_types.h"
+#include "place_and_route.h"
+
+/**
+ * @brief Constructs a SimpleDelayModel instantiated on the concrete type of the given lookahead,
+ *        so that lookahead queries in the delay model bind statically and avoid virtual dispatch.
+ *
+ * Lookaheads that don't implement get_opin_distance_min_delay throw an unimplemented
+ * error when the delay model queries them.
+ */
+static std::unique_ptr<PlaceDelayModel> make_simple_delay_model(const RouterLookahead& router_lookahead,
+                                                                e_router_lookahead lookahead_type) {
+    switch (lookahead_type) {
+        case e_router_lookahead::CLASSIC:
+            return std::make_unique<SimpleDelayModel<ClassicLookahead>>(static_cast<const ClassicLookahead&>(router_lookahead));
+        case e_router_lookahead::MAP:
+            return std::make_unique<SimpleDelayModel<MapLookahead>>(static_cast<const MapLookahead&>(router_lookahead));
+        case e_router_lookahead::SEPARABLE:
+            return std::make_unique<SimpleDelayModel<SeparableLookahead>>(static_cast<const SeparableLookahead&>(router_lookahead));
+        case e_router_lookahead::COMPRESSED_MAP:
+            return std::make_unique<SimpleDelayModel<CompressedMapLookahead>>(static_cast<const CompressedMapLookahead&>(router_lookahead));
+        case e_router_lookahead::EXTENDED_MAP:
+            return std::make_unique<SimpleDelayModel<ExtendedMapLookahead>>(static_cast<const ExtendedMapLookahead&>(router_lookahead));
+        case e_router_lookahead::SIMPLE:
+            return std::make_unique<SimpleDelayModel<SimpleLookahead>>(static_cast<const SimpleLookahead&>(router_lookahead));
+        case e_router_lookahead::NO_OP:
+            return std::make_unique<SimpleDelayModel<NoOpLookahead>>(static_cast<const NoOpLookahead&>(router_lookahead));
+        default:
+            VPR_THROW(VPR_ERROR_PLACE, "Unrecognized router lookahead type");
+    }
+}
+
+static int get_longest_segment_length(const std::vector<t_segment_inf>& segment_inf) {
+    int length = 0;
+
+    for (const t_segment_inf& seg_info : segment_inf) {
+        if (seg_info.length > length) {
+            length = seg_info.length;
+        }
+    }
+
+    return length;
+}
+
+std::unique_ptr<PlaceDelayModel>
+PlacementDelayModelCreator::create_delay_model(const t_placer_opts& placer_opts,
+                                               const t_router_opts& router_opts,
+                                               const t_crr_opts& crr_opts,
+                                               const Netlist<>& net_list,
+                                               t_det_routing_arch& det_routing_arch,
+                                               const std::vector<t_segment_inf>& segment_inf,
+                                               const t_chan_width_dist& chan_width_dist,
+                                               const std::vector<t_direct_inf>& directs,
+                                               bool is_flat) {
+    vtr::ScopedStartFinishTimer timer("Computing placement delta delay look-up");
+
+    t_chan_width chan_width = setup_chan_width(router_opts, chan_width_dist);
+
+    alloc_routing_structs(chan_width,
+                          router_opts,
+                          crr_opts,
+                          det_routing_arch,
+                          segment_inf,
+                          directs,
+                          is_flat);
+
+    const RouterLookahead* router_lookahead = get_cached_router_lookahead(det_routing_arch,
+                                                                          router_opts.lookahead_type,
+                                                                          router_opts.write_router_lookahead,
+                                                                          router_opts.read_router_lookahead,
+                                                                          segment_inf,
+                                                                          is_flat,
+                                                                          router_opts.route_verbosity,
+                                                                          router_opts.device_model_warnings,
+                                                                          router_opts.router_lookahead_interposer_base_cut_multiplier);
+
+    RouterDelayProfiler route_profiler(net_list, router_lookahead, is_flat);
+
+    int longest_length = get_longest_segment_length(segment_inf);
+
+    // now setup and compute the actual arrays
+    std::unique_ptr<PlaceDelayModel> place_delay_model;
+
+    if (placer_opts.delay_model_type == PlaceDelayModelType::SIMPLE) {
+        place_delay_model = make_simple_delay_model(*router_lookahead, router_opts.lookahead_type);
+    } else if (placer_opts.delay_model_type == PlaceDelayModelType::DELTA) {
+        place_delay_model = std::make_unique<DeltaDelayModel>(is_flat);
+    } else if (placer_opts.delay_model_type == PlaceDelayModelType::DELTA_OVERRIDE) {
+        place_delay_model = std::make_unique<OverrideDelayModel>(is_flat);
+    } else {
+        VTR_ASSERT_MSG(false, "Invalid placer delay model");
+    }
+
+    if (placer_opts.read_placement_delay_lookup.empty()) {
+        place_delay_model->compute(route_profiler, placer_opts, router_opts, longest_length);
+    } else {
+        place_delay_model->read(placer_opts.read_placement_delay_lookup);
+    }
+
+    if (!placer_opts.write_placement_delay_lookup.empty()) {
+        place_delay_model->write(placer_opts.write_placement_delay_lookup);
+    }
+
+    // free all data structures that are no longer needed
+    free_routing_structs();
+
+    return place_delay_model;
+}

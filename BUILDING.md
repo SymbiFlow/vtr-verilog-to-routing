@@ -1,255 +1,147 @@
-# Building VTR #
+# Building VTR
 
 
-## Overview ##
+## Setting up Your Environment
 
-VTR uses [CMake](https://cmake.org) as it's build system.
+If you cloned the repository you will need to set up the git submodules (if you downloaded and extracted a release, you can skip this step):
 
-CMake provides a portable cross-platform build systems with many useful features.
+    git submodule init
+    git submodule update
 
-## Tested Compilers ##
-VTR requires a C++-14 compliant compiler.
-The following compilers are tested with VTR:
+### Linux (Debian / Ubuntu)
 
-* GCC/G++: 5, 6, 7, 8, 9
-* Clang/Clang++: 3.8, 6
+VTR requires several system packages.  From the top-level directory, run the following script to install the required packages on a modern Debian or Ubuntu system:
 
-Other compilers may work but are untested (your milage may vary).
+    ./install_apt_packages.sh
 
-## Unix-like ##
-For unix-like systems we provide a wrapper Makefile which supports the traditional `make` and `make clean` commands, but calls CMake behind the scenes.
+### Linux (Fedora / RHEL)
 
-### Dependencies ###
+For Fedora or RHEL-based systems:
 
-For the basic tools you need:
- * Bison & Flex
- * cmake, make
- * A modern C++ compiler supporting C++14 (such as GCC >= 4.9 or clang >= 3.6)
+    ./install_dnf_packages.sh
 
-For the VPR GUI you need:
- * Cairo
- * FreeType
- * Xft (libXft + libX11)
- * fontconfig
- * libgtk-3-dev
+### Windows (MSYS2)
 
-For the [regression testing and benchmarking](README.developers.md#running-tests) you will need:
- * Perl + List::MoreUtils
- * Python
- * time
+To build with GCC on Windows
 
-It is also recommended you install the following development tools:
- * git
- * ctags
- * gdb
- * valgrind
- * clang-format-7
+- Please ensure the [MSYS2](https://www.msys2.org/) has been properly installed
+- Install dependencies in a UCRT64 shell by
 
-For Docs generation you will need:
- * Doxygen
- * python-sphinx
- * python-sphinx-rtd-theme
- * python-recommonmark
-
-#### Debian & Ubuntu ####
-
-The following should be enough to get the tools, VPR GUI and tests going on a modern Debian or Ubuntu system:
-
-```shell
-apt-get install \
-	build-essential \
-	flex \
-	bison \
-	cmake \
-	fontconfig \
-	libcairo2-dev \
-	libfontconfig1-dev \
-	libx11-dev \
-	libxft-dev \
-	libgtk-3-dev \
-	perl \
-	liblist-moreutils-perl \
-	python \
-	time
+```
+./install_win_msys2_ucrt64_packages.sh
 ```
 
-For documentation generation these additional packages are required:
+### Windows (MSVC)
 
-```shell
-apt-get install \
-	doxygen \
-	python-sphinx \
-	python-sphinx-rtd-theme \
-	python-recommonmark
+To build with MSVC on Windows,
+
+- Install dependencies through vcpkg
+
+```
+vcpkg install
 ```
 
+- Install part of dependencies (not available on vcpkg) through [chocolatry](https://chocolatey.org/install)
 
-For development the following additional packages are useful:
 
-```shell
-apt-get install \
-	git \
-	valgrind \
-	gdb \
-	ctags
+```
+choco install winflexbison3 wget
+choco install magicsplat-tcl-tk --version=1.16.0
 ```
 
-#### Using Nix ####
+### MacOS
 
-Although the recommended platform is Debian or Ubuntu, Nix can be used to build VTR on other platforms, such as MacOS.
+To build with Clang on MacOS
 
-If you don't have [Nix](https://nixos.org/nix/), you can [get it](https://nixos.org/nix/download.html) with:
+- Install dependencies through
 
-```shell
-$ curl -L https://nixos.org/nix/install | sh
+```
+./install_macos_packages.sh
 ```
 
-These commands will set up dependencies for Linux and MacOS and build VTR:
+### Python Packages
 
-```shell
-#In the VTR root
-$ nix-shell dev/nix/shell.nix
-$ make
-```
+You will also need several Python packages.  You can optionally install and activate a Python virtual environment so that you do not need to modify your system Python installation:
 
-### Building using the Makefile wrapper ###
-Run `make` from the root of the VTR source tree
+    make env
+    source .venv/bin/activate
 
-```shell
-#In the VTR root
-$ make
-...
-[100%] Built target vpr
-```
+Then to install the Python packages:
 
+    pip install -r requirements.txt
 
-#### Specifying the build type ####
-You can specify the build type by passing the `BUILD_TYPE` parameter.
+**Note:** If you chose to install the Python virtual environment, you will need to remember to activate it on any new terminal window you use, before you can run the VTR flow or regressions tests (`source .venv/bin/activate`).
 
-For instance to create a debug build (no optimization and debug symbols):
+## Building
 
-```shell
-#In the VTR root
-$ make BUILD_TYPE=debug
-...
-[100%] Built target vpr
-```
+From the top-level, run:
 
+    make
 
-#### Passing parameters to CMake ####
-You can also pass parameters to CMake.
+which will build all the required tools.
 
-For instance to set the CMake configuration variable `VTR_ENABLE_SANITIZE` on:
+Note that on Windows platform, all the required tools will be built except ABC, Parmys and Slang.
 
-```shell
-#In the VTR root
-$ make CMAKE_PARAMS="-DVTR_ENABLE_SANITIZE=ON"
-...
-[100%] Built target vpr
-```
+For parallel builds (recommended):
 
-Both the `BUILD_TYPE` and `CMAKE_PARAMS` can be specified concurrently:
-```shell
-#In the VTR root
-$ make BUILD_TYPE=debug CMAKE_PARAMS="-DVTR_ENABLE_SANITIZE=ON"
-...
-[100%] Built target vpr
-```
+    make -j$(nproc)
 
+### Graphics (GUI)
 
-### Using CMake directly ###
-You can also use cmake directly.
+VPR has an optional Qt6-based graphical interface. A plain `make` builds the GUI
+**only if a suitable Qt6 (>= 6.9.3) is installed on the system**; otherwise VPR
+is built headless. The 6.9.3 floor exists because earlier Qt6 releases have QRhi
+rendering bugs.
 
-First create a build directory under the VTR root:
+If your system Qt6 is missing or older than 6.9.3, you can install a local copy
+(no root required) with:
 
-```shell
-#In the VTR root
-$ mkdir build
-$ cd build
+    ./dev/ensure_qt6_sdk.sh
 
-#Call cmake pointing to the directory containing the root CMakeLists.txt
-$ cmake ..
+> **Note:** `ensure_qt6_sdk.sh` is a temporary measure. From Ubuntu 26.04 onward
+> the system Qt6 will satisfy the >= 6.9.3 requirement, so the system Qt will be
+> used directly and `ensure_qt6_sdk.sh` will become obsolete.
 
-#Build
-$ make
-```
+Two convenience targets make the choice explicit:
 
-#### Changing configuration on the command line ####
-You can change the CMake configuration by passing command line parameters.
+    make ensure-gui        # build vpr WITH the GUI
+    make ensure-headless   # build vpr WITHOUT the GUI
 
-For instance to set the configuration to debug:
+- `make ensure-gui` first runs `dev/ensure_qt6_sdk.sh` (provisioning a Qt6 SDK
+  if the system one is missing/too old, and aborting the build if that fails),
+  then configures with graphics enabled and builds `vpr`.
+- `make ensure-headless` configures with graphics disabled and builds `vpr`; no
+  Qt is required.
 
-```shell
-#In the build directory
-$ cmake . -DCMAKE_BUILD_TYPE=debug
+### Supported Platforms
 
-#Re-build
-$ make
-```
+The complete VTR flow has been tested on:
+- 64-bit Linux (Debian, Ubuntu, Fedora)
 
-#### Changing configuration interactively with ccmake ####
-You can also use `ccmake` to to modify the build configuration.
+The VPR engine has been tested on 
+- Windows 10/11 (MSYS2, MSVC)
+- Mac OS 26
 
-```shell
-#From the build directory
-$ ccmake . #Make some configuration change
+*Full information about building VTR, including setting up required system packages and Python packages, can be found in [Optional Build Information](doc/src/vtr/optional_build_info.md) page.*
 
-#Build
-$ make
-```
+Please [let us know](doc/src/contact.md) your experience with building VTR so that we can improve the experience for others.
 
-## Other platforms ##
+The tools included official VTR releases have been tested for compatibility.
+If you download a different version of those tools, then those versions may not be mutually compatible with the VTR release.
 
-CMake supports a variety of operating systems and can generate project files for a variety of build systems and IDEs.
-While VTR is developed primarily on Linux, it should be possible to build on different platforms (your milage may vary).
-See the [CMake documentation](https://cmake.org) for more details about using cmake and generating project files on other platforms and build systems (e.g. Eclipse, Microsoft Visual Studio).
+## Verifying Installation
 
+To verify that VTR has been installed correctly run::
 
-### Microsoft Windows ###
+    ./vtr_flow/scripts/run_vtr_task.py ./vtr_flow/tasks/regression_tests/vtr_reg_basic/basic_timing
 
-*NOTE: VTR support on Microsoft Windows is considered experimental*
-
-#### Cygwin ####
-[Cygwin](https://www.cygwin.com/) provides a POSIX (i.e. unix-like) environment for Microsoft Windows.
-
-From within the cygwin terminal follow the Unix-like build instructions listed above.
-
-Note that the generated executables will rely upon Cygwin (e.g. `cygwin1.dll`) for POSIX compatibility.
-
-#### Cross-compiling from Linux to Microsoft Windows with MinGW-W64 ####
-It is possible to cross-compile from a Linux host system to generate Microsoft Windows executables using the [MinGW-W64](https://mingw-w64.org) compilers.
-These can usually be installed with your Linux distribution's package manager (e.g. `sudo apt-get install mingw-w64` on Debian/Ubuntu).
-
-Unlike Cygwin, MinGW executables will depend upon the standard Microsoft Visual C++ run-time.
-
-To build VTR using MinGW:
-```shell
-#In the VTR root
-$ mkdir build_win64
-$ cd build_win64
-
-#Run cmake specifying the toolchain file to setup the cross-compilation environment
-$ cmake .. -DCMAKE_TOOLCHAIN_FILE ../cmake/toolchains/mingw-linux-cross-compile-to-windows.cmake
-
-#Building will produce Windows executables
-$ make
-```
-
-Note that by default the MS Windows target system will need to dynamically link to the `libgcc` and `libstdc++` DLLs.
-These are usually found under /usr/lib/gcc on the Linux host machine.
-
-See the [toolchain file](cmake/toolchains/mingw-linux-cross-compile-to-windows.cmake) for more details.
-
-#### Microsoft Visual Studio ####
-CMake can generate a Microsft Visual Studio project, enabling VTR to be built with the Microsoft Visual C++ (MSVC) compiler.
-
-##### Installing additional tools #####
-VTR depends on some external unix-style tools during it's buid process; in particular the `flex` and `bison` parser generators.
-
-One approach is to install these tools using [MSYS2](http://www.msys2.org/), which provides up-to-date versions of many unix tools for MS Windows.
-
-To ensure CMake can find the `flex` and `bison` executables you must ensure that they are available on your system path.
-For instance, if MSYS2 was installed to `C:\msys64` you would need to ensure that `C:\msys64\usr\bin` was included in the system PATH environment variable.
-
-##### Generating the Visual Studio Project #####
-CMake (e.g. the `cmake-gui`) can then be configured to generate the MSVC project.
+The expected output is::
+    
+    k6_N10_mem32K_40nm/single_ff            OK
+    k6_N10_mem32K_40nm/single_ff            OK
+    k6_N10_mem32K_40nm/single_wire          OK
+    k6_N10_mem32K_40nm/single_wire          OK
+    k6_N10_mem32K_40nm/diffeq1              OK
+    k6_N10_mem32K_40nm/diffeq1              OK
+    k6_N10_mem32K_40nm/ch_intrinsics                OK
+    k6_N10_mem32K_40nm/ch_intrinsics                OK

@@ -32,16 +32,14 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #include "schema.h"
 #include "layout.h"
 #include "message.h"
 #include "any.h"
 #include "capability.h"
 #include <kj/windows-sanity.h>  // work-around macro conflict with `VOID`
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
@@ -526,18 +524,28 @@ class DynamicCapability::Server: public Capability::Server {
 public:
   typedef DynamicCapability Serves;
 
+  struct Options {
+    bool allowCancellation = false;
+    // See the `allowCancellation` annotation defined in `c++.capnp`.
+    //
+    // This option applies to all calls made to this server object. The annotation in the schema
+    // is NOT used for dynamic servers.
+  };
+
   Server(InterfaceSchema schema): schema(schema) {}
+  Server(InterfaceSchema schema, Options options): schema(schema), options(options) {}
 
   virtual kj::Promise<void> call(InterfaceSchema::Method method,
                                  CallContext<DynamicStruct, DynamicStruct> context) = 0;
 
-  kj::Promise<void> dispatchCall(uint64_t interfaceId, uint16_t methodId,
-                                 CallContext<AnyPointer, AnyPointer> context) override final;
+  DispatchCallResult dispatchCall(uint64_t interfaceId, uint16_t methodId,
+                                  CallContext<AnyPointer, AnyPointer> context) override final;
 
   inline InterfaceSchema getSchema() const { return schema; }
 
 private:
   InterfaceSchema schema;
+  Options options;
 };
 
 template <>
@@ -551,6 +559,10 @@ public:
 
   RemotePromise<DynamicStruct> send();
   // Send the call and return a promise for the results.
+
+  kj::Promise<void> sendStreaming();
+  // Use when the caller is aware that the response type is StreamResult and wants to invoke
+  // streaming behavior. It is an error to call this if the response type is not StreamResult.
 
 private:
   kj::Own<RequestHook> hook;
@@ -582,7 +594,9 @@ public:
   Orphanage getResultsOrphanage(kj::Maybe<MessageSize> sizeHint = nullptr);
   template <typename SubParams>
   kj::Promise<void> tailCall(Request<SubParams, DynamicStruct>&& tailRequest);
-  void allowCancellation();
+
+  StructSchema getParamsType() const { return paramType; }
+  StructSchema getResultsType() const { return resultType; }
 
 private:
   CallContextHook* hook;
@@ -1653,14 +1667,19 @@ inline kj::Promise<void> CallContext<DynamicStruct, DynamicStruct>::tailCall(
     Request<SubParams, DynamicStruct>&& tailRequest) {
   return hook->tailCall(kj::mv(tailRequest.hook));
 }
-inline void CallContext<DynamicStruct, DynamicStruct>::allowCancellation() {
-  hook->allowCancellation();
-}
 
 template <>
 inline DynamicCapability::Client Capability::Client::castAs<DynamicCapability>(
     InterfaceSchema schema) {
   return DynamicCapability::Client(schema, hook->addRef());
+}
+
+template <>
+inline DynamicCapability::Client CapabilityServerSet<DynamicCapability>::add(
+    kj::Own<DynamicCapability::Server>&& server) {
+  void* ptr = reinterpret_cast<void*>(server.get());
+  auto schema = server->getSchema();
+  return addInternal(kj::mv(server), ptr).castAs<DynamicCapability>(schema);
 }
 
 // -------------------------------------------------------------------
@@ -1671,3 +1690,5 @@ ReaderFor<T> ConstSchema::as() const {
 }
 
 }  // namespace capnp
+
+CAPNP_END_HEADER

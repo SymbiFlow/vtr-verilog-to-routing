@@ -1,13 +1,22 @@
 """
-    Module to interact with VPR and its various options
+Module to interact with VPR and its various options
 """
+
 from collections import OrderedDict
 from pathlib import Path
 from os import environ
-from vtr import CommandRunner, relax_w, determine_min_w, verify_file, paths
+from vtr import (
+    CommandRunner,
+    relax_w,
+    determine_min_w,
+    graphics_exit_requested,
+    verify_file,
+    paths,
+)
 from vtr.error import InspectError
 
-# pylint: disable=too-many-arguments
+
+# pylint: disable=too-many-arguments,too-many-locals
 def run_relax_w(
     architecture,
     circuit,
@@ -70,13 +79,15 @@ def run_relax_w(
 
     vpr_min_w_log = ".".join([logfile_base, "out"])
     vpr_relaxed_w_log = ".".join([logfile_base, "crit_path", "out"])
-    max_router_iterations = None
 
-    if "max_router_iterations" in vpr_args:
-        max_router_iterations = vpr_args["max_router_iterations"]
-        del vpr_args["max_router_iterations"]
+    crit_path_router_iterations = None
+    if "crit_path_router_iterations" in vpr_args:
+        crit_path_router_iterations = vpr_args["crit_path_router_iterations"]
+        del vpr_args["crit_path_router_iterations"]
 
-    if "write_rr_graph" in vpr_args:
+    write_rr_graph = None
+    if "write_rr_graph" in vpr_args:  # Don't write out rr_graph on the first run
+        write_rr_graph = vpr_args["write_rr_graph"]
         del vpr_args["write_rr_graph"]
 
     if vpr_exec is None:
@@ -92,22 +103,39 @@ def run_relax_w(
         vpr_exec=vpr_exec,
         vpr_args=vpr_args,
     )
-    explicit = "pack" in vpr_args or "place" in vpr_args or "analysis" in vpr_args
+    # `--graphics_commands "...; exit N"` deliberately terminates VPR
+    # before the binary search converges. Treat it as a successful run and
+    # skip the relaxed-W second invocation.
+    if graphics_exit_requested(str(temp_dir / vpr_min_w_log)):
+        return
+    explicit_stages = ("pack", "place", "analytical_place", "global_place", "analysis")
+    explicit = any(stage in vpr_args for stage in explicit_stages)
     if explicit and "route" not in vpr_args:
         # Don't look for min W if routing was not run
         return
-    if max_router_iterations:
-        vpr_args["max_router_iterations"] = max_router_iterations
+    if crit_path_router_iterations:
+        vpr_args["max_router_iterations"] = crit_path_router_iterations
     min_w = determine_min_w(str(temp_dir / vpr_min_w_log))
 
     relaxed_w = relax_w(min_w, relax_w_factor)
 
     vpr_args["route"] = True  # Re-route only
+    vpr_args["analysis"] = True  # Run analysis after re-routing
     vpr_args["route_chan_width"] = relaxed_w  # At a fixed channel width
+
+    # Check if place_frequency is "always", then remove the key and set 'place'
+    if vpr_args.pop("place_frequency", None) == "always":
+        vpr_args["place"] = True
+
+    # Remove arguments related to minimum channel width binary search
+    vpr_args.pop("min_route_chan_width_hint", None)
+    vpr_args.pop("verify_binary_search", None)
+
+    if write_rr_graph:  # Write out rr_graph with known W
+        vpr_args["write_rr_graph"] = write_rr_graph
 
     # VPR does not support performing routing when fixed pins
     # are specified, and placement is not run; so remove the option
-
     run(
         architecture,
         circuit,
@@ -165,6 +193,8 @@ def run(
 
 
     """
+    if "crit_path_router_iterations" in vpr_args:
+        del vpr_args["crit_path_router_iterations"]
 
     if vpr_args is None:
         vpr_args = OrderedDict()
@@ -215,6 +245,8 @@ def run(
         str(paths.lsan_supp)
     )
 
+    # Extra options to fine-tune AddressSanitizer (ASAN) behaviour.
+    environ["ASAN_OPTIONS"] = "suppressions={} exitcode=23".format(str(paths.asan_supp))
     command_runner.run_system_command(
         cmd, temp_dir=temp_dir, log_filename=log_filename, indent_depth=1
     )
@@ -278,6 +310,20 @@ def run_second_time(
         second_run_args["read_rr_graph"] = rr_graph_out_file
         second_run_args["write_rr_graph"] = rr_graph_out_file2
 
+    inter_cluster_router_lookahead = ""
+    if "write_router_lookahead" in second_run_args:
+        inter_cluster_router_lookahead = second_run_args["write_router_lookahead"]
+        second_run_args["read_router_lookahead"] = inter_cluster_router_lookahead
+        second_run_args["write_router_lookahead"] = "inter_cluster_router_lookahead2.capnp"
+
+    intra_cluster_router_lookahead = ""
+    if "write_intra_cluster_router_lookahead" in second_run_args:
+        intra_cluster_router_lookahead = second_run_args["write_intra_cluster_router_lookahead"]
+        second_run_args["read_intra_cluster_router_lookahead"] = intra_cluster_router_lookahead
+        second_run_args["write_intra_cluster_router_lookahead"] = (
+            "intra_cluster_router_lookahead2.capnp"
+        )
+
     # run VPR
     run(
         architecture,
@@ -297,6 +343,26 @@ def run_second_time(
         )
         if diff_result:
             raise InspectError("failed: vpr (RR Graph XML output not consistent when reloaded)")
+
+    if "write_inter_cluster_router_lookahead" in second_run_args:
+        cmd = ["diff", inter_cluster_router_lookahead, "inter_cluster_router_lookahead2.capnp"]
+        _, diff_result = command_runner.run_system_command(
+            cmd, temp_dir, log_filename="diff.inter_cluster_router_lookahead.out", indent_depth=1
+        )
+        if diff_result:
+            raise InspectError(
+                "failed: vpr (Inter Cluster Router Lookahead output not consistent when reloaded)"
+            )
+
+    if "write_intra_cluster_router_lookahead" in second_run_args:
+        cmd = ["diff", intra_cluster_router_lookahead, "intra_cluster_router_lookahead2.capnp"]
+        _, diff_result = command_runner.run_system_command(
+            cmd, temp_dir, log_filename="diff.intra_cluster_router_lookahead.out", indent_depth=1
+        )
+        if diff_result:
+            raise InspectError(
+                "failed: vpr (Intra Cluster Router Lookahead not consistent when reloaded)"
+            )
 
 
 def cmp_full_vs_incr_sta(

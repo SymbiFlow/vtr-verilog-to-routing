@@ -1,5 +1,4 @@
-#ifndef EDGE_GROUPS_H
-#define EDGE_GROUPS_H
+#pragma once
 
 #include <unordered_set>
 #include <unordered_map>
@@ -7,7 +6,8 @@
 #include <cstddef>
 
 #include "vpr_types.h"
-#include "vpr_context.h"
+
+struct DeviceContext;
 
 // Class for identifying the components of a graph as sets of nodes.
 // Each node is reachable from any other node in the same set, and
@@ -26,7 +26,7 @@ class EdgeGroups {
     // Adds non-configurable (undirected) edge to be grouped.
     //
     // Returns true if this is a new edge.
-    bool add_non_config_edge(int from_node, int to_node);
+    bool add_non_config_edge(RRNodeId from_node, RRNodeId to_node);
 
     // After add_non_config_edge has been called for all edges, create_sets
     // will form groups of nodes that are connected via non-configurable
@@ -42,19 +42,17 @@ class EdgeGroups {
 
   private:
     struct node_data {
-        std::unordered_set<int> edges; // Set of indices into graph_
-        int set = OPEN;                // Index into rr_non_config_node_sets_
+        std::unordered_set<RRNodeId> edges; // Set of indices into graph_
+        int set = UNDEFINED;                // Index into rr_non_config_node_sets_
     };
 
     // Perform a DFS traversal marking everything reachable with the same set id
     size_t add_connected_group(const node_data& node);
 
     // Set of non-configurable edges.
-    std::unordered_map<int, node_data> graph_;
+    std::unordered_map<RRNodeId, node_data> graph_;
 
     // Connected components, representing nodes connected by non-configurable edges.
     // Order is arbitrary.
-    std::vector<std::vector<int>> rr_non_config_node_sets_;
+    std::vector<std::vector<RRNodeId>> rr_non_config_node_sets_;
 };
-
-#endif

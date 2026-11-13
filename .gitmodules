@@ -1,0 +1,28 @@
+[submodule "libs/EXTERNAL/libcatch2"]
+	path = libs/EXTERNAL/libcatch2
+	url = https://github.com/catchorg/Catch2.git
+
+# fork where in branch v1.0.0_no_complication_warnings there are compilation warnings fixes for upstream tag v1.0.0 of sockpp
+[submodule "libs/EXTERNAL/sockpp"]
+	path = libs/EXTERNAL/sockpp
+	url = https://github.com/w0lek/sockpp.git
+
+[submodule "libs/EXTERNAL/libezgl"]
+	path = libs/EXTERNAL/libezgl
+	url = https://github.com/verilog-to-routing/ezgl.git
+	branch = master
+[submodule "libs/EXTERNAL/yosys"]
+	path = libs/EXTERNAL/yosys
+	url = https://github.com/YosysHQ/yosys.git
+[submodule "libs/EXTERNAL/yosys-slang"]
+	path = libs/EXTERNAL/yosys-slang
+	url = https://github.com/povik/yosys-slang.git
+[submodule "libs/EXTERNAL/yaml-cpp"]
+	path = libs/EXTERNAL/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
+[submodule "libs/EXTERNAL/libsdcparse"]
+	path = libs/EXTERNAL/libsdcparse
+	url = https://github.com/verilog-to-routing/libsdcparse.git
+[submodule "libs/EXTERNAL/eigen"]
+	path = libs/EXTERNAL/eigen
+	url = https://github.com/eigen-mirror/eigen

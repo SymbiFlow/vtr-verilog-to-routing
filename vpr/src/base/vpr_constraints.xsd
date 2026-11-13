@@ -1,0 +1,147 @@
+<?xml version="1.0"?>
+<!--
+
+  XML 1.0 Schema for vpr constraints structure
+-->
+
+<!--
+  The root of the XSD file is the xs:schema.  With the xs:schema are 2 types
+  relevant to the code generated:
+
+- xs:complexType : This defines a child tag within the schema.  Most of the
+                   schema is made of these.
+- xs:element : There is one xs:element that is the direct child of the root
+               xs:schema, and this the definition of the root tag.
+
+  In addition to being used for code generation, this schema can be used to
+  validate whether a vpr constraints XML conforms to this schema.
+  Additional documentation is available at
+  https://github.com/duck2/uxsdcxx/blob/master/README.md
+
+-->
+
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!--Attributes are optional be default. For required elements, the "use" attribute is used to specify
+      that it is required by setting use="required".-->
+  <xs:complexType name="add_atom">
+    <xs:attribute name="name_pattern" type="xs:string" use="required"/>
+    <xs:attribute name="is_regex" type="xs:string" default="false"/>
+    <xs:attribute name="logical_block_location" type="xs:string" use="optional"/>
+    <xs:attribute name="site_path" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="add_region">
+    <xs:attribute name="x_low" type="xs:int" use="required"/>
+    <xs:attribute name="y_low" type="xs:int" use="required"/>
+    <xs:attribute name="x_high" type="xs:int" use="required"/>
+    <xs:attribute name="y_high" type="xs:int" use="required"/>
+    <xs:attribute name="layer_low" type="xs:int"/>
+    <xs:attribute name="layer_high" type="xs:int"/>
+    <xs:attribute name="subtile" type="xs:int"/>
+  </xs:complexType>
+
+  <xs:complexType name="add_logical_block">
+    <xs:attribute name="name_pattern" type="xs:string" use="required"/>
+    <xs:attribute name="is_regex" type="xs:string" default="false"/>
+  </xs:complexType>
+
+  <!--If an element can occur multiple times, the attribute maxOccurs can be set to 
+  unbounded for this element. When elements occur between <xs:sequence> tags, they are required
+  to appear in the order they are listed in the tag. For example, in "partition" below, add_atom
+  and add_region can both occur multiple times, but all add_atom elements must come before
+  the add_region elements. -->
+  <xs:complexType name="partition">
+    <xs:sequence>
+       <xs:choice maxOccurs="unbounded">
+           <xs:element name="add_atom" type="add_atom"/>
+           <xs:element name="add_region" type="add_region"/>
+           <xs:element name="add_logical_block" type="add_logical_block"/>
+       </xs:choice>
+    </xs:sequence>
+
+    <xs:attribute name="name" type="xs:string" use="required"/>
+  </xs:complexType>
+
+
+  <xs:complexType name="partition_list">
+    <xs:sequence>
+      <xs:element name="partition" type="partition" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="reference_group">
+    <xs:sequence>
+      <xs:element name="add_atom" type="add_atom" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="relative_group">
+    <xs:sequence>
+      <xs:element name="add_atom" type="add_atom" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="x_offset" type="xs:int" use="required"/>
+    <xs:attribute name="y_offset" type="xs:int" use="required"/>
+    <xs:attribute name="sub_tile_offset" type="xs:int" use="required"/>
+    <xs:attribute name="layer_offset" type="xs:int" default="0"/>
+  </xs:complexType>
+
+  <xs:complexType name="relative_macro">
+    <xs:sequence>
+      <xs:element name="reference_group" type="reference_group"/>
+      <xs:element name="relative_group" type="relative_group" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="relative_macro_list">
+    <xs:sequence>
+      <xs:element name="relative_macro" type="relative_macro" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+
+<xs:simpleType name="route_model_type">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="ideal"/>
+      <xs:enumeration value="route"/>
+      <xs:enumeration value="dedicated_network"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Add a global route constraint, an example:
+  <global_route_constraints>
+    <set_global_signal name="clk0" network_name="global_clock_network" route_model="dedicated_network"/> 
+    ...
+  </global_route_constraints>
+  -->
+  <xs:complexType name="set_global_signal">
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="route_model" type="route_model_type" use="required"/>
+    <xs:attribute name="network_name" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="global_route_constraints">
+    <xs:sequence>
+      <xs:element name="set_global_signal" type="set_global_signal" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+<!-- This last definition is the root tag definition.  The name of the
+       xs:element is the root tag, and the contents of the xs:complexType
+       defines what attributes and subtags are expected.
+    -->
+  <xs:element name="vpr_constraints">
+    <xs:complexType>
+      <xs:all minOccurs="0">
+        <xs:element name="partition_list" type="partition_list"/>
+        <xs:element name="relative_macro_list" type="relative_macro_list"/>
+        <xs:element name="global_route_constraints" type="global_route_constraints"/>
+      </xs:all>
+
+      <xs:attribute name="tool_name" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
+

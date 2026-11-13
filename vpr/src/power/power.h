@@ -1,3 +1,4 @@
+#pragma once
 /*********************************************************************
  *  The following code is part of the power modelling feature of VTR.
  *
@@ -19,12 +20,7 @@
  * This is the top-level file for power estimation in VTR
  */
 
-#ifndef __POWER_H__
-#define __POWER_H__
-
 /************************* INCLUDES *********************************/
-#include <list>
-
 #include "vpr_types.h"
 #include "PowerSpicedComponent.h"
 
@@ -174,7 +170,7 @@ struct t_power_mux_volt_pair {
     float v_out_max;
 };
 
-/* Buffer information for a given buffer stength */
+/* Buffer information for a given buffer strength */
 struct t_power_buffer_strength_inf {
     float stage_gain;
 
@@ -208,15 +204,16 @@ struct t_power_output {
 };
 
 struct t_log {
-    char* name;
-    char** messages;
+    std::string name;
+    std::vector<std::string> messages;
     int num_messages;
 };
 
 struct t_power_mux_info {
     /* Mux architecture information for 0..mux_arch_max_size */
     int mux_arch_max_size;
-    t_mux_arch* mux_arch;
+    //    t_mux_arch* mux_arch;
+    std::vector<t_mux_arch> mux_arch;
 };
 
 /**
@@ -237,8 +234,8 @@ struct t_power_commonly_used {
     float INV_1X_C;
     float INV_2X_C;
 
-    /* Component Callibrations Array [0..POWER_COMPONENT_MAX_NUM-1] */
-    PowerSpicedComponent** component_callibration;
+    /* Component Calibrations Array [0..POWER_COMPONENT_MAX_NUM-1] */
+    PowerSpicedComponent** component_calibration;
 
     /* Subthreshold leakages */
     float NMOS_1X_st_leakage;
@@ -266,7 +263,7 @@ struct t_power_commonly_used {
     float total_cb_buffer_size;
 };
 
-/* 1-to-1 data structure with t_rr_node
+/* One entry per RR node
  */
 struct t_rr_node_power {
     float* in_dens;             /* Switching density of inputs */
@@ -307,11 +304,9 @@ struct t_mux_node {
 bool power_init(const char* power_out_filepath,
                 const char* cmos_tech_behavior_filepath,
                 const t_arch* arch,
-                const t_det_routing_arch* routing_arch);
+                const t_det_routing_arch& routing_arch);
 
 bool power_uninit();
 
 /* Top-Level Function */
-e_power_ret_code power_total(float* run_time_s, const t_vpr_setup& vpr_setup, const t_arch* arch, const t_det_routing_arch* routing_arch);
-
-#endif /* __POWER_H__ */
+e_power_ret_code power_total(float* run_time_s, const t_vpr_setup& vpr_setup, const t_arch* arch, const t_det_routing_arch& routing_arch);

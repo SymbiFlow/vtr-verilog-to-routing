@@ -22,6 +22,7 @@
 #include "schema.h"
 #include "message.h"
 #include <kj/debug.h>
+#include <capnp/stream.capnp.h>
 
 namespace capnp {
 
@@ -264,6 +265,19 @@ Schema::BrandArgumentList Schema::getBrandArgumentsAtScope(uint64_t scopeId) con
   return BrandArgumentList(scopeId, raw->isUnbound());
 }
 
+kj::Array<uint64_t> Schema::getGenericScopeIds() const {
+  if (!getProto().getIsGeneric())
+    return nullptr;
+  
+  auto result = kj::heapArray<uint64_t>(raw->scopeCount);
+  for (auto iScope: kj::indices(result)) {
+    result[iScope] = raw->scopes[iScope].typeId;
+  }
+  
+  return result;
+}
+	
+
 StructSchema Schema::asStruct() const {
   KJ_REQUIRE(getProto().isStruct(), "Tried to use non-struct schema as a struct.",
              getProto().getDisplayName()) {
@@ -297,6 +311,11 @@ ConstSchema Schema::asConst() const {
 }
 
 kj::StringPtr Schema::getShortDisplayName() const {
+  auto proto = getProto();
+  return proto.getDisplayName().slice(proto.getDisplayNamePrefixLength());
+}
+
+const kj::StringPtr Schema::getUnqualifiedName() const {
   auto proto = getProto();
   return proto.getDisplayName().slice(proto.getDisplayNamePrefixLength());
 }
@@ -501,6 +520,11 @@ kj::Maybe<StructSchema::Field> StructSchema::getFieldByDiscriminant(uint16_t dis
   } else {
     return unionFields[discriminant];
   }
+}
+
+bool StructSchema::isStreamResult() const {
+  auto& streamRaw = _::rawSchema<StreamResult>();
+  return raw->generic == &streamRaw || raw->generic->canCastTo == &streamRaw;
 }
 
 Type StructSchema::Field::getType() const {
@@ -890,12 +914,24 @@ uint Type::hashCode() const {
     case schema::Type::FLOAT64:
     case schema::Type::TEXT:
     case schema::Type::DATA:
-      return kj::hashCode(baseType, listDepth);
+      if (listDepth == 0) {
+        // Make sure that hashCode(Type(baseType)) == hashCode(baseType), otherwise HashMap lookups
+        // keyed by `Type` won't work when the caller passes `baseType` as the key.
+        return kj::hashCode(baseType);
+      } else {
+        return kj::hashCode(baseType, listDepth);
+      }
 
     case schema::Type::STRUCT:
     case schema::Type::ENUM:
     case schema::Type::INTERFACE:
-      return kj::hashCode(schema, listDepth);
+      if (listDepth == 0) {
+        // Make sure that hashCode(Type(schema)) == hashCode(schema), otherwise HashMap lookups
+        // keyed by `Type` won't work when the caller passes `schema` as the key.
+        return kj::hashCode(schema);
+      } else {
+        return kj::hashCode(schema, listDepth);
+      }
 
     case schema::Type::LIST:
       KJ_UNREACHABLE;
@@ -905,7 +941,7 @@ uint Type::hashCode() const {
       // both branches compile to the same instructions and can optimize it away.
       uint16_t val = scopeId != 0 || isImplicitParam ?
           paramIndex : static_cast<uint16_t>(anyPointerKind);
-      return kj::hashCode(val, isImplicitParam, scopeId);
+      return kj::hashCode(val, isImplicitParam, scopeId, listDepth);
     }
   }
 

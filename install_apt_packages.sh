@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# if --dev is specified, also install packages needed by vtr developers (e.g. verilator
+# for functional simulation). otherwise only install packages needed to run vtr.
+install_dev=false
+for arg in "$@"; do
+    if [ "$arg" = "--dev" ]; then
+        install_dev=true
+    fi
+done
+
+# Base packages to compile and run basic regression tests
+packages_to_install=(
+    make
+    cmake
+    build-essential
+    pkg-config
+    bison
+    flex
+    python3-dev
+    python3-venv
+)
+
+# Packages for more complex features of VTR that most people will use.
+packages_to_install+=(
+    libxml2-utils
+    libtbb-dev
+)
+
+# Required for parsing SDC files (see LibSDCParse)
+packages_to_install+=(
+    tcl-dev
+    swig
+)
+
+# Required for graphics
+# GL/EGL/xkb runtime that the Qt6 GUI links against; the Qt6 SDK itself is
+# provisioned separately by dev/ensure_qt6_sdk.sh.
+# The libxcb-* packages are runtime dependencies of Qt's xcb (X11) platform
+# plugin (libqxcb.so). Without them the GUI aborts at startup with "Could not
+# load the Qt platform plugin xcb" (the loader reports only the first missing
+# one, typically libxcb-cursor0, which Qt has required since 6.5).
+packages_to_install+=(
+    libxkbcommon-dev
+    libgl-dev
+    libegl-dev
+    libopengl0
+    libegl-mesa0
+    libgl1-mesa-dri
+    libxcb-cursor0
+    libxcb-icccm4
+    libxcb-image0
+    libxcb-keysyms1
+    libxcb-render-util0
+)
+
+# Required for parmys front-end from https://github.com/YosysHQ/yosys
+packages_to_install+=(
+    build-essential
+    clang
+    bison
+    flex
+    libreadline-dev
+    gawk
+    tcl-dev
+    libffi-dev
+    git
+    graphviz
+    xdot
+    pkg-config
+    python3-dev
+    libboost-system-dev
+    libboost-python-dev
+    libboost-filesystem-dev
+    default-jre
+    zlib1g-dev
+)
+
+if [[ "$install_dev" == true ]]; then
+    # required for functional simulation (run_func_sim_flow.py)
+    packages_to_install+=(
+        verilator
+    )
+fi
+
+# Required for code formatting
+# NOTE: clang-format-18 may only be found on specific distributions. Only
+#       install it if the distribution has this version of clang format.
+if apt-cache search '^clang-format-18$' | grep -q 'clang-format-18'; then
+    packages_to_install+=(
+        clang-format-18
+    )
+else
+    echo "clang-format-18 not found in apt-cache. Skipping installation."
+fi
+
+sudo apt-get update
+sudo apt-get install -y "${packages_to_install[@]}"

@@ -1,5 +1,4 @@
-#ifndef NETLIST_UTILS_H
-#define NETLIST_UTILS_H
+#pragma once
 
 #include "vtr_vector_map.h"
 #include <set>
@@ -57,14 +56,18 @@ vtr::vector_map<Id, Id> compress_ids(const vtr::vector_map<Id, Id>& ids) {
  * @brief Returns a vector based on 'values', which has had entries
  *        dropped & re-ordered according according to 'id_map'.
  *
- * Each entry in id_map corresponds to the assoicated element in 'values'.
+ * Each entry in id_map corresponds to the associated element in 'values'.
  * The value of the id_map entry is the new ID of the entry in values.
  *
  * If it is an invalid ID, the element in values is dropped.
  * Otherwise the element is moved to the new ID location.
+ *
+ * Moves elements out of 'values'. After this returns, entries of 'values'
+ * that were mapped through 'id_map' are in a valid but unspecified state
+ * and must not be read.
  */
 template<typename Id, typename T>
-vtr::vector_map<Id, T> clean_and_reorder_values(const vtr::vector_map<Id, T>& values, const vtr::vector_map<Id, Id>& id_map) {
+vtr::vector_map<Id, T> clean_and_reorder_values(vtr::vector_map<Id, T>& values, const vtr::vector_map<Id, Id>& id_map) {
     VTR_ASSERT(values.size() == id_map.size());
 
     //Allocate space for the values that will not be dropped
@@ -176,5 +179,3 @@ Container update_valid_refs(const Container& values,
     }
     return updated;
 }
-
-#endif

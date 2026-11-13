@@ -30,7 +30,7 @@ bar() on the result of the first call".  These messages can be sent together -- 
 to wait for the first call to actually return.
 
 To make programming to this model easy, in your code, each call returns a "promise".  Promises
-work much like Javascript promises or promises/futures in other languages:  the promise is returned
+work much like JavaScript promises or promises/futures in other languages:  the promise is returned
 immediately, but you must later call `wait()` on it, or call `then()` to register an asynchronous
 callback.
 
@@ -142,7 +142,7 @@ performs as well as we can possibly hope for.
 
 #### Example code
 
-[The calculator example](https://github.com/sandstorm-io/capnproto/blob/master/c++/samples/calculator-client.c++)
+[The calculator example](https://github.com/capnproto/capnproto/blob/master/c++/samples/calculator-client.c++)
 uses promise pipelining.  Take a look at the client side in particular.
 
 ### Distributed Objects
@@ -244,7 +244,7 @@ stream protocol, it can easily be layered on top of SSL/TLS or other such protoc
 
 The Cap'n Proto RPC protocol is defined in terms of Cap'n Proto serialization schemas.  The
 documentation is inline.  See
-[rpc.capnp](https://github.com/sandstorm-io/capnproto/blob/master/c++/src/capnp/rpc.capnp).
+[rpc.capnp](https://github.com/capnproto/capnproto/blob/master/c++/src/capnp/rpc.capnp).
 
 Cap'n Proto's RPC protocol is based heavily on
 [CapTP](http://www.erights.org/elib/distrib/captp/index.html), the distributed capability protocol

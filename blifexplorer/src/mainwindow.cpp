@@ -26,6 +26,8 @@ OTHER DEALINGS IN THE SOFTWARE.
 #include <QDebug>
 #include <QHash>
 
+#include "vtr_log.h"
+
 #include "mainwindow.h"
 #include "explorerscene.h"
 #include "diagramtextitem.h"
@@ -271,10 +273,10 @@ void MainWindow::fontSizeChanged(const QString &)
  *-------------------------------------------------------------------------------------------*/
 void MainWindow::sceneScaleChanged(int scale)
 {
-    double newScale = scale/100.0;
-    QMatrix oldMatrix = view->matrix();
-    view->resetMatrix();
-    view->translate(oldMatrix.dx(), oldMatrix.dy());
+    double newScale = scale / 100.0;
+    QTransform oldTransform = view->transform(); // Use transform() instead of matrix()
+    view->resetTransform(); // Changed from resetMatrix() to resetTransform()
+    view->translate(oldTransform.dx(), oldTransform.dy()); // Use dx() and dy() from QTransform
     view->scale(newScale, newScale);
 }
 
@@ -284,7 +286,12 @@ void MainWindow::sceneScaleChanged(int scale)
  *-------------------------------------------------------------------------------------------*/
 void MainWindow::textColorChanged()
 {
-    textAction = qobject_cast<QAction *>(sender());
+    QAction* action = qobject_cast<QAction *>(sender());
+    if (!action) {
+        VTR_LOG_WARN("textColorChanged: sender is not a QAction; ignoring.\n");
+        return;
+    }
+    textAction = action;
     fontColorToolButton->setIcon(createColorToolButtonIcon(
                 ":/images/textpointer.png",
                 qvariant_cast<QColor>(textAction->data())));
@@ -297,7 +304,12 @@ void MainWindow::textColorChanged()
  *-------------------------------------------------------------------------------------------*/
 void MainWindow::itemColorChanged()
 {
-    fillAction = qobject_cast<QAction *>(sender());
+    QAction* action = qobject_cast<QAction *>(sender());
+    if (!action) {
+        VTR_LOG_WARN("itemColorChanged: sender is not a QAction; ignoring.\n");
+        return;
+    }
+    fillAction = action;
     fillColorToolButton->setIcon(createColorToolButtonIcon(
                  ":/images/floodfill.png",
                  qvariant_cast<QColor>(fillAction->data())));
@@ -309,7 +321,12 @@ void MainWindow::itemColorChanged()
  *-------------------------------------------------------------------------------------------*/
 void MainWindow::lineColorChanged()
 {
-    lineAction = qobject_cast<QAction *>(sender());
+    QAction* action = qobject_cast<QAction *>(sender());
+    if (!action) {
+        VTR_LOG_WARN("lineColorChanged: sender is not a QAction; ignoring.\n");
+        return;
+    }
+    lineAction = action;
     lineColorToolButton->setIcon(createColorToolButtonIcon(
                  ":/images/linecolor.png",
                  qvariant_cast<QColor>(lineAction->data())));
@@ -364,6 +381,10 @@ void MainWindow::itemSelected(QGraphicsItem *item)
 {
     DiagramTextItem *textItem =
     qgraphicsitem_cast<DiagramTextItem *>(item);
+    if (!textItem) {
+        VTR_LOG_WARN("itemSelected: selected item is not a DiagramTextItem; ignoring.\n");
+        return;
+    }
 
     QFont font = textItem->font();
     //QColor color = textItem->defaultTextColor();
@@ -915,7 +936,7 @@ void MainWindow::openFileWithOdin(){
                                                    tr("Open BLIF"),
                                                    QDir::homePath(),
                                                    tr("BLIF files (*.blif);;All files (*.*)"),
-                                                   0,
+                                                nullptr, // No parent,
                                                    QFileDialog::DontUseNativeDialog);
 
     myContainer->setFilename(actBlifFilename);
@@ -925,10 +946,10 @@ void MainWindow::openFileWithOdin(){
         //An error occured
         QMessageBox msgBox(QMessageBox::Warning, tr("No Structure Found in File"),
                            "The file you tried to explore does not contain any structures or could not be opened. Please select another file."
-                           , 0, this);
-        msgBox.addButton(tr("Open &Again"), QMessageBox::AcceptRole);
-        msgBox.addButton(tr("&Continue"), QMessageBox::RejectRole);
-        if (msgBox.exec() == QMessageBox::AcceptRole)
+                           
+                           , QMessageBox::Open | QMessageBox::Cancel, this);
+        msgBox.setDefaultButton(QMessageBox::Open);
+        if (msgBox.exec() == QMessageBox::Open)
             openFileWithOdin();
 
     }else{

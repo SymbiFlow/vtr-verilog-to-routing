@@ -21,13 +21,11 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "memory.h"
 #include "array.h"
 #include "string.h"
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -49,7 +47,7 @@ public:
   explicit Arena(ArrayPtr<byte> scratch);
   // Allocates from the given scratch space first, only resorting to the heap when it runs out.
 
-  KJ_DISALLOW_COPY(Arena);
+  KJ_DISALLOW_COPY_AND_MOVE(Arena);
   ~Arena() noexcept(false);
 
   template <typename T, typename... Params>
@@ -136,11 +134,11 @@ private:
 template <typename T, typename... Params>
 T& Arena::allocate(Params&&... params) {
   T& result = *reinterpret_cast<T*>(allocateBytes(
-      sizeof(T), alignof(T), !__has_trivial_destructor(T)));
-  if (!__has_trivial_constructor(T) || sizeof...(Params) > 0) {
+      sizeof(T), alignof(T), !KJ_HAS_TRIVIAL_DESTRUCTOR(T)));
+  if (!KJ_HAS_TRIVIAL_CONSTRUCTOR(T) || sizeof...(Params) > 0) {
     ctor(result, kj::fwd<Params>(params)...);
   }
-  if (!__has_trivial_destructor(T)) {
+  if (!KJ_HAS_TRIVIAL_DESTRUCTOR(T)) {
     setDestructor(&result, &destroyObject<T>);
   }
   return result;
@@ -148,11 +146,11 @@ T& Arena::allocate(Params&&... params) {
 
 template <typename T>
 ArrayPtr<T> Arena::allocateArray(size_t size) {
-  if (__has_trivial_destructor(T)) {
+  if (KJ_HAS_TRIVIAL_DESTRUCTOR(T)) {
     ArrayPtr<T> result =
         arrayPtr(reinterpret_cast<T*>(allocateBytes(
             sizeof(T) * size, alignof(T), false)), size);
-    if (!__has_trivial_constructor(T)) {
+    if (!KJ_HAS_TRIVIAL_CONSTRUCTOR(T)) {
       for (size_t i = 0; i < size; i++) {
         ctor(result[i]);
       }
@@ -167,7 +165,7 @@ ArrayPtr<T> Arena::allocateArray(size_t size) {
         arrayPtr(reinterpret_cast<T*>(reinterpret_cast<byte*>(base) + prefixSize), size);
     setDestructor(base, &destroyArray<T>);
 
-    if (__has_trivial_constructor(T)) {
+    if (KJ_HAS_TRIVIAL_CONSTRUCTOR(T)) {
       tag = size;
     } else {
       // In case of constructor exceptions, we need the tag to end up storing the number of objects
@@ -185,7 +183,7 @@ ArrayPtr<T> Arena::allocateArray(size_t size) {
 template <typename T, typename... Params>
 Own<T> Arena::allocateOwn(Params&&... params) {
   T& result = *reinterpret_cast<T*>(allocateBytes(sizeof(T), alignof(T), false));
-  if (!__has_trivial_constructor(T) || sizeof...(Params) > 0) {
+  if (!KJ_HAS_TRIVIAL_CONSTRUCTOR(T) || sizeof...(Params) > 0) {
     ctor(result, kj::fwd<Params>(params)...);
   }
   return Own<T>(&result, DestructorOnlyDisposer<T>::instance);
@@ -208,3 +206,5 @@ ArrayBuilder<T> Arena::allocateOwnArrayBuilder(size_t capacity) {
 }
 
 }  // namespace kj
+
+KJ_END_HEADER

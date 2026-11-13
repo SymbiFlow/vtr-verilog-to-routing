@@ -4,15 +4,15 @@
 
 |  arg  | following argument      | Description                                            |
 |-------|:-----------------------:|------------------------------------------------------- |
-| `-c`  |  XML Configuration File | XML runtime directives for the syntesizer such as the verilog file, and parametrized synthesis |
-|  `-V` |  Verilog HDL FIle       | You may specify multiple verilog HDL files for synthesis|
-|  `-b` |  BLIF File              |                                                        |
-|  `-o` |  BLIF output file       | full output path and file name for the blif output file                              |
-|  `-a` |  architecture file      | You may specify multiple verilog HDL files for synthesis                             |
-|  `-G` |                         | Output netlist graph in GraphViz viewable .dot format. (net.dot, opens with dotty)  |
-|  `-A` |                         | Output AST graph in in GraphViz viewable .dot format.                               |
-|  `-W` |                         | Print all warnings. (Can be substantial.)                                           |
-|  `-h` |                         | Print help                                                                          |
+|  `-c` |  XML Configuration File | XML runtime directives for the syntesizer such as the verilog file, and parametrized synthesis |
+|  `-v` |  Verilog HDL File       | You may specify multiple space-separated verilog HDL files for synthesis                       |
+|  `-b` |  BLIF File              | You may **not** specify multiple BLIF files as only single input BLIF file is accepted         |
+|  `-o` |  BLIF output file       | full output path and file name for the BLIF output file                                        |
+|  `-a` |  architecture file      | You may specify multiple space-separated Verilog HDL files for synthesis                       |
+|  `-G` |                         | Output netlist graph in GraphViz viewable .dot format. (net.dot, opens with dotty)             |
+|  `-A` |                         | Output AST graph in in GraphViz viewable .dot format.                                          |
+|  `-W` |                         | Print all warnings. (Can be substantial.)                                                      |
+|  `-h` |                         | Print help                                                                                     |
 
 ## Simulation Arguments
 
@@ -21,7 +21,7 @@
 - `-g <number of random vector>`
 - `-t <input vector file>`
   
-Simulation always produces the folowing files:
+Simulation always produces the following files:
 
 - input\_vectors
 - output\_vectors
@@ -34,11 +34,11 @@ Simulation always produces the folowing files:
 |  `-T` |  output vector file|The output vectors is verified against the supplied predefined output vector file              |
 |  `-E` |                    |Output after both edges of the clock. (Default is to output only after the falling edge.)      |
 |  `-R` |                    |Output after rising edge of the clock only. (Default is to output only after the falling edge.)|
-|  `-p` |comma seperated list|Comma-separated list of additional pins/nodes to monitor during simulation. (view NOTES)       |
+|  `-p` |comma separated list|Comma-separated list of additional pins/nodes to monitor during simulation. (view NOTES)       |
 |  `-U0` |                                   |initial register value to 0      |
 |  `-U1` |                                   |initial resigster value to 1 |
 |  `-UX` |                                   |initial resigster value to X (unknown) (DEFAULT) |
-|  `-L`  |  Comma seperated list|Comma-separated list of primary inputs to hold high at cycle 0, and low for all subsequent cycles.|
+|  `-L`  |  Comma separated list|Comma-separated list of primary inputs to hold high at cycle 0, and low for all subsequent cycles.|
 |  `-3`  |   |Generate three valued logic. (Default is binary.) |
 
 ## Examples
@@ -111,7 +111,7 @@ Simulation always produces the folowing files:
 > a distinct shared object file for each instance of the block you wish
 > to simulate. The method signature the simulator expects contains only
 > int and int[] parameters, leaving the code provided to simulate the
-> hard blokc agnostic of the internal Odin II data structures. However,
+> hard block agnostic of the internal Odin II data structures. However,
 > a cycle parameter is included to provide researchers with the ability
 > to delay results of operations performed by the simulation code.
 >
@@ -158,15 +158,15 @@ A very useful function of Odin II is to compare the simulated output vector file
 To do this the command line should be:
 
 ```shell
-./odin_II -V <Path/to/verilog/file> -t <Path/to/Input/Vector/File> -T <Path/to/Output/Vector/File>
+./odin_ii -v <Path/to/verilog/file> -t <Path/to/Input/Vector/File> -T <Path/to/Output/Vector/File>
 ```
 
-An error will arrise if the output vector files do not match.
+An error will arise if the output vector files do not match.
 
 Without an expected vector output file the command line would be:
 
 ```shell
-./odin_II -V <Path/to/verilog/file> -t <Path/to/Input/Vector/File>
+./odin_ii -v <Path/to/verilog/file> -t <Path/to/Input/Vector/File>
 ```
 
 The generated output file can be found in the current directory under the name output_vectors.
@@ -176,7 +176,7 @@ The generated output file can be found in the current directory under the name o
 This function generates N amounnt of random input vectors for Odin II to simulate with.
 
 ```shell
-./odin_II -V <Path/to/verilog/file> -g 10
+./odin_ii -v <Path/to/verilog/file> -g 10
 ```
 
 This example will produce 10 autogenerated input vectors. These vectors can be found in the current directory under input_vectors  and the resulting output vectors can be found under output_vectors.

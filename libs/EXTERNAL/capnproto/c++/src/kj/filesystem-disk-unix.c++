@@ -25,6 +25,12 @@
 #define _GNU_SOURCE
 #endif
 
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+// Request 64-bit off_t. (The code will still work if we get 32-bit off_t as long as actual files
+// are under 4GB.)
+#endif
+
 #include "filesystem.h"
 #include "debug.h"
 #include <sys/types.h>
@@ -182,7 +188,7 @@ static void rmrfChildrenAndClose(int fd) {
       if (entry->d_type == DT_DIR) {
         int subdirFd;
         KJ_SYSCALL(subdirFd = openat(
-            fd, entry->d_name, O_RDONLY | MAYBE_O_DIRECTORY | MAYBE_O_CLOEXEC));
+            fd, entry->d_name, O_RDONLY | MAYBE_O_DIRECTORY | MAYBE_O_CLOEXEC | O_NOFOLLOW));
         rmrfChildrenAndClose(subdirFd);
         KJ_SYSCALL(unlinkat(fd, entry->d_name, AT_REMOVEDIR));
       } else if (entry->d_type != DT_UNKNOWN) {
@@ -211,7 +217,9 @@ static bool rmrf(int fd, StringPtr path) {
   if (S_ISDIR(stats.st_mode)) {
     int subdirFd;
     KJ_SYSCALL(subdirFd = openat(
-        fd, path.cStr(), O_RDONLY | MAYBE_O_DIRECTORY | MAYBE_O_CLOEXEC)) { return false; }
+        fd, path.cStr(), O_RDONLY | MAYBE_O_DIRECTORY | MAYBE_O_CLOEXEC | O_NOFOLLOW)) {
+      return false;
+    }
     rmrfChildrenAndClose(subdirFd);
     KJ_SYSCALL(unlinkat(fd, path.cStr(), AT_REMOVEDIR)) { return false; }
   } else {
@@ -298,6 +306,11 @@ public:
     return fd.get();
   }
 
+  void setFd(AutoCloseFd newFd) {
+    // Used for one hack in DiskFilesystem's constructor...
+    fd = kj::mv(newFd);
+  }
+
   // FsNode --------------------------------------------------------------------
 
   FsNode::Metadata stat() const {
@@ -346,6 +359,7 @@ public:
   }
 
   Array<const byte> mmap(uint64_t offset, uint64_t size) const {
+    if (size == 0) return nullptr;  // zero-length mmap() returns EINVAL, so avoid it
     auto range = getMmapRange(offset, size);
     const void* mapping = ::mmap(NULL, range.size, PROT_READ, MAP_SHARED, fd, range.offset);
     if (mapping == MAP_FAILED) {
@@ -356,6 +370,7 @@ public:
   }
 
   Array<byte> mmapPrivate(uint64_t offset, uint64_t size) const {
+    if (size == 0) return nullptr;  // zero-length mmap() returns EINVAL, so avoid it
     auto range = getMmapRange(offset, size);
     void* mapping = ::mmap(NULL, range.size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, range.offset);
     if (mapping == MAP_FAILED) {
@@ -381,7 +396,12 @@ public:
   }
 
   void zero(uint64_t offset, uint64_t size) const {
-#ifdef FALLOC_FL_PUNCH_HOLE
+    // If FALLOC_FL_PUNCH_HOLE is defined, use it to efficiently zero the area.
+    //
+    // A fallocate() wrapper was only added to Android's Bionic C library as of API level 21,
+    // but FALLOC_FL_PUNCH_HOLE is apparently defined in the headers before that, so we'll
+    // have to explicitly test for that case.
+#if defined(FALLOC_FL_PUNCH_HOLE) && !(__ANDROID__ && __BIONIC__ && __ANDROID_API__ < 21)
     KJ_SYSCALL_HANDLE_ERRORS(
         fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size)) {
       case EOPNOTSUPP:
@@ -396,8 +416,8 @@ public:
 
     static const byte ZEROS[4096] = { 0 };
 
-#if __APPLE__ || __CYGWIN__
-    // Mac & Cygwin doesn't have pwritev().
+#if __APPLE__ || __CYGWIN__ || (defined(__ANDROID__) && __ANDROID_API__ < 24)
+    // Mac & Cygwin & Android API levels 23 and lower doesn't have pwritev().
     while (size > sizeof(ZEROS)) {
       write(offset, ZEROS);
       size -= sizeof(ZEROS);
@@ -407,7 +427,7 @@ public:
 #else
     // Use a 4k buffer of zeros amplified by iov to write zeros with as few syscalls as possible.
     size_t count = (size + sizeof(ZEROS) - 1) / sizeof(ZEROS);
-    const size_t iovmax = miniposix::iovMax(count);
+    const size_t iovmax = miniposix::iovMax();
     KJ_STACK_ARRAY(struct iovec, iov, kj::min(iovmax, count), 16, 256);
 
     for (auto& item: iov) {
@@ -454,6 +474,7 @@ public:
     void changed(ArrayPtr<byte> slice) const override {
       KJ_REQUIRE(slice.begin() >= bytes.begin() && slice.end() <= bytes.end(),
                  "byte range is not part of this mapping");
+      if (slice.size() == 0) return;
 
       // msync() requires page-alignment, apparently, so use getMmapRange() to accomplish that.
       auto range = getMmapRange(reinterpret_cast<uintptr_t>(slice.begin()), slice.size());
@@ -463,6 +484,7 @@ public:
     void sync(ArrayPtr<byte> slice) const override {
       KJ_REQUIRE(slice.begin() >= bytes.begin() && slice.end() <= bytes.end(),
                  "byte range is not part of this mapping");
+      if (slice.size() == 0) return;
 
       // msync() requires page-alignment, apparently, so use getMmapRange() to accomplish that.
       auto range = getMmapRange(reinterpret_cast<uintptr_t>(slice.begin()), slice.size());
@@ -474,6 +496,10 @@ public:
   };
 
   Own<const WritableFileMapping> mmapWritable(uint64_t offset, uint64_t size) const {
+    if (size == 0) {
+      // zero-length mmap() returns EINVAL, so avoid it
+      return heap<WritableFileMappingImpl>(nullptr);
+    }
     auto range = getMmapRange(offset, size);
     void* mapping = ::mmap(NULL, range.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, range.offset);
     if (mapping == MAP_FAILED) {
@@ -502,6 +528,7 @@ public:
           default:
             KJ_FAIL_SYSCALL("sendfile", error) { return fromPos - fromOffset; }
         }
+        if (n == 0) break;
       }
       return fromPos - fromOffset;
     }
@@ -765,7 +792,7 @@ public:
         if (!exists(path)) {
           return nullptr;
         }
-        // fallthrough
+        KJ_FALLTHROUGH;
       default:
         KJ_FAIL_SYSCALL("openat(fd, path, O_DIRECTORY)", error, path) { return nullptr; }
     }
@@ -900,7 +927,7 @@ public:
           mode = mode - WriteMode::CREATE_PARENT;
           return createNamedTemporary(finalName, mode, kj::mv(tryCreate));
         }
-        // fallthrough
+        KJ_FALLTHROUGH;
       default:
         KJ_FAIL_SYSCALL("create(path)", error, path) { break; }
         return nullptr;
@@ -943,7 +970,7 @@ public:
             // Retry, but make sure we don't try to create the parent again.
             return tryReplaceNode(path, mode - WriteMode::CREATE_PARENT, kj::mv(tryCreate));
           }
-          // fallthrough
+          KJ_FALLTHROUGH;
         default:
           KJ_FAIL_SYSCALL("create(path)", error, path) { return false; }
       } else {
@@ -1076,7 +1103,7 @@ public:
       }
     }
 
-#if __linux__ && defined(RENAME_EXCHANGE)
+#if __linux__ && defined(RENAME_EXCHANGE) && defined(SYS_renameat2)
     // Try to use Linux's renameat2() to atomically check preconditions and apply.
 
     if (has(mode, WriteMode::MODIFY)) {
@@ -1088,13 +1115,16 @@ public:
 
       KJ_SYSCALL_HANDLE_ERRORS(syscall(SYS_renameat2,
           fromDirFd, fromPath.cStr(), fd.get(), toPath.cStr(), RENAME_EXCHANGE)) {
-        case ENOSYS:
+        case ENOSYS:  // Syscall not supported by kernel.
+        case EINVAL:  // Maybe we screwed up, or maybe the syscall is not supported by the
+                      // filesystem. Unfortunately, there's no way to tell, so assume the latter.
+                      // ZFS in particular apparently produces EINVAL.
           break;  // fall back to traditional means
         case ENOENT:
           // Presumably because the target path doesn't exist.
           if (has(mode, WriteMode::CREATE)) {
             KJ_FAIL_ASSERT("rename(tmp, path) claimed path exists but "
-                "renameat2(fromPath, toPath, EXCAHNGE) said it doest; concurrent modification?",
+                "renameat2(fromPath, toPath, EXCHANGE) said it doest; concurrent modification?",
                 fromPath, toPath) { return false; }
           } else {
             // Assume target doesn't exist.
@@ -1117,7 +1147,10 @@ public:
     } else if (has(mode, WriteMode::CREATE)) {
       KJ_SYSCALL_HANDLE_ERRORS(syscall(SYS_renameat2,
           fromDirFd, fromPath.cStr(), fd.get(), toPath.cStr(), RENAME_NOREPLACE)) {
-        case ENOSYS:
+        case ENOSYS:  // Syscall not supported by kernel.
+        case EINVAL:  // Maybe we screwed up, or maybe the syscall is not supported by the
+                      // filesystem. Unfortunately, there's no way to tell, so assume the latter.
+                      // ZFS in particular apparently produces EINVAL.
           break;  // fall back to traditional means
         case EEXIST:
           return false;
@@ -1156,8 +1189,10 @@ public:
         if (S_ISDIR(stats.st_mode)) {
           return mkdirat(fd, candidatePath.cStr(), 0700);
         } else {
-#if __APPLE__
-          // No mknodat() on OSX, gotta open() a file, ugh.
+#if __APPLE__ || __FreeBSD__
+          // - No mknodat() on OSX, gotta open() a file, ugh.
+          // - On a modern FreeBSD, mknodat() is reserved strictly for device nodes,
+          //   you cannot create a regular file using it (EINVAL).
           int newFd = openat(fd, candidatePath.cStr(),
                              O_RDWR | O_CREAT | O_EXCL | MAYBE_O_CLOEXEC, 0700);
           if (newFd >= 0) close(newFd);
@@ -1628,7 +1663,25 @@ public:
   DiskFilesystem()
       : root(openDir("/")),
         current(openDir(".")),
-        currentPath(computeCurrentPath()) {}
+        currentPath(computeCurrentPath()) {
+    // We sometimes like to use qemu-user to test arm64 binaries cross-compiled from an x64 host
+    // machine. But, because it intercepts and rewrites system calls from userspace rather than
+    // emulating a whole kernel, it has a lot of quirks. One quirk that hits kj::Filesystem pretty
+    // badly is that open("/") actually returns a file descriptor for "/usr/aarch64-linux-gnu".
+    // Attempts to openat() any files within there then don't work. We can detect this problem and
+    // correct for it here.
+    struct stat realRoot, fsRoot;
+    KJ_SYSCALL_HANDLE_ERRORS(stat("/dev/..", &realRoot)) {
+      default:
+        // stat("/dev/..") failed? Give up.
+        return;
+    }
+    KJ_SYSCALL(fstat(root.DiskHandle::getFd(), &fsRoot));
+    if (realRoot.st_ino != fsRoot.st_ino) {
+      KJ_LOG(WARNING, "root dir file descriptor is broken, probably because of qemu; compensating");
+      root.setFd(openDir("/dev/.."));
+    }
+  }
 
   const Directory& getRoot() const override {
     return root;
@@ -1688,7 +1741,7 @@ private:
     KJ_STACK_ARRAY(char, buf, size, 256, 4096);
     if (getcwd(buf.begin(), size) == nullptr) {
       int error = errno;
-      if (error == ENAMETOOLONG) {
+      if (error == ERANGE) {
         size *= 2;
         goto retry;
       } else {

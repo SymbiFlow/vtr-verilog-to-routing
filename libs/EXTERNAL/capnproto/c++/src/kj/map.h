@@ -21,12 +21,10 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #include "table.h"
 #include "hash.h"
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -70,8 +68,10 @@ public:
 
   template <typename UpdateFunc>
   Entry& upsert(Key key, Value value, UpdateFunc&& update);
+  Entry& upsert(Key key, Value value);
   // Tries to insert a new entry. However, if a duplicate already exists (according to some index),
   // then update(Value& existingValue, Value&& newValue) is called to modify the existing value.
+  // If no function is provided, the default is to simply replace the value (but not the key).
 
   template <typename KeyLike>
   kj::Maybe<Value&> find(KeyLike&& key);
@@ -88,14 +88,25 @@ public:
   // entry and insert it. createEntry() must return type `Entry`.
 
   template <typename KeyLike>
+  kj::Maybe<Entry&> findEntry(KeyLike&& key);
+  template <typename KeyLike>
+  kj::Maybe<const Entry&> findEntry(KeyLike&& key) const;
+  template <typename KeyLike, typename Func>
+  Entry& findOrCreateEntry(KeyLike&& key, Func&& createEntry);
+  // Sometimes you need to see the whole matching Entry, not just the Value.
+
+  template <typename KeyLike>
   bool erase(KeyLike&& key);
   // Erase the entry with the matching key.
   //
-  // WARNING: This invalidates all pointers and interators into the map. Use eraseAll() if you need
+  // WARNING: This invalidates all pointers and iterators into the map. Use eraseAll() if you need
   //   to iterate and erase multiple entries.
 
   void erase(Entry& entry);
   // Erase an entry by reference.
+
+  Entry release(Entry& row);
+  // Erase an entry and return its content by move.
 
   template <typename Predicate,
       typename = decltype(instance<Predicate>()(instance<Key&>(), instance<Value&>()))>
@@ -117,7 +128,7 @@ private:
       return e.key == key;
     }
     template <typename KeyLike>
-    inline bool hashCode(KeyLike&& key) const {
+    inline auto hashCode(KeyLike&& key) const {
       return kj::hashCode(key);
     }
   };
@@ -161,8 +172,10 @@ public:
 
   template <typename UpdateFunc>
   Entry& upsert(Key key, Value value, UpdateFunc&& update);
+  Entry& upsert(Key key, Value value);
   // Tries to insert a new entry. However, if a duplicate already exists (according to some index),
   // then update(Value& existingValue, Value&& newValue) is called to modify the existing value.
+  // If no function is provided, the default is to simply replace the value (but not the key).
 
   template <typename KeyLike>
   kj::Maybe<Value&> find(KeyLike&& key);
@@ -176,6 +189,14 @@ public:
   // Like find() but if the key isn't present then call createEntry() to create the corresponding
   // entry and insert it. createEntry() must return type `Entry`.
 
+  template <typename KeyLike>
+  kj::Maybe<Entry&> findEntry(KeyLike&& key);
+  template <typename KeyLike>
+  kj::Maybe<const Entry&> findEntry(KeyLike&& key) const;
+  template <typename KeyLike, typename Func>
+  Entry& findOrCreateEntry(KeyLike&& key, Func&& createEntry);
+  // Sometimes you need to see the whole matching Entry, not just the Value.
+
   template <typename K1, typename K2>
   auto range(K1&& k1, K2&& k2);
   template <typename K1, typename K2>
@@ -186,11 +207,14 @@ public:
   bool erase(KeyLike&& key);
   // Erase the entry with the matching key.
   //
-  // WARNING: This invalidates all pointers and interators into the map. Use eraseAll() if you need
+  // WARNING: This invalidates all pointers and iterators into the map. Use eraseAll() if you need
   //   to iterate and erase multiple entries.
 
   void erase(Entry& entry);
   // Erase an entry by reference.
+
+  Entry release(Entry& row);
+  // Erase an entry and return its content by move.
 
   template <typename Predicate,
       typename = decltype(instance<Predicate>()(instance<Key&>(), instance<Value&>()))>
@@ -238,7 +262,7 @@ public:
   template <typename T, typename U>
   inline bool matches(T& a, U& b) const { return a == b; }
   template <typename KeyLike>
-  inline bool hashCode(KeyLike&& key) const {
+  inline auto hashCode(KeyLike&& key) const {
     return kj::hashCode(key);
   }
 };
@@ -337,6 +361,15 @@ typename HashMap<Key, Value>::Entry& HashMap<Key, Value>::upsert(
 }
 
 template <typename Key, typename Value>
+typename HashMap<Key, Value>::Entry& HashMap<Key, Value>::upsert(
+    Key key, Value value) {
+  return table.upsert(Entry { kj::mv(key), kj::mv(value) },
+      [&](Entry& existingEntry, Entry&& newEntry) {
+    existingEntry.value = kj::mv(newEntry.value);
+  });
+}
+
+template <typename Key, typename Value>
 template <typename KeyLike>
 kj::Maybe<Value&> HashMap<Key, Value>::find(KeyLike&& key) {
   return table.find(key).map([](Entry& e) -> Value& { return e.value; });
@@ -355,6 +388,25 @@ Value& HashMap<Key, Value>::findOrCreate(KeyLike&& key, Func&& createEntry) {
 
 template <typename Key, typename Value>
 template <typename KeyLike>
+kj::Maybe<typename HashMap<Key, Value>::Entry&>
+HashMap<Key, Value>::findEntry(KeyLike&& key) {
+  return table.find(kj::fwd<KeyLike>(key));
+}
+template <typename Key, typename Value>
+template <typename KeyLike>
+kj::Maybe<const typename HashMap<Key, Value>::Entry&>
+HashMap<Key, Value>::findEntry(KeyLike&& key) const {
+  return table.find(kj::fwd<KeyLike>(key));
+}
+template <typename Key, typename Value>
+template <typename KeyLike, typename Func>
+typename HashMap<Key, Value>::Entry&
+HashMap<Key, Value>::findOrCreateEntry(KeyLike&& key, Func&& createEntry) {
+  return table.findOrCreate(kj::fwd<KeyLike>(key), kj::fwd<Func>(createEntry));
+}
+
+template <typename Key, typename Value>
+template <typename KeyLike>
 bool HashMap<Key, Value>::erase(KeyLike&& key) {
   return table.eraseMatch(key);
 }
@@ -365,9 +417,16 @@ void HashMap<Key, Value>::erase(Entry& entry) {
 }
 
 template <typename Key, typename Value>
+typename HashMap<Key, Value>::Entry HashMap<Key, Value>::release(Entry& entry) {
+  return table.release(entry);
+}
+
+template <typename Key, typename Value>
 template <typename Predicate, typename>
 size_t HashMap<Key, Value>::eraseAll(Predicate&& predicate) {
-  return table.eraseAll(kj::fwd<Predicate>(predicate));
+  return table.eraseAll([&](Entry& entry) {
+    return predicate(entry.key, entry.value);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -429,6 +488,15 @@ typename TreeMap<Key, Value>::Entry& TreeMap<Key, Value>::upsert(
 }
 
 template <typename Key, typename Value>
+typename TreeMap<Key, Value>::Entry& TreeMap<Key, Value>::upsert(
+    Key key, Value value) {
+  return table.upsert(Entry { kj::mv(key), kj::mv(value) },
+      [&](Entry& existingEntry, Entry&& newEntry) {
+    existingEntry.value = kj::mv(newEntry.value);
+  });
+}
+
+template <typename Key, typename Value>
 template <typename KeyLike>
 kj::Maybe<Value&> TreeMap<Key, Value>::find(KeyLike&& key) {
   return table.find(key).map([](Entry& e) -> Value& { return e.value; });
@@ -443,6 +511,25 @@ template <typename Key, typename Value>
 template <typename KeyLike, typename Func>
 Value& TreeMap<Key, Value>::findOrCreate(KeyLike&& key, Func&& createEntry) {
   return table.findOrCreate(key, kj::fwd<Func>(createEntry)).value;
+}
+
+template <typename Key, typename Value>
+template <typename KeyLike>
+kj::Maybe<typename TreeMap<Key, Value>::Entry&>
+TreeMap<Key, Value>::findEntry(KeyLike&& key) {
+  return table.find(kj::fwd<KeyLike>(key));
+}
+template <typename Key, typename Value>
+template <typename KeyLike>
+kj::Maybe<const typename TreeMap<Key, Value>::Entry&>
+TreeMap<Key, Value>::findEntry(KeyLike&& key) const {
+  return table.find(kj::fwd<KeyLike>(key));
+}
+template <typename Key, typename Value>
+template <typename KeyLike, typename Func>
+typename TreeMap<Key, Value>::Entry&
+TreeMap<Key, Value>::findOrCreateEntry(KeyLike&& key, Func&& createEntry) {
+  return table.findOrCreate(kj::fwd<KeyLike>(key), kj::fwd<Func>(createEntry));
 }
 
 template <typename Key, typename Value>
@@ -468,9 +555,16 @@ void TreeMap<Key, Value>::erase(Entry& entry) {
 }
 
 template <typename Key, typename Value>
+typename TreeMap<Key, Value>::Entry TreeMap<Key, Value>::release(Entry& entry) {
+  return table.release(entry);
+}
+
+template <typename Key, typename Value>
 template <typename Predicate, typename>
 size_t TreeMap<Key, Value>::eraseAll(Predicate&& predicate) {
-  return table.eraseAll(kj::fwd<Predicate>(predicate));
+  return table.eraseAll([&](Entry& entry) {
+    return predicate(entry.key, entry.value);
+  });
 }
 
 template <typename Key, typename Value>
@@ -480,3 +574,5 @@ size_t TreeMap<Key, Value>::eraseRange(K1&& k1, K2&& k2) {
 }
 
 } // namespace kj
+
+KJ_END_HEADER

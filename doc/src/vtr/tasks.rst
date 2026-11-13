@@ -18,9 +18,11 @@ Example Tasks
 
 * ``regression_mcnc``: Runs VTR on the historical MCNC benchmarks on a legacy architecture file. (Note: This is only useful for comparing to the past, it is not realistic in the modern world)
 
-* ``regression_titan/titan_small``: Runs a small subset of the Titan benchmarks targetting a simplified Altera Stratix IV (commercial FPGA) architecture capture
+* ``regression_titan/titan_small``: Runs a small subset of the Titan benchmarks targeting a simplified Altera Stratix IV (commercial FPGA) architecture capture
 
 * ``regression_fpu_hard_block_arch``: Custom hard FPU logic block architecture
+
+* ``vtr_reg_func_sim/adder_4bit``: Runs the full VTR flow and verifies the post-implementation netlist of a 4-bit adder using :ref:`run_func_sim_flow`.
 
 Directory Layout
 ~~~~~~~~~~~~~~~~
@@ -130,7 +132,7 @@ Optional Fields
 
 * **script_params_list_add**: Adds a set of command-line arguments
 
-    Multiple `script_params_list_add` can be provided which are addded to the cartesian product of configurations to be evaluated.
+    Multiple `script_params_list_add` can be provided which are added to the cartesian product of configurations to be evaluated.
 
 * **sdc_dir**: Directory path to benchmark SDC files.
 
@@ -140,8 +142,99 @@ Optional Fields
 
     For instance with ``circuit_list_add=my_circuit.v`` or ``circuit_list_add=my_circuit.blif``, the flow would look for an SDC file named ``my_circuit.sdc`` within the specified ``sdc_dir``.
 
+* **includes_dir**:  Directory path to benchmark _include_ files
+
+    Absolute path or relative to ``$VTR_ROOT/vtr_flow/``.
+
+    Note: Multiple `includes_dir` are NOT allowed in a task config file.
+
+* **include_list_add**: A path to an `include` file, which is relative to `includes_dir`
+    
+    Multiple `include_list_add` can be provided.
+
+    `include` files could act as the top module complementary, like definitions, memory initialization files, macros or sub-modules.
+
+    Note: Only `include` files, written in supported HDLs by each frontend, are synthesized. The others are only copied to the destination folder.
+    
+    Note: `include` files will be shared among all benchmark circuits in the task config file. 
+
 * **pass_requirements_file**: :ref:`vtr_pass_requirements` file.
 
     Absolute path or relative to ``$VTR_ROOT/vtr_flow/parse/pass_requirements/`` or ``$VTR_ROOT/vtr_flow/tasks/<task_name>/config/``
 
     **Default:** none
+
+* **testbench_dir**: Directory path of the testbench files used for functional simulation.
+
+    Absolute path or relative to ``$VTR_ROOT/vtr_flow/``.
+
+    **Default:** same directory as ``circuits_dir``
+
+* **testbench_file**: Name of the testbench file used to verify the post-implementation netlist.
+
+    This file is resolved relative to ``testbench_dir``.
+    It is passed as the ``-testbench`` argument to the ``flow_script`` for every circuit/architecture combination.
+
+    A per-circuit testbench can also be specified via ``circuit_constraint_list_add`` with the ``testbench`` key,
+    which takes priority over this task-level default.
+
+    **Default:** none
+
+* **flow_script**: Script to run in place of the default :ref:`run_vtr_flow` for this task.
+
+    Absolute path or relative to ``$VTR_ROOT/vtr_flow/scripts/``.
+
+    Use this to substitute a different flow script for all jobs in the task.
+    For example, setting ``flow_script=run_func_sim_flow.py`` routes every job through
+    :ref:`run_func_sim_flow`, which runs the VTR flow and then verifies the result with
+    Verilator-based functional simulation.
+
+    **Default:** :ref:`run_vtr_flow`
+
+Functional Simulation Tasks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Tasks can be configured to verify the correctness of the post-implementation netlist using
+:ref:`run_func_sim_flow`.
+This script runs the full VTR flow and then compiles and executes a Verilator testbench against the resulting netlist.
+
+Example configuration for a functional simulation task:
+
+.. code-block:: none
+
+    # Path to directory of circuits to use
+    circuits_dir=benchmarks/func_sim/adder_4bit
+
+    # Path to directory of architectures to use
+    archs_dir=arch/timing
+
+    # Circuit(s) to test — all must implement the same top-level interface
+    circuit_list_add=adder_4bit.v
+    circuit_list_add=adder_4bit_sum_notation.v
+
+    # Architecture(s) to target
+    arch_list_add=k6_frac_N10_frac_chain_mem32K_40nm.xml
+
+    # Testbench used to verify every circuit listed above
+    testbench_dir=benchmarks/func_sim/adder_4bit
+    testbench_file=tb_adder_4bit.sv
+
+    # Use the functional simulation flow script
+    flow_script=run_func_sim_flow.py
+
+    # Parse file — captures flow elapsed time; pass/fail comes from exit code
+    parse_file=func_sim.txt
+
+    # QoR parse file — captures flow status and elapsed time
+    qor_parse_file=qor_func_sim.txt
+
+    # Pass requirements — checks that VPR and simulation both succeeded
+    pass_requirements_file=pass_requirements_func_sim.txt
+
+.. note::
+
+    All circuits listed in a functional simulation task must implement the same top-level port interface,
+    since they share a single testbench.
+    For circuits with different interfaces, create a separate task directory with its own testbench.
+
+.. seealso:: :ref:`run_func_sim_flow` for testbench conventions and further details.

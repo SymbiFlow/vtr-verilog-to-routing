@@ -1,36 +1,38 @@
+#!/usr/bin/env python3
+
 """
 Parse one or more task provided
 """
 
-#!/usr/bin/env python3
 from pathlib import Path
 from pathlib import PurePath
 import sys
+import os
 import argparse
 import textwrap
 import shutil
 from datetime import datetime
 from contextlib import redirect_stdout
+from multiprocessing import Pool
 
 # pylint: disable=wrong-import-position
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vtr import (
     load_list_file,
     RawDefaultHelpFormatter,
-    get_latest_run_dir,
+    get_active_run_dir,
     load_task_config,
     find_task_config_file,
     load_pass_requirements,
     load_parse_results,
     parse_vtr_flow,
-    get_latest_run_number,
-    pretty_print_table,
     find_task_dir,
     CommandError,
     InspectError,
     VtrError,
     create_jobs,
     paths,
+    RunDir,
 )
 
 # pylint: enable=wrong-import-position
@@ -46,13 +48,10 @@ def vtr_command_argparser(prog=None):
     Parses one or more VTR tasks.
     """
 
-    description = textwrap.dedent(
-        """
+    description = textwrap.dedent("""
                     Parses one or more VTR tasks.
-                    """
-    )
-    epilog = textwrap.dedent(
-        """
+                    """)
+    epilog = textwrap.dedent("""
                 Examples
                 --------
 
@@ -69,11 +68,13 @@ def vtr_command_argparser(prog=None):
                 ---------
                     The exit code equals the number failures
                     (i.e. exit code 0 indicates no failures).
-                """
-    )
+                """)
 
     parser = argparse.ArgumentParser(
-        prog=prog, description=description, epilog=epilog, formatter_class=RawDefaultHelpFormatter,
+        prog=prog,
+        description=description,
+        epilog=epilog,
+        formatter_class=RawDefaultHelpFormatter,
     )
 
     #
@@ -88,6 +89,14 @@ def vtr_command_argparser(prog=None):
         metavar="TASK_LIST_FILE",
         dest="list_file",
         help="A file listing tasks to be run",
+    )
+
+    parser.add_argument(
+        "-temp_dir",
+        default=None,
+        metavar="TEMP_DIR",
+        dest="alt_tasks_dir",
+        help="Alternate directory to run the tasks in (will be created if non-existent)",
     )
 
     parser.add_argument(
@@ -118,7 +127,21 @@ def vtr_command_argparser(prog=None):
         help="QoR geomeans are not computed by default",
     )
 
-    parser.add_argument("-run", default=None, type=str, help="")
+    parser.add_argument(
+        "-run",
+        default=None,
+        type=str,
+        help="Parse the specified run directory. Defaults to the latest.",
+    )
+
+    parser.add_argument(
+        "-j",
+        "-p",
+        default=1,
+        type=int,
+        metavar="NUM_PROC",
+        help="How many processors to use for execution.",
+    )
 
     parser.add_argument("-revision", default="", help="Revision number")
 
@@ -132,7 +155,11 @@ def vtr_command_main(arg_list, prog=None):
     """
     # Load the arguments
     args = vtr_command_argparser(prog).parse_args(arg_list)
+    if args.run is not None:
+        RunDir.set_user_run_dir_name(args.run)
     try:
+        assert args.j > 0, "Invalid number of processors"
+
         task_names = args.task
 
         for list_file in args.list_file:
@@ -144,16 +171,16 @@ def vtr_command_main(arg_list, prog=None):
         num_failed = 0
 
         jobs = create_jobs(args, configs, after_run=True)
-        parse_tasks(configs, jobs)
+        parse_tasks(configs, jobs, args.alt_tasks_dir, args.j)
 
         if args.create_golden:
-            create_golden_results_for_tasks(configs)
+            create_golden_results_for_tasks(configs, args.alt_tasks_dir)
 
         if args.check_golden:
-            num_failed += check_golden_results_for_tasks(configs)
+            num_failed += check_golden_results_for_tasks(configs, args.alt_tasks_dir)
 
         if args.calc_geomean:
-            summarize_qor(configs)
+            summarize_qor(configs, args.alt_tasks_dir)
             calc_geomean(args, configs)
 
     except CommandError as error:
@@ -174,42 +201,52 @@ def vtr_command_main(arg_list, prog=None):
     return num_failed
 
 
-def parse_tasks(configs, jobs):
+def parse_tasks(configs, jobs, alt_tasks_dir=None, num_procs=1):
     """
     Parse the selection of tasks specified in configs and associated jobs
     """
+    queued_procs = []
     for config in configs:
-        config_jobs = [job for job in jobs if job.task_name() == config.task_name]
-        parse_task(config, config_jobs)
+        config_jobs = [job for job in jobs if job.config_dir() == config.config_dir]
+        queued_procs.append((config, config_jobs, FIRST_PARSE_FILE, alt_tasks_dir))
+
+    with Pool(processes=num_procs) as pool:
+        for proc in queued_procs:
+            pool.apply_async(parse_task, proc)
+        pool.close()
+        pool.join()
 
 
-def parse_task(config, config_jobs, flow_metrics_basename=FIRST_PARSE_FILE):
+def parse_task(config, config_jobs, flow_metrics_basename=FIRST_PARSE_FILE, alt_tasks_dir=None):
     """
     Parse a single task run.
 
     This generates a file parse_results.txt in the task's working directory,
     which is an amalgam of the parse_rests.txt's produced by each job (flow invocation)
     """
-    run_dir = find_latest_run_dir(config)
+    run_dir = find_latest_run_dir(config, alt_tasks_dir)
 
     # Record max widths for pretty printing
     max_arch_len = len("architecture")
     max_circuit_len = len("circuit")
     for job in config_jobs:
-        work_dir = job.work_dir(get_latest_run_dir(find_task_dir(config)))
+        work_dir = job.work_dir(get_active_run_dir(find_task_dir(config, alt_tasks_dir)))
         if job.parse_command():
+            job.parse_command()[0] = work_dir
             parse_filepath = str(PurePath(work_dir) / flow_metrics_basename)
-            with open(parse_filepath, "w+") as parse_file:
+            with open(parse_filepath, "w+", encoding="utf-8") as parse_file:
                 with redirect_stdout(parse_file):
                     parse_vtr_flow(job.parse_command())
         if job.second_parse_command():
+            job.second_parse_command()[0] = work_dir
             parse_filepath = str(PurePath(work_dir) / SECOND_PARSE_FILE)
-            with open(parse_filepath, "w+") as parse_file:
+            with open(parse_filepath, "w+", encoding="utf-8") as parse_file:
                 with redirect_stdout(parse_file):
                     parse_vtr_flow(job.second_parse_command())
         if job.qor_parse_command():
+            job.qor_parse_command()[0] = work_dir
             parse_filepath = str(PurePath(work_dir) / QOR_PARSE_FILE)
-            with open(parse_filepath, "w+") as parse_file:
+            with open(parse_filepath, "w+", encoding="utf-8") as parse_file:
                 with redirect_stdout(parse_file):
                     parse_vtr_flow(job.qor_parse_command())
         max_arch_len = max(max_arch_len, len(job.arch()))
@@ -224,10 +261,9 @@ def parse_task(config, config_jobs, flow_metrics_basename=FIRST_PARSE_FILE):
 
 
 def parse_files(config_jobs, run_dir, flow_metrics_basename=FIRST_PARSE_FILE):
-    """ Parse the result files from the give jobs """
+    """Parse the result files from the give jobs"""
     task_parse_results_filepath = str(PurePath(run_dir) / flow_metrics_basename)
-    with open(task_parse_results_filepath, "w") as out_f:
-
+    with open(task_parse_results_filepath, "w", encoding="utf-8") as out_f:
         # Start the header
 
         header = True
@@ -239,7 +275,7 @@ def parse_files(config_jobs, run_dir, flow_metrics_basename=FIRST_PARSE_FILE):
             # which we prefix to each line of the task result file
             job_parse_results_filepath = Path(job.work_dir(run_dir)) / flow_metrics_basename
             if job_parse_results_filepath.exists():
-                with open(job_parse_results_filepath) as in_f:
+                with open(job_parse_results_filepath, "r", encoding="utf-8") as in_f:
                     lines = in_f.readlines()
                     assert len(lines) == 2
                     if header:
@@ -248,7 +284,6 @@ def parse_files(config_jobs, run_dir, flow_metrics_basename=FIRST_PARSE_FILE):
                         header = False
                     # Second line is the data
                     print(lines[1], file=out_f, end="")
-                pretty_print_table(job_parse_results_filepath)
             else:
                 print(
                     "Warning: Flow result file not found (task QoR will be incomplete): {} ".format(
@@ -257,18 +292,18 @@ def parse_files(config_jobs, run_dir, flow_metrics_basename=FIRST_PARSE_FILE):
                 )
 
 
-def create_golden_results_for_tasks(configs):
-    """ Runs create_golden_results_for_task on all of the give configuration """
+def create_golden_results_for_tasks(configs, alt_tasks_dir=None):
+    """Runs create_golden_results_for_task on all of the give configuration"""
 
     for config in configs:
-        create_golden_results_for_task(config)
+        create_golden_results_for_task(config, alt_tasks_dir)
 
 
-def create_golden_results_for_task(config):
+def create_golden_results_for_task(config, alt_tasks_dir=None):
     """
     Copies the latest task run's parse_results.txt into the config directory as golden_results.txt
     """
-    run_dir = find_latest_run_dir(config)
+    run_dir = find_latest_run_dir(config, alt_tasks_dir)
 
     task_results = str(PurePath(run_dir).joinpath(FIRST_PARSE_FILE))
     golden_results_filepath = str(PurePath(config.config_dir).joinpath("golden_results.txt"))
@@ -276,23 +311,23 @@ def create_golden_results_for_task(config):
     shutil.copy(task_results, golden_results_filepath)
 
 
-def check_golden_results_for_tasks(configs):
-    """ runs check_golden_results_for_task on all the input configurations """
+def check_golden_results_for_tasks(configs, alt_tasks_dir=None):
+    """runs check_golden_results_for_task on all the input configurations"""
     num_qor_failures = 0
 
     print("\nCalculating QoR results...")
     for config in configs:
-        num_qor_failures += check_golden_results_for_task(config)
+        num_qor_failures += check_golden_results_for_task(config, alt_tasks_dir)
 
     return num_qor_failures
 
 
-def check_golden_results_for_task(config):
+def check_golden_results_for_task(config, alt_tasks_dir=None):
     """
     Copies the latest task run's parse_results.txt into the config directory as golden_results.txt
     """
     num_qor_failures = 0
-    run_dir = find_latest_run_dir(config)
+    run_dir = find_latest_run_dir(config, alt_tasks_dir)
 
     if not config.pass_requirements_file:
         print(
@@ -301,7 +336,6 @@ def check_golden_results_for_task(config):
             )
         )
     else:
-
         # Load the pass requirements file
 
         # Load the task's parse results
@@ -316,16 +350,16 @@ def check_golden_results_for_task(config):
                 second_results_filepath,
                 second_name="second parse file",
             )
-            pretty_print_table(second_results_filepath)
 
         else:
             golden_results_filepath = str(
                 PurePath(config.config_dir).joinpath("golden_results.txt")
             )
             num_qor_failures = check_two_files(
-                config, task_results_filepath, golden_results_filepath,
+                config,
+                task_results_filepath,
+                golden_results_filepath,
             )
-        pretty_print_table(task_results_filepath)
 
     if num_qor_failures == 0:
         print("{}...[Pass]".format("/".join(str((Path(config.config_dir).parent)).split("/")[-3:])))
@@ -341,7 +375,7 @@ def check_two_files(
     first_name="task",
     second_name="golden",
 ):
-    """ Compare two files results """
+    """Compare two files results"""
     first_results = load_parse_results(first_results_filepath)
     second_results = load_parse_results(second_results_filepath)
     # Verify that the architecture and circuit are specified
@@ -368,14 +402,20 @@ def check_two_files(
     pass_requirements = load_pass_requirements(pass_req_filepath)
 
     for metric in pass_requirements.keys():
-        for ((arch, circuit, script_params), result,) in first_results.all_metrics().items():
+        for (
+            (arch, circuit, script_params),
+            result,
+        ) in first_results.all_metrics().items():
             if metric not in result:
                 raise InspectError(
                     "Required metric '{}' missing from {} results".format(metric, first_name),
                     first_results_filepath,
                 )
 
-        for ((arch, circuit, script_params), result,) in second_results.all_metrics().items():
+        for (
+            (arch, circuit, script_params),
+            result,
+        ) in second_results.all_metrics().items():
             if metric not in result:
                 raise InspectError(
                     "Required metric '{}' missing from {} results".format(metric, second_name),
@@ -391,15 +431,6 @@ def check_two_files(
     for (arch, circuit, script_params), _ in first_results.all_metrics().items():
         first_primary_keys.append((arch, circuit, script_params))
 
-    # Ensure that first result file  has all the second result file cases
-    for arch, circuit, script_params in second_primary_keys:
-        if first_results.metrics(arch, circuit, script_params) is None:
-            raise InspectError(
-                "Required case {}/{} missing from {} results: {}".format(
-                    arch, circuit, first_name, first_results_filepath
-                )
-            )
-
     # Warn about any elements in first result file that are not found in second result file
     for arch, circuit, script_params in first_primary_keys:
         if second_results.metrics(arch, circuit, script_params) is None:
@@ -410,12 +441,27 @@ def check_two_files(
             )
     num_qor_failures = 0
     # Verify that the first results pass each metric for all cases in the second results
-    for (arch, circuit, script_params) in second_primary_keys:
+    for arch, circuit, script_params in second_primary_keys:
         second_metrics = second_results.metrics(arch, circuit, script_params)
         first_metrics = first_results.metrics(arch, circuit, script_params)
-        first_fail = True
-        for metric in pass_requirements.keys():
 
+        if first_metrics is None:
+            print(
+                "\n{}...[Fail]".format(
+                    "/".join(str((Path(config.config_dir).parent)).split("/")[-3:])
+                )
+            )
+            print(
+                "Required case {}/{} missing from {} results: {}".format(
+                    arch, circuit, first_name, first_results_filepath
+                )
+            )
+            num_qor_failures += 1
+            continue
+
+        first_fail = True
+        # pylint: disable-next=consider-using-dict-items
+        for metric in pass_requirements.keys():
             if not metric in second_metrics:
                 print("Warning: Metric {} missing from {} results".format(metric, second_name))
                 continue
@@ -448,32 +494,35 @@ def check_two_files(
 # pylint: enable=too-many-branches,too-many-locals
 
 
-def summarize_qor(configs):
-    """ Summarize the Qor results """
+def summarize_qor(configs, alt_tasks_dir=None):
+    """Summarize the Qor results"""
 
     first = True
-    task_path = Path(configs[0].config_dir).parent
+    task_path = Path(find_task_dir(configs[0], alt_tasks_dir))
     if len(configs) > 1 or (task_path.parent / "task_list.txt").is_file():
         task_path = task_path.parent
     task_path = task_path / "task_summary"
     task_path.mkdir(exist_ok=True)
-    out_file = task_path / (str(Path(find_latest_run_dir(configs[0])).stem) + "_summary.txt")
+    out_file = task_path / (
+        str(Path(find_latest_run_dir(configs[0], alt_tasks_dir)).stem) + "_summary.txt"
+    )
     with out_file.open("w+") as out:
         for config in configs:
-            with (Path(find_latest_run_dir(config)) / QOR_PARSE_FILE).open("r") as in_file:
+            with (Path(find_latest_run_dir(config, alt_tasks_dir)) / QOR_PARSE_FILE).open(
+                "r"
+            ) as in_file:
                 headers = in_file.readline()
                 if first:
                     print("task_name \t{}".format(headers), file=out, end="")
                     first = False
                 for line in in_file:
                     print("{}\t{}".format(config.task_name, line), file=out, end="")
-            pretty_print_table(str(Path(find_latest_run_dir(config)) / QOR_PARSE_FILE))
 
 
 def calc_geomean(args, configs):
-    """ caclulate and ouput the geomean values to the geomean file """
+    """calculate and output the geomean values to the geomean file"""
     first = False
-    task_path = Path(configs[0].config_dir).parent
+    task_path = Path(find_task_dir(configs[0], args.alt_tasks_dir))
     if len(configs) > 1 or (task_path.parent / "task_list.txt").is_file():
         task_path = task_path.parent
     out_file = task_path / "qor_geomean.txt"
@@ -482,7 +531,7 @@ def calc_geomean(args, configs):
     summary_file = (
         task_path
         / "task_summary"
-        / (str(Path(find_latest_run_dir(configs[0])).stem) + "_summary.txt")
+        / (str(Path(find_latest_run_dir(configs[0], args.alt_tasks_dir)).stem) + "_summary.txt")
     )
 
     with out_file.open("w" if first else "a") as out:
@@ -496,7 +545,9 @@ def calc_geomean(args, configs):
                 first = False
             lines = summary.readlines()
             print(
-                get_latest_run_number(str(Path(configs[0].config_dir).parent)), file=out, end="\t",
+                os.path.basename(get_active_run_dir(find_task_dir(configs[0], args.alt_tasks_dir))),
+                file=out,
+                end="\t",
             )
             for index in range(len(params)):
                 geo_mean = 1
@@ -510,14 +561,16 @@ def calc_geomean(args, configs):
                     print(geo_mean, file=out, end="\t")
                 else:
                     print(
-                        previous_value if previous_value is not None else "-1", file=out, end="\t",
+                        previous_value if previous_value is not None else "-1",
+                        file=out,
+                        end="\t",
                     )
         print(datetime.date(datetime.now()), file=out, end="\t")
         print(args.revision, file=out)
 
 
 def calculate_individual_geo_mean(lines, index, geo_mean, num):
-    """ Calculate an individual line of parse results goe_mean """
+    """Calculate an individual line of parse results goe_mean"""
     previous_value = None
     for line in lines:
         line = line.split("\t")[4:]
@@ -534,11 +587,11 @@ def calculate_individual_geo_mean(lines, index, geo_mean, num):
     return geo_mean, num, previous_value
 
 
-def find_latest_run_dir(config):
-    """ Find the latest run directory for given configuration """
-    task_dir = find_task_dir(config)
+def find_latest_run_dir(config, alt_tasks_dir=None):
+    """Find the latest run directory for given configuration"""
+    task_dir = find_task_dir(config, alt_tasks_dir)
 
-    run_dir = get_latest_run_dir(task_dir)
+    run_dir = get_active_run_dir(task_dir)
 
     if not run_dir:
         raise InspectError(
@@ -551,5 +604,5 @@ def find_latest_run_dir(config):
 
 
 if __name__ == "__main__":
-    retval = vtr_command_main(sys.argv[1:])
-    sys.exit(retval)
+    RETVAL = vtr_command_main(sys.argv[1:])
+    sys.exit(RETVAL)

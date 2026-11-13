@@ -1,14 +1,13 @@
-#ifndef PUGIXML_UTIL_H
-#define PUGIXML_UTIL_H
+#pragma once
 /*
  * This file contains utilities for the  PUGI XML parser.
  *
  * They primarily relate to:
- *   - Checking for node/attribute exitance and reporting errors if not
+ *   - Checking for node/attribute existence and reporting errors if not
  *   - Misc. utilities like counting tags
  *
  * Using these utilities simplifies error handling while manipulating XML
- * since the user doesn't need to explicitly check for node/attribute existance
+ * since the user doesn't need to explicitly check for node/attribute existence
  * (by default most of these functions will raise exceptions with useful error
  * messages if the requested item does not exists).
  */
@@ -16,6 +15,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cstdio>
+#include <string_view>
 
 #include "pugixml.hpp"
 
@@ -138,28 +138,28 @@ void expect_child_node_count(const pugi::xml_node node,
 //  child_names - expected attribute names
 //  loc_data - XML file location data
 void expect_only_children(const pugi::xml_node node,
-                          std::vector<std::string> child_names,
+                          const std::vector<std::string>& child_names,
                           const loc_data& loc_data);
 
 //Throws a well formatted error if any attribute other than those named in 'attribute_names' are found on 'node'.
-//Note this does not check whether the attribues in 'attribute_names' actually exist.
+//Note this does not check whether the attributes in 'attribute_names' actually exist.
 //
 //  node - The parent xml node
 //  attribute_names - expected attribute names
 //  loc_data - XML file location data
 void expect_only_attributes(const pugi::xml_node node,
-                            std::vector<std::string> attribute_names,
+                            const std::vector<std::string>& attribute_names,
                             const loc_data& loc_data);
 
 //Throws a well formatted error if any attribute other than those named in 'attribute_names' are found on 'node' with an additional explanation.
-//Note this does not check whether the attribues in 'attribute_names' actually exist.
+//Note this does not check whether the attributes in 'attribute_names' actually exist.
 //
 //  node - The parent xml node
 //  attribute_names - expected attribute names
 //  loc_data - XML file location data
 void expect_only_attributes(const pugi::xml_node node,
                             std::vector<std::string> attribute_names,
-                            std::string explanation,
+                            std::string_view explanation,
                             const loc_data& loc_data);
 
 //Counts the number of attributes on the specified node
@@ -171,7 +171,7 @@ size_t count_attributes(const pugi::xml_node node,
                         const loc_data& loc_data,
                         const ReqOpt req_opt = REQUIRED);
 
-//Gets a named property on an node and returns it.
+//Gets a named property on a node and returns it.
 //
 //  node - The xml node
 //  attr_name - The attribute name
@@ -194,5 +194,3 @@ bool check_node(const pugi::xml_node node,
                 const ReqOpt req_opt = REQUIRED);
 
 } // namespace pugiutil
-
-#endif

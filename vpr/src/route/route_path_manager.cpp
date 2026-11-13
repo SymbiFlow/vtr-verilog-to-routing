@@ -1,5 +1,6 @@
 #include "route_path_manager.h"
-#include "globals.h"
+#include "vpr_context.h"
+#include "route_common.h"
 
 PathManager::PathManager() {
     // Only init data structure if required by RCV
@@ -12,7 +13,7 @@ PathManager::~PathManager() {
 }
 
 bool PathManager::node_exists_in_tree(t_heap_path* path_data,
-                                      RRNodeId& to_node) {
+                                      RRNodeId to_node) {
     // Prevent seg faults for searching path data structures that haven't been created yet
     if (!path_data || !is_enabled_) return false;
 
@@ -23,7 +24,7 @@ bool PathManager::node_exists_in_tree(t_heap_path* path_data,
         }
     }
 
-    // Search through route tree set for nodes existance
+    // Search through route tree set for nodes existence
     auto node_exists_in_route_tree = route_tree_nodes_.find(to_node);
 
     if (node_exists_in_route_tree != route_tree_nodes_.end()) {
@@ -43,9 +44,8 @@ void PathManager::insert_backwards_path_into_traceback(t_heap_path* path_data, f
     if (!is_enabled_) return;
 
     for (unsigned i = 1; i < path_data->edge.size() - 1; i++) {
-        size_t node_2 = (size_t)path_data->path_rr[i];
+        RRNodeId node_2 = path_data->path_rr[i];
         RREdgeId edge = path_data->edge[i - 1];
-        route_ctx.rr_node_route_inf[node_2].prev_node = (size_t)path_data->path_rr[i - 1];
         route_ctx.rr_node_route_inf[node_2].prev_edge = edge;
         route_ctx.rr_node_route_inf[node_2].path_cost = cost;
         route_ctx.rr_node_route_inf[node_2].backward_path_cost = backward_path_cost;
@@ -71,7 +71,7 @@ void PathManager::alloc_path_struct(t_heap_path*& tptr) {
     // if (tptr == nullptr) {
     // Use a free node list to avoid unnecessary data allocation
     // If there are unused data structures in memory use these
-    if (freed_nodes_.size() > 0) {
+    if (!freed_nodes_.empty()) {
         tptr = freed_nodes_.back();
         freed_nodes_.pop_back();
     } else {
@@ -108,7 +108,7 @@ void PathManager::empty_heap() {
     freed_nodes_.resize(alloc_list_.size());
 
     // Copy alloc_list_ into the freed nodes list
-    std::copy(alloc_list_.begin(), alloc_list_.end(), freed_nodes_.begin());
+    std::ranges::copy(alloc_list_, freed_nodes_.begin());
 }
 
 void PathManager::update_route_tree_set(t_heap_path* cheapest_path_struct) {
@@ -119,8 +119,6 @@ void PathManager::update_route_tree_set(t_heap_path* cheapest_path_struct) {
 }
 
 void PathManager::empty_route_tree_nodes() {
-    if (!is_enabled_) return;
-
     route_tree_nodes_.clear();
 }
 

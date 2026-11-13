@@ -1,81 +1,89 @@
+/**
+ * @file search_bar.cpp
+ * @author Sebastian Lievano
+ * @brief Contains search/auto-complete related functions
+ * @version 0.1
+ * @date 2022-07-20
+ *
+ * This file essentially follows the whole search process, from searching, finding the match,
+ * and finally highlighting the searched for item. Additionally, auto-complete related stuff is found
+ * here.
+ *
+ * @copyright Copyright (c) 2022
+ *
+ */
+
 #ifndef NO_GRAPHICS
+#include <cstdio>
+#include <sstream>
 
-#    include <cstdio>
-#    include <sstream>
+#include "vtr_assert.h"
+#include "vtr_log.h"
 
-#    include "vtr_assert.h"
-#    include "vtr_ndoffsetmatrix.h"
-#    include "vtr_memory.h"
-#    include "vtr_log.h"
-#    include "vtr_color_map.h"
+#include "vpr_utils.h"
+#include "route_utils.h"
 
-#    include "vpr_utils.h"
-#    include "vpr_error.h"
+#include "globals.h"
+#include "draw.h"
+#include "draw_rr.h"
+#include "draw_searchbar.h"
+#include "draw_global.h"
+#include "intra_logic_block.h"
+#include "atom_netlist.h"
+#include "search_bar.h"
+#include "old_traceback.h"
+#include "physical_types.h"
+#include "place_macro.h"
 
-#    include "globals.h"
-#    include "draw_color.h"
-#    include "draw.h"
-#    include "read_xml_arch_file.h"
-#    include "draw_global.h"
-#    include "intra_logic_block.h"
-#    include "atom_netlist.h"
-#    include "tatum/report/TimingPathCollector.hpp"
-#    include "hsl.h"
-#    include "route_export.h"
-#    include "search_bar.h"
-
-#    ifdef WIN32 /* For runtime tracking in WIN32. The clock() function defined in time.h will *
-                  * track CPU runtime.														   */
-#        include <time.h>
-#    else /* For X11. The clock() function in time.h will not output correct time difference   *
-           * for X11, because the graphics is processed by the Xserver rather than local CPU,  *
-           * which means tracking CPU time will not be the same as the actual wall clock time. *
-           * Thus, so use gettimeofday() in sys/time.h to track actual calendar time.          */
-#        include <sys/time.h>
-#    endif
+#include <QLineEdit>
+#include <QComboBox>
+#include <QMessageBox>
 
 //To process key presses we need the X11 keysym definitions,
 //which are unavailable when building with MINGW
-#    if defined(X11) && !defined(__MINGW32__)
-#        include <X11/keysym.h>
-#    endif
-
-#    include "rr_graph.h"
-#    include "route_util.h"
-#    include "place_macro.h"
+#if defined(X11) && !defined(__MINGW32__)
+#include <X11/keysym.h>
+#endif
 
 extern std::string rr_highlight_message;
 
-void search_and_highlight(GtkWidget* /*widget*/, ezgl::application* app) {
-    auto& device_ctx = g_vpr_ctx.device();
-    auto& cluster_ctx = g_vpr_ctx.clustering();
+void search_and_highlight(QWidget* /*widget*/, ezgl::application* app) {
+    if (!app)
+        return;
+
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
 
     // get ID from search bar
-    GtkEntry* text_entry = (GtkEntry*)app->get_object("TextInput");
-    const char* text = gtk_entry_get_text(text_entry);
-    std::string user_input = text;
+    QLineEdit* text_entry = app->find_line_edit("TextInput");
+    if (!text_entry)
+        return;
+    std::string user_input = text_entry->text().toStdString();
     std::stringstream ss(user_input);
 
-    GObject* combo_box = (GObject*)app->get_object("SearchType");
-    gchar* type = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo_box));
-    std::string search_type(type);
+    auto search_type = get_search_type(app);
+    if (search_type.empty())
+        return;
 
     // reset
     deselect_all();
+
+    t_draw_state* draw_state = get_draw_state_vars();
 
     if (search_type == "RR Node ID") {
         int rr_node_id = -1;
         ss >> rr_node_id;
 
         // valid rr node id check
-        if (rr_node_id < 0 || rr_node_id >= int(device_ctx.rr_nodes.size())) {
+        if (rr_node_id < 0 || rr_node_id >= int(device_ctx.rr_graph.num_nodes())) {
             warning_dialog_box("Invalid RR Node ID");
             app->refresh_drawing();
             return;
         }
 
-        highlight_rr_nodes(rr_node_id);
-        auto_zoom_rr_node(rr_node_id);
+        highlight_rr_nodes(RRNodeId(rr_node_id));
+        auto_zoom_rr_node(RRNodeId(rr_node_id));
     }
 
     else if (search_type == "Block ID") {
@@ -89,35 +97,111 @@ void search_and_highlight(GtkWidget* /*widget*/, ezgl::application* app) {
             return;
         }
 
-        highlight_blocks((ClusterBlockId)block_id);
+        highlight_cluster_block((ClusterBlockId)block_id);
     }
 
     else if (search_type == "Block Name") {
-        std::string block_name = "";
+        /* If the block exists in atom netlist, proceeding with highlighting process.
+         * if highlight atom block fn returns false, that means that the block can't be highlighted
+         * We've already confirmed the block exists in the netlist, so that means that at this zoom lvl,
+         * the subblock is not shown. Therefore highlight the clb mapping.
+         *
+         * If the block does not exist in the atom netlist, we will check the CLB netlist to see if
+         * they searched for a cluster block*/
+        std::string block_name;
         ss >> block_name;
 
-        highlight_blocks((std::string)block_name);
+        AtomBlockId atom_blk_id = atom_ctx.netlist().find_block(block_name);
+        if (atom_blk_id != AtomBlockId::INVALID()) {
+            ClusterBlockId cluster_block_id = atom_ctx.lookup().atom_clb(atom_blk_id);
+            if (!highlight_atom_block(atom_blk_id, cluster_block_id, app)) {
+                highlight_cluster_block(cluster_block_id);
+            }
+            return;
+        }
+
+        //Continues if atom block not found (Checking if user searched a clb)
+        ClusterBlockId cluster_block_id = ClusterBlockId::INVALID();
+        cluster_block_id = cluster_ctx.clb_nlist.find_block(block_name);
+
+        if (cluster_block_id == ClusterBlockId::INVALID()) {
+            warning_dialog_box("Invalid Block Name");
+            return; //name not exist
+        }
+        highlight_cluster_block(cluster_block_id); //found block
     }
 
     else if (search_type == "Net ID") {
         int net_id = -1;
         ss >> net_id;
-
-        // valid net id check
-        if (!cluster_ctx.clb_nlist.valid_net_id(ClusterNetId(net_id))) {
-            warning_dialog_box("Invalid Net ID");
-            app->refresh_drawing();
-            return;
+        if (draw_state->is_flat) {
+            AtomNetId atom_net_id = AtomNetId(net_id);
+            if (!atom_ctx.netlist().valid_net_id(atom_net_id)) {
+                warning_dialog_box("Invalid Net ID");
+                app->refresh_drawing();
+                return;
+            }
+            if (!is_net_routed(atom_net_id)) {
+                warning_dialog_box("Net is unrouted");
+                app->refresh_drawing();
+                return;
+            }
+            if (is_net_fully_absorbed(atom_net_id)) {
+                warning_dialog_box("Net is fully absorbed");
+                app->refresh_drawing();
+                return;
+            }
+            highlight_nets((ClusterNetId)net_id);
+        } else {
+            // valid net id check
+            if (!cluster_ctx.clb_nlist.valid_net_id(ClusterNetId(net_id))) {
+                warning_dialog_box("Invalid Net ID");
+                app->refresh_drawing();
+                return;
+            }
+            highlight_nets((ClusterNetId)net_id);
         }
-
-        highlight_nets((ClusterNetId)net_id);
     }
 
     else if (search_type == "Net Name") {
-        std::string net_name = "";
+        //in this case, all nets (clb and non-clb) are contained in the atom netlist
+        //So we only need to search this one
+        std::string net_name;
         ss >> net_name;
 
-        highlight_nets((std::string)net_name);
+        if (draw_state->is_flat) {
+            AtomNetId atom_net_id = atom_ctx.netlist().find_net(net_name);
+            if (atom_net_id == AtomNetId::INVALID()) {
+                warning_dialog_box("Invalid Net Name");
+                app->refresh_drawing();
+                return;
+            }
+            if (!is_net_routed(atom_net_id)) {
+                warning_dialog_box("Net is unrouted");
+                app->refresh_drawing();
+                return;
+            }
+            if (is_net_fully_absorbed(atom_net_id)) {
+                warning_dialog_box("Net is fully absorbed");
+                app->refresh_drawing();
+                return;
+            }
+            highlight_nets(convert_to_cluster_net_id(atom_net_id));
+        } else {
+            AtomNetId atom_net_id = atom_ctx.netlist().find_net(net_name);
+
+            if (atom_net_id == AtomNetId::INVALID()) {
+                warning_dialog_box("Invalid Net Name");
+                app->refresh_drawing();
+                return;
+            }
+            auto clb_net_ids_opt = atom_ctx.lookup().clb_nets(atom_net_id);
+            if (clb_net_ids_opt.has_value()) {
+                for (auto clb_net_id : clb_net_ids_opt.value()) {
+                    highlight_nets(clb_net_id);
+                }
+            }
+        }
     }
 
     else
@@ -125,87 +209,103 @@ void search_and_highlight(GtkWidget* /*widget*/, ezgl::application* app) {
     app->refresh_drawing();
 }
 
-bool highlight_rr_nodes(int hit_node) {
+bool highlight_rr_nodes(RRNodeId hit_node) {
     t_draw_state* draw_state = get_draw_state_vars();
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const RRGraphView& rr_graph = device_ctx.rr_graph;
 
-    char message[250] = "";
+    std::string message = "";
 
-    if (hit_node != OPEN) {
-        auto nodes = draw_expand_non_configurable_rr_nodes(hit_node);
-        for (auto node : nodes) {
-            if (draw_state->draw_rr_node[node].color != ezgl::MAGENTA) {
-                /* If the node hasn't been clicked on before, highlight it
-                 * in magenta.
-                 */
-                draw_state->draw_rr_node[node].color = ezgl::MAGENTA;
-                draw_state->draw_rr_node[node].node_highlighted = true;
-
-            } else {
-                //Using white color to represent de-highlighting (or
-                //de-selecting) of node.
-                draw_state->draw_rr_node[node].color = ezgl::WHITE;
-                draw_state->draw_rr_node[node].node_highlighted = false;
-            }
-            //Print info about all nodes to terminal
-            VTR_LOG("%s\n", describe_rr_node(node).c_str());
-        }
-
-        //Show info about *only* hit node to graphics
-        std::string info = describe_rr_node(hit_node);
-
-        sprintf(message, "Selected %s", info.c_str());
-        rr_highlight_message = message;
-
-        if (draw_state->draw_rr_toggle != DRAW_NO_RR) {
-            // If rr_graph is shown, highlight the fan-in/fan-outs for
-            // this node.
-            draw_highlight_fan_in_fan_out(nodes);
-        }
-    } else {
-        application.update_message(draw_state->default_message);
+    if (!hit_node) {
+        application->update_message(draw_state->default_message);
         rr_highlight_message = "";
-        application.refresh_drawing();
-        return false; //No hit
+        application->refresh_drawing();
+        return false;
     }
 
-    if (draw_state->show_nets)
-        highlight_nets(message, hit_node);
-    else
-        application.update_message(message);
+    if (!draw_state->draw_channel_nodes && (rr_graph.node_type(hit_node) == e_rr_type::CHANX || rr_graph.node_type(hit_node) == e_rr_type::CHANY)) {
+        application->refresh_drawing();
+        // Return true here to indicate that we processed the click, even though we didn't highlight anything.
+        return true;
+    }
 
-    application.refresh_drawing();
+    if (!draw_state->draw_inter_cluster_pins && is_inter_cluster_node(rr_graph, hit_node) && (rr_graph.node_type(hit_node) == e_rr_type::IPIN || rr_graph.node_type(hit_node) == e_rr_type::OPIN)) {
+        application->refresh_drawing();
+        return true;
+    }
+
+    // Highlight neighboring non_configurable nodes in magenta as well
+    std::set<RRNodeId> nodes = draw_expand_non_configurable_rr_nodes(hit_node);
+
+    for (RRNodeId node : nodes) {
+        if (draw_state->draw_rr_node[node].color != ezgl::MAGENTA) {
+            // If the node hasn't been clicked on before, highlight it in magenta.
+            draw_state->draw_rr_node[node].color = ezgl::MAGENTA;
+            draw_state->draw_rr_node[node].node_highlighted = true;
+            draw_state->hit_nodes.insert(node);
+        } else {
+            //Using white color to represent de-highlighting (or de-selecting) of node.
+            draw_state->draw_rr_node[node].color = ezgl::WHITE;
+            draw_state->draw_rr_node[node].node_highlighted = false;
+            draw_state->hit_nodes.erase(node);
+        }
+
+        //Print info about all nodes to terminal including neighboring non-configurable nodes
+        VTR_LOG("%s\n", describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, node, draw_state->is_flat).c_str());
+    }
+
+    //Show info about *only* hit node to graphics
+    std::string info = describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, hit_node, draw_state->is_flat);
+    message = "Selected " + info;
+    rr_highlight_message = message;
+
+    if (draw_state->show_nets) {
+        highlight_nets(message, hit_node);
+    }
+
+    // Highlight RR Edges if the user has selected this option
+    if (draw_state->show_rr && draw_state->highlight_rr_edges) {
+        draw_highlight_fan_in_fan_out(nodes);
+    }
+
+    application->update_message(message);
+    application->refresh_drawing();
+
     return true;
 }
 
-void auto_zoom_rr_node(int rr_node_id) {
+void auto_zoom_rr_node(RRNodeId rr_node_id) {
     t_draw_coords* draw_coords = get_draw_coords_vars();
-    auto& device_ctx = g_vpr_ctx.device();
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const RRGraphView& rr_graph = device_ctx.rr_graph;
     ezgl::rectangle rr_node;
 
     // find the location of the node
-    switch (device_ctx.rr_nodes[rr_node_id].type()) {
-        case IPIN:
-        case OPIN: {
-            int i = device_ctx.rr_nodes[rr_node_id].xlow();
-            int j = device_ctx.rr_nodes[rr_node_id].ylow();
-            t_physical_tile_type_ptr type = device_ctx.grid[i][j].type;
-            int width_offset = device_ctx.grid[i][j].width_offset;
-            int height_offset = device_ctx.grid[i][j].height_offset;
-            int ipin = device_ctx.rr_nodes[rr_node_id].ptc_num();
+    switch (rr_graph.node_type(rr_node_id)) {
+        case e_rr_type::IPIN:
+        case e_rr_type::OPIN: {
+            t_physical_tile_loc tile_loc = {
+                rr_graph.node_xlow(rr_node_id),
+                rr_graph.node_ylow(rr_node_id),
+                rr_graph.node_layer_low(rr_node_id)};
+            t_physical_tile_type_ptr type = device_ctx.grid.get_physical_type(tile_loc);
+            int width_offset = device_ctx.grid.get_width_offset(tile_loc);
+            int height_offset = device_ctx.grid.get_height_offset(tile_loc);
+
+            int ipin = rr_graph.node_ptc_num(rr_node_id);
             float xcen, ycen;
 
-            int iside;
-            for (iside = 0; iside < 4; iside++) {
-                if (type->pinloc[width_offset][height_offset][iside][ipin]) {
-                    draw_get_rr_pin_coords(rr_node_id, &xcen, &ycen);
+            for (const e_side& iside : TOTAL_2D_SIDES) {
+                if (type->pinloc[width_offset][height_offset][size_t(iside)][ipin]) {
+                    draw_get_rr_pin_coords(rr_node_id, &xcen, &ycen, iside);
                     rr_node = {{xcen - draw_coords->pin_size, ycen - draw_coords->pin_size},
                                {xcen + draw_coords->pin_size, ycen + draw_coords->pin_size}};
                 }
             }
             break;
         }
-        case CHANX:
-        case CHANY: {
+        case e_rr_type::CHANX:
+        case e_rr_type::CHANY: {
             rr_node = draw_get_rr_chan_bbox(rr_node_id);
             break;
         }
@@ -216,18 +316,27 @@ void auto_zoom_rr_node(int rr_node_id) {
     // zoom to the node
     ezgl::point2d offset = {rr_node.width() * 1.5, rr_node.height() * 1.5};
     ezgl::rectangle zoom_view = {rr_node.m_first - offset, rr_node.m_second + offset};
-    (application.get_canvas(application.get_main_canvas_id()))->get_camera().set_world(zoom_view);
+    (application->get_canvas(application->get_main_canvas_id()))->get_camera().set_world(zoom_view);
 }
 
-void highlight_blocks(ClusterBlockId clb_index) {
+/**
+ * @brief Highlights the given cluster block
+ *
+ * @param clb_index Cluster Index to be highlighted
+ */
+void highlight_cluster_block(ClusterBlockId clb_index) {
     char msg[vtr::bufsize];
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-    auto& place_ctx = g_vpr_ctx.placement();
+    t_draw_state* draw_state = get_draw_state_vars();
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    const auto& block_locs = draw_state->get_graphics_blk_loc_registry_ref().block_locs();
 
     /// determine block ///
     ezgl::rectangle clb_bbox;
 
-    VTR_ASSERT(clb_index != EMPTY_BLOCK_ID);
+    VTR_ASSERT(clb_index != ClusterBlockId::INVALID());
+
+    clb_bbox = get_draw_coords_vars()->get_absolute_clb_bbox(
+        clb_index, cluster_ctx.clb_nlist.block_type(clb_index));
 
     ezgl::point2d point_in_clb = clb_bbox.bottom_left();
     highlight_sub_block(point_in_clb, clb_index, cluster_ctx.clb_nlist.block_pb(clb_index));
@@ -235,85 +344,183 @@ void highlight_blocks(ClusterBlockId clb_index) {
     if (get_selected_sub_block_info().has_selection()) {
         t_pb* selected_subblock = get_selected_sub_block_info().get_selected_pb();
         sprintf(msg, "sub-block %s (a \"%s\") selected",
-                selected_subblock->name, selected_subblock->pb_graph_node->pb_type->name);
+                selected_subblock->name.c_str(), selected_subblock->pb_graph_node->pb_type->name);
     } else {
         /* Highlight block and fan-in/fan-outs. */
         draw_highlight_blocks_color(cluster_ctx.clb_nlist.block_type(clb_index), clb_index);
-        sprintf(msg, "Block #%zu (%s) at (%d, %d) selected.", size_t(clb_index), cluster_ctx.clb_nlist.block_name(clb_index).c_str(), place_ctx.block_locs[clb_index].loc.x, place_ctx.block_locs[clb_index].loc.y);
+        sprintf(msg, "Block #%zu (%s) at (%d, %d) selected.",
+                size_t(clb_index), cluster_ctx.clb_nlist.block_name(clb_index).c_str(),
+                block_locs[clb_index].loc.x, block_locs[clb_index].loc.y);
     }
 
-    application.update_message(msg);
+    application->update_message(msg);
 
-    application.refresh_drawing();
+    application->refresh_drawing();
+}
+
+/**
+ * @brief Finds and highlights the atom block. Returns true if block shows, false if not
+ *
+ * @param atom_blk AtomBlockId being searched for
+ * @param cl_blk ClusterBlock containing atom_blk
+ * @param app ezgl:: application used
+ * @return true | If sub-block can be highlighted
+ * @return false | If sub-block not found (impossible in search case) or not shown at current zoom lvl
+ */
+bool highlight_atom_block(AtomBlockId atom_blk, ClusterBlockId cl_blk, ezgl::application* app) {
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    t_pb* pb = cluster_ctx.clb_nlist.block_pb(cl_blk);
+
+    //Getting the pb* for the atom block
+    auto atom_block_pb = find_atom_block_in_pb(atom_ctx.netlist().block_name(atom_blk), pb);
+    if (!atom_block_pb) return false; //If no block found, returning false
+
+    //Ensuring that block is drawn at current zoom lvl, returning false if not
+    auto atom_block_depth = atom_block_pb->pb_graph_node->pb_type->depth;
+    t_draw_state* draw_state = get_draw_state_vars();
+    int max_depth = draw_state->show_blk_internal;
+    if (atom_block_depth > max_depth) return false;
+
+    //Highlighting block
+    get_selected_sub_block_info().set(atom_block_pb, cl_blk);
+    app->refresh_drawing();
+    return true;
 }
 
 void highlight_nets(ClusterNetId net_id) {
-    t_trace* tptr;
-    auto& route_ctx = g_vpr_ctx.routing();
+    const RoutingContext& route_ctx = g_vpr_ctx.routing();
 
     t_draw_state* draw_state = get_draw_state_vars();
 
-    if (int(route_ctx.trace.size()) == 0) return;
-
-    for (tptr = route_ctx.trace[net_id].head; tptr != nullptr; tptr = tptr->next) {
-        draw_state->net_color[net_id] = ezgl::MAGENTA;
-    }
-}
-
-void highlight_nets(std::string net_name) {
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-
-    ClusterNetId net_id = ClusterNetId::INVALID();
-    net_id = cluster_ctx.clb_nlist.find_net(net_name);
-
-    if (net_id == ClusterNetId::INVALID()) {
-        warning_dialog_box("Invalid Net Name");
-        return; //name not exist
-    }
-
-    highlight_nets(net_id); //found net
-}
-
-void highlight_blocks(std::string block_name) {
-    auto& cluster_ctx = g_vpr_ctx.clustering();
-
-    ClusterBlockId block_id = ClusterBlockId::INVALID();
-    block_id = cluster_ctx.clb_nlist.find_block(block_name);
-
-    if (block_id == ClusterBlockId::INVALID()) {
-        warning_dialog_box("Invalid Block Name");
-        return; //name not exist
-    }
-
-    highlight_blocks(block_id); //found block
+    //If routing does not exist return
+    if (route_ctx.route_trees.empty()) return;
+    draw_state->net_color[net_id] = ezgl::MAGENTA;
 }
 
 void warning_dialog_box(const char* message) {
-    GObject* main_window;    // parent window over which to add the dialog
-    GtkWidget* content_area; // content area of the dialog
-    GtkWidget* label;        // label to display a message
-    GtkWidget* dialog;
-    // get a pointer to the main window
-    main_window = application.get_object(application.get_main_window_id().c_str());
-    // create a dialog window modal with no button
-    dialog = gtk_message_dialog_new(GTK_WINDOW(main_window),
-                                    GTK_DIALOG_DESTROY_WITH_PARENT,
-                                    GTK_MESSAGE_INFO,
-                                    GTK_BUTTONS_NONE,
-                                    "Error");
-    // create a label and attach it to content area of the dialog
-    content_area = gtk_message_dialog_get_message_area(GTK_MESSAGE_DIALOG(dialog));
-    label = gtk_label_new(message);
-    gtk_container_add(GTK_CONTAINER(content_area), label);
-    // show the label & child widget of the dialog
-    gtk_widget_show_all(dialog);
+    QWidget* main_window = application->find_widget(application->get_main_window_id().c_str());
+    QMessageBox* box = new QMessageBox(QMessageBox::Warning,
+                                       "Error",
+                                       message,
+                                       QMessageBox::NoButton,
+                                       main_window);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->show();
+}
 
-    g_signal_connect_swapped(dialog,
-                             "response",
-                             G_CALLBACK(gtk_widget_destroy),
-                             dialog);
+/**
+ * @brief manages auto-complete options when search type is changed
+ *
+ * Selects appropriate gtkEntryCompletion item when changed signal is sent
+ * from gtkComboBox SearchType. Currently only sets a completion model for Block Name options,
+ * sets null for anything else. brh
+ *
+ * @param self QComboBox that holds current Search Setting
+ * @param app ezgl app used to access other objects
+ */
+void search_type_changed(QComboBox* self, ezgl::application* app) {
+    if (!self) return;
+    const QString searchType = self->currentText();
+    if (searchType.isEmpty()) return;
 
-    return;
+    QLineEdit* searchBar = app->find_line_edit("TextInput");
+    if (!searchBar) return;
+
+    if (searchType == "Block Name") {
+        searchBar->setCompleter(searchBar->findChild<QCompleter*>("BlockNames"));
+    } else if (searchType == "Net Name") {
+        searchBar->setCompleter(searchBar->findChild<QCompleter*>("NetNames"));
+    } else {
+        searchBar->setCompleter(nullptr);
+    }
+}
+
+/**
+ * @brief A non-default matching function. As opposed to simply searching for a prefix(default),
+ * searches string for presence of a substring. Case-insensitive
+ *
+ * @param completer the GtkEntryCompletion being used
+ * @param key a normalized and case-folded key representing the text
+ * @param iter GtkTreeIter pointing at the current entry being compared
+ * @param user_data null
+ * @return true | if the string pointed to by iter contains key (case-insensitive)
+ * @return false | if the string pointed to does not contain key
+ */
+
+/**
+ * @brief Turns on autocomplete
+ *
+ * This function enables the auto-complete functionality for the search bar.
+ * Normally, this is pretty simple, but the idea is to have auto-complete appear as soon
+ * as the user hits the "Enter" key. To accomplish this, a fake Gdk event is created
+ * to simulate the user hitting a key.
+ *
+ * This was done for usability reasons; if this is not done, user will need to input another key before seeing
+ * autocomplete results. Considering the enter is supposed to be a search, we want to search for the users
+ * key, not the key + another char
+ *
+ * PERFORMANCE DATA
+ * Correlation between key length and time is shaky; there might be some correlation to
+ * how many strings are similar to it. All tests are performed with the key "1" - pretty common
+ * Tests are searched three times then average
+ * MODEL 1: EArch + TSENG.BLIF
+ * NETS         1483
+ * NET SRCH.    19392
+ * BLOCKS       1835
+ * BLOCK SRCH.  21840
+ * For second model (much larger, much longer CPU times) observed large dropoff in times from one char to two chars (about 2 times faster) but after stayed consistent
+ * MODEL 2: Strativix arch + MES_NOC (TITAN)
+ * NETS         577696
+ * NET SRCH.    4.93438e+06
+ * BLOCKS       572148
+ * BLOCKS SRCH. 4.8654e+06
+ * Obviously much slower w. more nets/blocks. However, it only performs a single search after each enter key press, pretty bearable considering its searching in strings
+ * @param app ezgl app
+ */
+void enable_autocomplete(ezgl::application* app) {
+    QLineEdit* searchBar = app->find_line_edit("TextInput");
+    if (!searchBar) return;
+
+    const std::string searchType = get_search_type(app);
+    if (searchType.empty()) return;
+
+    // Resolve the completer for the active search type. Completers are stored
+    // as named children of the QLineEdit (set up in ui_setup.cpp).
+    QCompleter* completer = nullptr;
+    if (searchType == "Block Name") {
+        completer = searchBar->findChild<QCompleter*>("BlockNames");
+    } else if (searchType == "Net Name") {
+        completer = searchBar->findChild<QCompleter*>("NetNames");
+    }
+
+    if (!completer) return;
+
+    searchBar->setCompleter(completer);
+
+    auto draw_state = get_draw_state_vars();
+    draw_state->justEnabled = true;
+
+    // Directly trigger the popup — replaces the GTK hack of stripping and
+    // re-typing the last character to force GtkEntryCompletion to show.
+    completer->complete();
+}
+
+//Returns current search type. Returns empty string if fails
+std::string get_search_type(ezgl::application* app) {
+    if (!app)
+        return "";
+    QComboBox* combo_box = app->find_combo_box("SearchType");
+    if (!combo_box)
+        return "";
+    QString type = combo_box->currentText();
+    //Checking that a type is selected
+    if (type.isEmpty() || (!type.isEmpty() && type[0] == '\0')) {
+        warning_dialog_box("Please select a search type");
+        app->refresh_drawing();
+        return "";
+    }
+    return type.toStdString();
 }
 
 #endif /* NO_GRAPHICS */

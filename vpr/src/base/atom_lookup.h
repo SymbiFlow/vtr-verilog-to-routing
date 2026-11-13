@@ -1,17 +1,16 @@
-#ifndef ATOM_LOOKUP_H
-#define ATOM_LOOKUP_H
+#pragma once
+
 #include "atom_lookup_fwd.h"
 
-#include <unordered_map>
-
-#include "vtr_bimap.h"
 #include "vtr_vector_map.h"
 #include "vtr_range.h"
 
 #include "atom_netlist_fwd.h"
 #include "clustered_netlist_fwd.h"
-#include "vpr_types.h"
 #include "tatum/TimingGraphFwd.hpp"
+
+#include "vtr_optional.h"
+#include "atom_pb_bimap.h"
 
 /**
  * @brief The AtomLookup class describes the mapping between components in the AtomNetlist
@@ -29,23 +28,45 @@ class AtomLookup {
      */
 
     /**
-     * @brief Returns the leaf pb associated with the atom blk_id
-     * @note  this is the lowest level pb which corresponds directly to the atom block
+     * @brief Sets the atom to pb bimap access lock to value.
+     * If set to true, access to the bimap is prohibited and will result in failing assertions.
+     * 
+     * @param value Value to set to lock to
      */
-    const t_pb* atom_pb(const AtomBlockId blk_id) const;
+    inline void set_atom_pb_bimap_lock(bool value) {
+        VTR_ASSERT_SAFE_MSG(lock_atom_pb_bimap_ != value, "Double locking or unlocking the atom pb bimap lock");
+        lock_atom_pb_bimap_ = value;
+    }
 
-    ///@brief Returns the atom block id associated with pb
-    AtomBlockId pb_atom(const t_pb* pb) const;
+    /// @brief Gets the current atom to pb bimap lock value.
+    inline bool atom_pb_bimap_islocked() const { return lock_atom_pb_bimap_; }
 
-    ///@brief Conveneince wrapper around atom_pb to access the associated graph node
-    const t_pb_graph_node* atom_pb_graph_node(const AtomBlockId blk_id) const;
+    // All accesses, mutable or immutable, to the atom to pb bimap
+    // will result in failing assertions if the lock is set to true.
+    // This is done to make sure there is only a single source of
+    // data in places that are supposed to use a local data structure
+    // instead of the global context.
+
+    /// @brief Returns a mutable reference to the atom to pb bimap, provided that access to it is unlocked. It will result in a crash otherwise.
+    /// @return Mutable reference to the atom pb bimap.
+    inline AtomPBBimap& mutable_atom_pb_bimap() {
+        VTR_ASSERT(!lock_atom_pb_bimap_);
+        return atom_to_pb_bimap_;
+    }
+
+    /// @brief Returns an immutable reference to the atom to pb bimap, provided that access to it is unlocked. It will result in a crash otherwise.
+    /// @return Immutable reference to the atom pb bimap.
+    inline const AtomPBBimap& atom_pb_bimap() const {
+        VTR_ASSERT(!lock_atom_pb_bimap_);
+        return atom_to_pb_bimap_;
+    }
 
     /**
-     * @brief Sets the bidirectional mapping between an atom and pb
-     *
-     * If either blk_id or pb are not valid any, existing mapping is removed
+     * @brief Set atom to pb bimap
+     * 
+     * @param atom_to_pb Reference to AtomPBBimab to be copied from
      */
-    void set_atom_pb(const AtomBlockId blk_id, const t_pb* pb);
+    void set_atom_to_pb_bimap(const AtomPBBimap& atom_to_pb) { atom_to_pb_bimap_ = atom_to_pb; }
 
     /*
      * PB Pins
@@ -76,17 +97,21 @@ class AtomLookup {
      */
 
     ///@brief Returns the atom net id associated with the clb_net_index
-    AtomNetId atom_net(const ClusterNetId clb_net_index) const;
+    AtomNetId atom_net(const ClusterNetId cluster_net_id) const;
 
-    ///@brief Returns the clb net index associated with net_id
-    ClusterNetId clb_net(const AtomNetId net_id) const;
+    ///@brief Returns the clb net indices associated with atom_net_id
+    vtr::optional<const std::vector<ClusterNetId>&> clb_nets(const AtomNetId atom_net_id) const;
 
     /**
      * @brief Sets the bidirectional mapping between an atom net and a clb net
-     *
-     * If either net_id or clb_net_index are not valid any existing mapping is removed
      */
-    void set_atom_clb_net(const AtomNetId net_id, const ClusterNetId clb_net_index);
+    void add_atom_clb_net(const AtomNetId atom_net, const ClusterNetId clb_net);
+
+    /** Remove given clb net from the mapping */
+    void remove_clb_net(const ClusterNetId clb_net);
+
+    /** Remove given atom net from the mapping */
+    void remove_atom_net(const AtomNetId atom_net);
 
     /*
      * Timing Nodes
@@ -106,17 +131,21 @@ class AtomLookup {
 
   private: //Types
   private:
-    vtr::bimap<AtomBlockId, const t_pb*, vtr::linear_map, std::unordered_map> atom_to_pb_;
+    /**
+     * @brief Allows or disallows access to the AtomPBBimap data.
+     * Useful to make sure global context is not accessed in places you don't want it to.
+     */
+    bool lock_atom_pb_bimap_ = false;
+    AtomPBBimap atom_to_pb_bimap_;
 
     vtr::vector_map<AtomPinId, const t_pb_graph_pin*> atom_pin_to_pb_graph_pin_;
 
     vtr::vector_map<AtomBlockId, ClusterBlockId> atom_to_clb_;
 
-    vtr::bimap<AtomNetId, ClusterNetId, vtr::linear_map, vtr::linear_map> atom_net_to_clb_net_;
+    vtr::linear_map<AtomNetId, std::vector<ClusterNetId>> atom_net_to_clb_nets_;
+    vtr::linear_map<ClusterNetId, AtomNetId> clb_net_to_atom_net_;
 
     vtr::linear_map<AtomPinId, tatum::NodeId> atom_pin_tnode_external_;
     vtr::linear_map<AtomPinId, tatum::NodeId> atom_pin_tnode_internal_;
     vtr::linear_map<tatum::NodeId, AtomPinId> tnode_atom_pin_;
 };
-
-#endif

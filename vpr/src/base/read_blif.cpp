@@ -18,43 +18,37 @@
 #include <cstring>
 #include <ctime>
 #include <sstream>
-#include <unordered_set>
 #include <cctype> //std::isdigit
+#include <regex>  //std::regex
+#include <optional>
 
 #include "blifparse.hpp"
 #include "atom_netlist.h"
+#include "atom_netlist_utils.h"
 
+#include "logic_types.h"
 #include "vtr_assert.h"
 #include "vtr_util.h"
 #include "vtr_log.h"
 #include "vtr_logic.h"
-#include "vtr_time.h"
 #include "vtr_digest.h"
 
-#include "vpr_types.h"
 #include "vpr_error.h"
-#include "globals.h"
 #include "read_blif.h"
-#include "arch_types.h"
-#include "echo_files.h"
 #include "hash.h"
 
 vtr::LogicValue to_vtr_logic_value(blifparse::LogicValue);
 
 struct BlifAllocCallback : public blifparse::Callback {
   public:
-    BlifAllocCallback(e_circuit_format blif_format, AtomNetlist& main_netlist, const std::string netlist_id, const t_model* user_models, const t_model* library_models)
+    BlifAllocCallback(e_circuit_format blif_format, AtomNetlist& main_netlist, const std::string netlist_id, const LogicalModels& models, int verbosity)
         : main_netlist_(main_netlist)
         , netlist_id_(netlist_id)
-        , user_arch_models_(user_models)
-        , library_arch_models_(library_models)
-        , blif_format_(blif_format) {
+        , models_(models)
+        , blif_format_(blif_format)
+        , verbosity_(verbosity) {
         VTR_ASSERT(blif_format_ == e_circuit_format::BLIF
                    || blif_format_ == e_circuit_format::EBLIF);
-        inpad_model_ = find_model(MODEL_INPUT);
-        outpad_model_ = find_model(MODEL_OUTPUT);
-
-        main_netlist_.set_block_types(inpad_model_, outpad_model_);
     }
 
     static constexpr const char* OUTPAD_NAME_PREFIX = "out:";
@@ -63,6 +57,17 @@ struct BlifAllocCallback : public blifparse::Callback {
     void start_parse() override {}
 
     void finish_parse() override {
+        // Report a summary of the constant generators found while parsing. The
+        // individual generator names are only printed at higher verbosity (see
+        // names()), so provide a hint on how to see them.
+        size_t num_const_gens = num_const_zero_gens_ + num_const_one_gens_;
+        if (num_const_gens > 0) {
+            VTR_LOGV(verbosity_ > 0,
+                     "Found %zu constant generator(s) in the netlist (%zu constant-zero, %zu constant-one)%s\n",
+                     num_const_gens, num_const_zero_gens_, num_const_one_gens_,
+                     verbosity_ > 1 ? "" : " (run with --netlist_verbosity 2 to list names)");
+        }
+
         //When parsing is finished we *move* the main netlist
         //into the user object. This ensures we never have two copies
         //(consuming twice the memory).
@@ -74,24 +79,23 @@ struct BlifAllocCallback : public blifparse::Callback {
         //Create a new model, and set it's name
 
         blif_models_.emplace_back(model_name, netlist_id_);
-        blif_models_.back().set_block_types(inpad_model_, outpad_model_);
         blif_models_black_box_.emplace_back(false);
         ended_ = false;
         set_curr_block(AtomBlockId::INVALID()); //This statement doesn't define a block, so mark invalid
     }
 
     void inputs(std::vector<std::string> input_names) override {
-        const t_model* blk_model = find_model(MODEL_INPUT);
+        LogicalModelId blk_model_id = LogicalModels::MODEL_INPUT_ID;
+        const t_model& blk_model = models_.get_model(blk_model_id);
 
-        VTR_ASSERT_MSG(!blk_model->inputs, "Inpad model has an input port");
-        VTR_ASSERT_MSG(blk_model->outputs, "Inpad model has no output port");
-        VTR_ASSERT_MSG(blk_model->outputs->size == 1, "Inpad model has non-single-bit output port");
-        VTR_ASSERT_MSG(!blk_model->outputs->next, "Inpad model has multiple output ports");
+        VTR_ASSERT_MSG(!blk_model.inputs, "Inpad model has an input port");
+        VTR_ASSERT_MSG(blk_model.outputs, "Inpad model has no output port");
+        VTR_ASSERT_MSG(blk_model.outputs->size == 1, "Inpad model has non-single-bit output port");
+        VTR_ASSERT_MSG(!blk_model.outputs->next, "Inpad model has multiple output ports");
 
-        std::string pin_name = blk_model->outputs->name;
         for (const auto& input : input_names) {
-            AtomBlockId blk_id = curr_model().create_block(input, blk_model);
-            AtomPortId port_id = curr_model().create_port(blk_id, blk_model->outputs);
+            AtomBlockId blk_id = curr_model().create_block(input, blk_model_id);
+            AtomPortId port_id = curr_model().create_port(blk_id, blk_model.outputs);
             AtomNetId net_id = curr_model().create_net(input);
             curr_model().create_pin(port_id, 0, net_id, PinType::DRIVER);
         }
@@ -99,19 +103,19 @@ struct BlifAllocCallback : public blifparse::Callback {
     }
 
     void outputs(std::vector<std::string> output_names) override {
-        const t_model* blk_model = find_model(MODEL_OUTPUT);
+        LogicalModelId blk_model_id = LogicalModels::MODEL_OUTPUT_ID;
+        const t_model& blk_model = models_.get_model(blk_model_id);
 
-        VTR_ASSERT_MSG(!blk_model->outputs, "Outpad model has an output port");
-        VTR_ASSERT_MSG(blk_model->inputs, "Outpad model has no input port");
-        VTR_ASSERT_MSG(blk_model->inputs->size == 1, "Outpad model has non-single-bit input port");
-        VTR_ASSERT_MSG(!blk_model->inputs->next, "Outpad model has multiple input ports");
+        VTR_ASSERT_MSG(!blk_model.outputs, "Outpad model has an output port");
+        VTR_ASSERT_MSG(blk_model.inputs, "Outpad model has no input port");
+        VTR_ASSERT_MSG(blk_model.inputs->size == 1, "Outpad model has non-single-bit input port");
+        VTR_ASSERT_MSG(!blk_model.inputs->next, "Outpad model has multiple input ports");
 
-        std::string pin_name = blk_model->inputs->name;
         for (const auto& output : output_names) {
             //Since we name blocks based on their drivers we need to uniquify outpad names,
             //which we do with a prefix
-            AtomBlockId blk_id = curr_model().create_block(OUTPAD_NAME_PREFIX + output, blk_model);
-            AtomPortId port_id = curr_model().create_port(blk_id, blk_model->inputs);
+            AtomBlockId blk_id = curr_model().create_block(OUTPAD_NAME_PREFIX + output, blk_model_id);
+            AtomPortId port_id = curr_model().create_port(blk_id, blk_model.inputs);
             AtomNetId net_id = curr_model().create_net(output);
             curr_model().create_pin(port_id, 0, net_id, PinType::SINK);
         }
@@ -119,20 +123,21 @@ struct BlifAllocCallback : public blifparse::Callback {
     }
 
     void names(std::vector<std::string> nets, std::vector<std::vector<blifparse::LogicValue>> so_cover) override {
-        const t_model* blk_model = find_model(MODEL_NAMES);
+        LogicalModelId blk_model_id = LogicalModels::MODEL_NAMES_ID;
+        const t_model& blk_model = models_.get_model(blk_model_id);
 
         VTR_ASSERT_MSG(nets.size() > 0, "BLIF .names has no connections");
 
-        VTR_ASSERT_MSG(blk_model->inputs, ".names model has no input port");
-        VTR_ASSERT_MSG(!blk_model->inputs->next, ".names model has multiple input ports");
-        if (static_cast<int>(nets.size()) - 1 > blk_model->inputs->size) {
+        VTR_ASSERT_MSG(blk_model.inputs, ".names model has no input port");
+        VTR_ASSERT_MSG(!blk_model.inputs->next, ".names model has multiple input ports");
+        if (static_cast<int>(nets.size()) - 1 > blk_model.inputs->size) {
             vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_, "BLIF .names input size (%zu) greater than .names model input size (%d)",
-                      nets.size() - 1, blk_model->inputs->size);
+                      nets.size() - 1, blk_model.inputs->size);
         }
 
-        VTR_ASSERT_MSG(blk_model->outputs, ".names has no output port");
-        VTR_ASSERT_MSG(!blk_model->outputs->next, ".names model has multiple output ports");
-        VTR_ASSERT_MSG(blk_model->outputs->size == 1, ".names model has non-single-bit output");
+        VTR_ASSERT_MSG(blk_model.outputs, ".names has no output port");
+        VTR_ASSERT_MSG(!blk_model.outputs->next, ".names model has multiple output ports");
+        VTR_ASSERT_MSG(blk_model.outputs->size == 1, ".names model has non-single-bit output");
 
         //Convert the single-output cover to a netlist truth table
         AtomNetlist::TruthTable truth_table;
@@ -143,11 +148,11 @@ struct BlifAllocCallback : public blifparse::Callback {
             }
         }
 
-        AtomBlockId blk_id = curr_model().create_block(nets[nets.size() - 1], blk_model, truth_table);
+        AtomBlockId blk_id = curr_model().create_block(nets[nets.size() - 1], blk_model_id, truth_table);
         set_curr_block(blk_id);
 
         //Create inputs
-        AtomPortId input_port_id = curr_model().create_port(blk_id, blk_model->inputs);
+        AtomPortId input_port_id = curr_model().create_port(blk_id, blk_model.inputs);
         for (size_t i = 0; i < nets.size() - 1; ++i) {
             AtomNetId net_id = curr_model().create_net(nets[i]);
 
@@ -156,38 +161,20 @@ struct BlifAllocCallback : public blifparse::Callback {
 
         //Figure out if the output is a constant generator
         bool output_is_const = false;
-        if (truth_table.empty()
-            || (truth_table.size() == 1 && truth_table[0].size() == 1 && truth_table[0][0] == vtr::LogicValue::FALSE)) {
-            //An empty truth table in BLIF corresponds to a constant-zero
-            //  e.g.
-            //
-            //  #gnd is a constant 0 generator
-            //  .names gnd
-            //
-            //An single entry truth table with value '0' also corresponds to a constant-zero
-            //  e.g.
-            //
-            //  #gnd2 is a constant 0 generator
-            //  .names gnd2
-            //  0
-            //
+        vtr::LogicValue const_value = truth_table_constant_value(truth_table);
+        if (const_value == vtr::LogicValue::FALSE) {
             output_is_const = true;
-            VTR_LOG("Found constant-zero generator '%s'\n", nets[nets.size() - 1].c_str());
-        } else if (truth_table.size() == 1 && truth_table[0].size() == 1 && truth_table[0][0] == vtr::LogicValue::TRUE) {
-            //A single-entry truth table with value '1' in BLIF corresponds to a constant-one
-            //  e.g.
-            //
-            //  #vcc is a constant 1 generator
-            //  .names vcc
-            //  1
-            //
+            ++num_const_zero_gens_;
+            VTR_LOGV(verbosity_ > 1, "Found constant-zero generator '%s'\n", nets[nets.size() - 1].c_str());
+        } else if (const_value == vtr::LogicValue::TRUE) {
             output_is_const = true;
-            VTR_LOG("Found constant-one generator '%s'\n", nets[nets.size() - 1].c_str());
+            ++num_const_one_gens_;
+            VTR_LOGV(verbosity_ > 1, "Found constant-one generator '%s'\n", nets[nets.size() - 1].c_str());
         }
 
         //Create output
         AtomNetId net_id = curr_model().create_net(nets[nets.size() - 1]);
-        AtomPortId output_port_id = curr_model().create_port(blk_id, blk_model->outputs);
+        AtomPortId output_port_id = curr_model().create_port(blk_id, blk_model.outputs);
         curr_model().create_pin(output_port_id, 0, net_id, PinType::DRIVER, output_is_const);
     }
 
@@ -202,17 +189,18 @@ struct BlifAllocCallback : public blifparse::Callback {
             vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_, "Latch must have a clock\n");
         }
 
-        const t_model* blk_model = find_model(MODEL_LATCH);
+        LogicalModelId blk_model_id = LogicalModels::MODEL_LATCH_ID;
+        const t_model& blk_model = models_.get_model(blk_model_id);
 
-        VTR_ASSERT_MSG(blk_model->inputs, "Has one input port");
-        VTR_ASSERT_MSG(blk_model->inputs->next, "Has two input port");
-        VTR_ASSERT_MSG(!blk_model->inputs->next->next, "Has no more than two input port");
-        VTR_ASSERT_MSG(blk_model->outputs, "Has one output port");
-        VTR_ASSERT_MSG(!blk_model->outputs->next, "Has no more than one input port");
+        VTR_ASSERT_MSG(blk_model.inputs, "Has one input port");
+        VTR_ASSERT_MSG(blk_model.inputs->next, "Has two input port");
+        VTR_ASSERT_MSG(!blk_model.inputs->next->next, "Has no more than two input port");
+        VTR_ASSERT_MSG(blk_model.outputs, "Has one output port");
+        VTR_ASSERT_MSG(!blk_model.outputs->next, "Has no more than one input port");
 
-        const t_model_ports* d_model_port = blk_model->inputs;
-        const t_model_ports* clk_model_port = blk_model->inputs->next;
-        const t_model_ports* q_model_port = blk_model->outputs;
+        const t_model_ports* d_model_port = blk_model.inputs;
+        const t_model_ports* clk_model_port = blk_model.inputs->next;
+        const t_model_ports* q_model_port = blk_model.outputs;
 
         VTR_ASSERT(d_model_port->name == std::string("D"));
         VTR_ASSERT(clk_model_port->name == std::string("clk"));
@@ -222,11 +210,11 @@ struct BlifAllocCallback : public blifparse::Callback {
         VTR_ASSERT(q_model_port->size == 1);
         VTR_ASSERT(clk_model_port->is_clock);
 
-        //We set the initital value as a single entry in the 'truth_table' field
+        //We set the initial value as a single entry in the 'truth_table' field
         AtomNetlist::TruthTable truth_table(1);
         truth_table[0].push_back(to_vtr_logic_value(init));
 
-        AtomBlockId blk_id = curr_model().create_block(output, blk_model, truth_table);
+        AtomBlockId blk_id = curr_model().create_block(output, blk_model_id, truth_table);
         set_curr_block(blk_id);
 
         //The input
@@ -248,9 +236,15 @@ struct BlifAllocCallback : public blifparse::Callback {
     void subckt(std::string subckt_model, std::vector<std::string> ports, std::vector<std::string> nets) override {
         VTR_ASSERT(ports.size() == nets.size());
 
-        const t_model* blk_model = find_model(subckt_model);
+        LogicalModelId blk_model_id = models_.get_model_by_name(subckt_model);
+        if (!blk_model_id.is_valid()) {
+            vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_,
+                      "Subckt instantiates model '%s', but no such model exists in the architecture file.",
+                      subckt_model.c_str());
+        }
+        const t_model& blk_model = models_.get_model(blk_model_id);
 
-        //We name the subckt based on the net it's first output pin drives
+        //We name the subckt based on the net its first output pin drives
         std::string subckt_name;
         for (size_t i = 0; i < ports.size(); ++i) {
             const t_model_ports* model_port = find_model_port(blk_model, ports[i]);
@@ -269,21 +263,20 @@ struct BlifAllocCallback : public blifparse::Callback {
             //Since this is unusual, warn the user
             VTR_LOGF_WARN(filename_.c_str(), lineno_,
                           "Subckt of type '%s' at %s:%d has no output pins, and has been named '%s'\n",
-                          blk_model->name, filename_.c_str(), lineno_, subckt_name.c_str());
+                          blk_model.name.c_str(), filename_.c_str(), lineno_, subckt_name.c_str());
         }
 
         //The name for every block should be unique, check that there is no name conflict
-        AtomBlockId blk_id = curr_model().find_block(subckt_name);
-        if (blk_id) {
-            const t_model* conflicting_model = curr_model().block_model(blk_id);
+        if (AtomBlockId blk_id = curr_model().find_block(subckt_name)) {
+            LogicalModelId conflicting_model = curr_model().block_model(blk_id);
             vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_,
                       "Duplicate blocks named '%s' found in netlist."
                       " Existing block of type '%s' conflicts with subckt of type '%s'.",
-                      subckt_name.c_str(), conflicting_model->name, subckt_model.c_str());
+                      subckt_name.c_str(), models_.get_model(conflicting_model).name.c_str(), subckt_model.c_str());
         }
 
         //Create the block
-        blk_id = curr_model().create_block(subckt_name, blk_model);
+        AtomBlockId blk_id = curr_model().create_block(subckt_name, blk_model_id);
         set_curr_block(blk_id);
 
         for (size_t i = 0; i < ports.size(); ++i) {
@@ -315,6 +308,12 @@ struct BlifAllocCallback : public blifparse::Callback {
     }
 
     void blackbox() override {
+        LogicalModelId arch_model_id = models_.get_model_by_name(curr_model().netlist_name());
+        if (!arch_model_id.is_valid()) {
+            vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_, "Blackbox BLIF model '%s' has no equivalent architecture model.",
+                      curr_model().netlist_name().c_str());
+        }
+
         //We treat black-boxes as netlists during parsing so they should contain
         //only inpads/outpads
         for (const auto& blk_id : curr_model().blocks()) {
@@ -355,7 +354,7 @@ struct BlifAllocCallback : public blifparse::Callback {
         //however we must defer that until all the net drivers
         //and sinks have been created (otherwise they may not
         //be properly merged depending on where the .conn is
-        //delcared).
+        //declared).
         //
         //As a result we record the nets to merge and do the actual merging at
         //the end of the .model
@@ -386,6 +385,13 @@ struct BlifAllocCallback : public blifparse::Callback {
             parse_error(lineno_, ".param", "Supported only in extended BLIF format");
         }
 
+        // Validate the parameter value
+        bool is_valid = is_string_param(value) || is_binary_param(value) || is_real_param(value);
+
+        if (!is_valid) {
+            parse_error(lineno_, ".param", "Incorrect parameter value specification");
+        }
+
         curr_model().set_block_param(curr_block(), name, value);
     }
 
@@ -405,13 +411,14 @@ struct BlifAllocCallback : public blifparse::Callback {
         //Look through all the models loaded, to find the one which is non-blackbox (i.e. has real blocks
         //and is not a blackbox).  To check for errors we look at all models, even if we've already
         //found a non-blackbox model.
-        int top_model_idx = -1; //Not valid
 
-        for (int i = 0; i < static_cast<int>(blif_models_.size()); ++i) {
+        std::optional<size_t> top_model_idx; //Not valid yet
+
+        for (size_t i = 0; i < blif_models_.size(); ++i) {
             if (!blif_models_black_box_[i]) {
                 //A non-blackbox model
-                if (top_model_idx == -1) {
-                    //This is the top model
+                if (!top_model_idx.has_value()) {
+                    // Top model is first non-blackbox model found
                     top_model_idx = i;
                 } else {
                     //We already have a top model
@@ -425,41 +432,17 @@ struct BlifAllocCallback : public blifparse::Callback {
             }
         }
 
-        if (top_model_idx == -1) {
+        if (!top_model_idx.has_value()) {
             vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_,
                       "No non-blackbox models found. The main model must not be a blackbox.");
         }
 
         //Return the main model
-        VTR_ASSERT(top_model_idx >= 0);
-        return static_cast<size_t>(top_model_idx);
+        return top_model_idx.value();
     }
 
   private:
-    const t_model* find_model(std::string name) {
-        const t_model* arch_model = nullptr;
-        for (const t_model* arch_models : {user_arch_models_, library_arch_models_}) {
-            arch_model = arch_models;
-            while (arch_model) {
-                if (name == arch_model->name) {
-                    //Found it
-                    break;
-                }
-                arch_model = arch_model->next;
-            }
-            if (arch_model) {
-                //Found it
-                break;
-            }
-        }
-        if (!arch_model) {
-            vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_, "Failed to find matching architecture model for '%s'\n",
-                      name.c_str());
-        }
-        return arch_model;
-    }
-
-    const t_model_ports* find_model_port(const t_model* blk_model, std::string port_name) {
+    const t_model_ports* find_model_port(const t_model& blk_model, const std::string& port_name) {
         //We need to handle both single, and multi-bit port names
         //
         //By convention multi-bit port names have the bit index stored in square brackets
@@ -478,7 +461,7 @@ struct BlifAllocCallback : public blifparse::Callback {
         VTR_ASSERT(bit_index >= 0);
 
         //We now look through all the ports on the model looking for the matching port
-        for (const t_model_ports* ports : {blk_model->inputs, blk_model->outputs}) {
+        for (const t_model_ports* ports : {blk_model.inputs, blk_model.outputs}) {
             const t_model_ports* curr_port = ports;
             while (curr_port) {
                 if (trimmed_port_name == curr_port->name) {
@@ -490,7 +473,7 @@ struct BlifAllocCallback : public blifparse::Callback {
                         //Out of range
                         vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_,
                                   "Port '%s' on architecture model '%s' exceeds port width (%d bits)\n",
-                                  port_name.c_str(), blk_model->name, curr_port->size);
+                                  port_name.c_str(), blk_model.name.c_str(), curr_port->size);
                     }
                 }
                 curr_port = curr_port->next;
@@ -500,7 +483,7 @@ struct BlifAllocCallback : public blifparse::Callback {
         //No match
         vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_,
                   "Found no matching port '%s' on architecture model '%s'\n",
-                  port_name.c_str(), blk_model->name);
+                  port_name.c_str(), blk_model.name.c_str());
         return nullptr;
     }
 
@@ -541,7 +524,7 @@ struct BlifAllocCallback : public blifparse::Callback {
         return std::make_pair(trimmed_signal_name, bit_index);
     }
 
-    ///@brief Retieves a reference to the currently active .model
+    ///@brief Retrieves a reference to the currently active .model
     AtomNetlist& curr_model() {
         if (blif_models_.empty() || ended_) {
             vpr_throw(VPR_ERROR_BLIF_F, filename_.c_str(), lineno_, "Expected .model");
@@ -556,11 +539,12 @@ struct BlifAllocCallback : public blifparse::Callback {
     }
 
     bool verify_blackbox_model(AtomNetlist& blif_model) {
-        const t_model* arch_model = find_model(blif_model.netlist_name());
+        LogicalModelId arch_model_id = models_.get_model_by_name(blif_model.netlist_name());
+        const t_model& arch_model = models_.get_model(arch_model_id);
 
         //Verify each port on the model
         //
-        // We parse each .model as it's own netlist so the IOs
+        // We parse each .model as its own netlist so the IOs
         // get converted to blocks
         for (auto blk_id : blif_model.blocks()) {
             //Check that the port directions match
@@ -575,7 +559,7 @@ struct BlifAllocCallback : public blifparse::Callback {
             } else {
                 VTR_ASSERT(blif_model.block_type(blk_id) == AtomBlockType::OUTPAD);
 
-                auto raw_output_name = blif_model.block_name(blk_id);
+                const auto& raw_output_name = blif_model.block_name(blk_id);
 
                 std::string output_name = vtr::replace_first(raw_output_name, OUTPAD_NAME_PREFIX, "");
 
@@ -611,7 +595,7 @@ struct BlifAllocCallback : public blifparse::Callback {
      * @brief Merges all the recorded net pairs which need to be merged
      *
      * This should only be called at the end of a .model to ensure that
-     * all the associated driver/sink pins have been delcared and connected
+     * all the associated driver/sink pins have been declared and connected
      * to their nets
      */
     void merge_conn_nets() {
@@ -632,10 +616,7 @@ struct BlifAllocCallback : public blifparse::Callback {
 
     AtomNetlist& main_netlist_;    ///<User object we fill
     const std::string netlist_id_; ///<Unique identifier based on the contents of the blif file
-    const t_model* user_arch_models_ = nullptr;
-    const t_model* library_arch_models_ = nullptr;
-    const t_model* inpad_model_;
-    const t_model* outpad_model_;
+    const LogicalModels& models_;
 
     size_t unique_subckt_name_counter_ = 0;
 
@@ -643,10 +624,16 @@ struct BlifAllocCallback : public blifparse::Callback {
     std::vector<std::pair<AtomNetId, AtomNetId>> curr_nets_to_merge_;
 
     e_circuit_format blif_format_ = e_circuit_format::BLIF;
+
+    int verbosity_ = 1; ///<Controls how much detail is printed while parsing the netlist
+
+    ///<Number of constant generators found while parsing (used for a summary message)
+    size_t num_const_zero_gens_ = 0;
+    size_t num_const_one_gens_ = 0;
 };
 
 vtr::LogicValue to_vtr_logic_value(blifparse::LogicValue val) {
-    vtr::LogicValue new_val = vtr::LogicValue::UNKOWN;
+    vtr::LogicValue new_val = vtr::LogicValue::UNKNOWN;
     switch (val) {
         case blifparse::LogicValue::TRUE:
             new_val = vtr::LogicValue::TRUE;
@@ -657,23 +644,84 @@ vtr::LogicValue to_vtr_logic_value(blifparse::LogicValue val) {
         case blifparse::LogicValue::DONT_CARE:
             new_val = vtr::LogicValue::DONT_CARE;
             break;
-        case blifparse::LogicValue::UNKOWN:
-            new_val = vtr::LogicValue::UNKOWN;
+        case blifparse::LogicValue::UNKNOWN:
+            new_val = vtr::LogicValue::UNKNOWN;
             break;
         default:
-            VTR_ASSERT_OPT_MSG(false, "Unkown logic value");
+            VTR_ASSERT_OPT_MSG(false, "Unknown logic value");
     }
     return new_val;
 }
 
+bool is_string_param(const std::string& param) {
+    // Empty param is considered a string
+    if (param.empty()) {
+        return true;
+    }
+
+    // There have to be at least 2 characters (the quotes)
+    if (param.length() < 2) {
+        return false;
+    }
+
+    // The first and the last characters must be quotes
+    size_t len = param.length();
+    if (param[0] != '"' || param[len - 1] != '"') {
+        return false;
+    }
+
+    // There mustn't be any other quotes except for escaped ones
+    for (size_t i = 1; i < (len - 1); ++i) {
+        if (param[i] == '"' && param[i - 1] != '\\') {
+            return false;
+        }
+    }
+
+    // This is a string param
+    return true;
+}
+
+bool is_binary_param(const std::string& param) {
+    // Must be non-empty
+    if (param.empty()) {
+        return false;
+    }
+
+    // The string must contain only '0' and '1'
+    for (size_t i = 0; i < param.length(); ++i) {
+        if (param[i] != '0' && param[i] != '1') {
+            return false;
+        }
+    }
+
+    // This is a binary word param
+    return true;
+}
+
+bool is_real_param(const std::string& param) {
+    /* Must be non-empty */
+    if (param.empty()) {
+        return false;
+    }
+
+    // The string must match the regular expression
+    const std::regex real_number_expr("[+-]?([0-9]*\\.[0-9]+)|([0-9]+\\.[0-9]*)");
+    if (!std::regex_match(param, real_number_expr)) {
+        return false;
+    }
+
+    // This is a real number param
+    return true;
+}
+
 AtomNetlist read_blif(e_circuit_format circuit_format,
                       const char* blif_file,
-                      const t_model* user_models,
-                      const t_model* library_models) {
+                      const LogicalModels& models,
+                      int verbosity) {
     AtomNetlist netlist;
     std::string netlist_id = vtr::secure_digest_file(blif_file);
 
-    BlifAllocCallback alloc_callback(circuit_format, netlist, netlist_id, user_models, library_models);
+    BlifAllocCallback alloc_callback(circuit_format, netlist, netlist_id, models, verbosity);
     blifparse::blif_parse_filename(blif_file, alloc_callback);
 
     return netlist;

@@ -30,29 +30,42 @@
 
 #include <kj/async-io.h>
 
+KJ_BEGIN_HEADER
+
 namespace kj {
 
 class TlsPrivateKey;
 class TlsCertificate;
 struct TlsKeypair;
 class TlsSniCallback;
+class TlsConnection;
 
 enum class TlsVersion {
   SSL_3,     // avoid; cryptographically broken
-  TLS_1_0,
-  TLS_1_1,
-  TLS_1_2
+  TLS_1_0,   // avoid; cryptographically weak
+  TLS_1_1,   // avoid; cryptographically weak
+  TLS_1_2,
+  TLS_1_3
 };
 
-class TlsContext {
+using TlsErrorHandler = kj::Function<void(kj::Exception&&)>;
+// Use a simple kj::Function for handling errors during parallel accept().
+
+class TlsContext: public kj::SecureNetworkWrapper {
   // TLS system. Allocate one of these, configure it with the proper keys and certificates (or
   // use the defaults), and then use it to wrap the standard KJ network interfaces in
   // implementations that transparently use TLS.
 
 public:
+
   struct Options {
     Options();
     // Initializes all values to reasonable defaults.
+
+    KJ_DISALLOW_COPY(Options);
+    Options(Options&&) = default;
+    Options& operator=(Options&&) = default;
+    // Options is a move-only value type.
 
     bool useSystemTrustStore;
     // Whether or not to trust the system's default trust store. Default: true.
@@ -75,7 +88,7 @@ public:
 
     kj::StringPtr cipherList;
     // OpenSSL cipher list string. The default is a curated list designed to be compatible with
-    // almost all software in curent use (specifically, based on Mozilla's "intermediate"
+    // almost all software in current use (specifically, based on Mozilla's "intermediate"
     // recommendations). The defaults will change in future versions of this library to account
     // for the latest cryptanalysis.
     //
@@ -90,11 +103,20 @@ public:
     kj::Maybe<TlsSniCallback&> sniCallback;
     // Callback that can be used to choose a different key/certificate based on the specific
     // hostname requested by the client.
+
+    kj::Maybe<kj::Timer&> timer;
+    // The timer used for `acceptTimeout` below.
+
+    kj::Maybe<kj::Duration> acceptTimeout;
+    // Timeout applied to accepting a new TLS connection. `timer` is required if this is set.
+
+    kj::Maybe<TlsErrorHandler> acceptErrorHandler;
+    // Error handler used for TLS accept errors.
   };
 
   TlsContext(Options options = Options());
   ~TlsContext() noexcept(false);
-  KJ_DISALLOW_COPY(TlsContext);
+  KJ_DISALLOW_COPY_AND_MOVE(TlsContext);
 
   kj::Promise<kj::Own<kj::AsyncIoStream>> wrapServer(kj::Own<kj::AsyncIoStream> stream);
   // Upgrade a regular network stream to TLS and begin the initial handshake as the server. The
@@ -112,9 +134,21 @@ public:
   // 2. The server's certificate is validated against this hostname. If validation fails, the
   //    promise returned by wrapClient() will be broken; you'll never get a stream.
 
+  kj::Promise<kj::AuthenticatedStream> wrapServer(kj::AuthenticatedStream stream);
+  kj::Promise<kj::AuthenticatedStream> wrapClient(
+      kj::AuthenticatedStream stream, kj::StringPtr expectedServerHostname);
+  // Like wrapServer() and wrapClient(), but also produces information about the peer's
+  // certificate (if any). The returned `peerIdentity` will be a `TlsPeerIdentity`.
+
   kj::Own<kj::ConnectionReceiver> wrapPort(kj::Own<kj::ConnectionReceiver> port);
   // Upgrade a ConnectionReceiver to one that automatically upgrades all accepted connections to
   // TLS (acting as the server).
+
+  kj::Own<kj::NetworkAddress> wrapAddress(
+      kj::Own<kj::NetworkAddress> address, kj::StringPtr expectedServerHostname);
+  // Upgrade a NetworkAddress to one that automatically upgrades all connections to TLS, acting
+  // as the client when `connect()` is called or the server if `listen()` is called.
+  // `connect()` will athenticate the server as `expectedServerHostname`.
 
   kj::Own<kj::Network> wrapNetwork(kj::Network& network);
   // Upgrade a Network to one that automatically upgrades all connections to TLS. The network will
@@ -123,6 +157,9 @@ public:
 
 private:
   void* ctx;  // actually type SSL_CTX, but we don't want to #include the OpenSSL headers here
+  kj::Maybe<kj::Timer&> timer;
+  kj::Maybe<kj::Duration> acceptTimeout;
+  kj::Maybe<TlsErrorHandler> acceptErrorHandler;
 
   struct SniCallback;
 };
@@ -229,4 +266,44 @@ public:
   // TlsContext::Options::defaultKeypair.
 };
 
+class TlsPeerIdentity final: public kj::PeerIdentity {
+public:
+  KJ_DISALLOW_COPY_AND_MOVE(TlsPeerIdentity);
+  ~TlsPeerIdentity() noexcept(false);
+
+  kj::String toString() override;
+
+  kj::PeerIdentity& getNetworkIdentity() { return *inner; }
+  // Gets the PeerIdentity of the underlying network connection.
+
+  bool hasCertificate() { return cert != nullptr; }
+  // Did the peer even present a (trusted) certificate? Servers must always present certificates.
+  // Clients need only present certificates when the `verifyClients` option is enabled.
+  //
+  // Methods of this class that read details of the certificate will throw exceptions when no
+  // certificate was presented. We don't have them return `Maybe`s because most applications know
+  // in advance whether or not a certificate should be present, so it would lead to lots of
+  // `KJ_ASSERT_NONNULL`...
+
+  kj::String getCommonName();
+  // Get the authenticated common name from the certificate.
+
+  bool matchesHostname(kj::StringPtr hostname);
+  // Check if the certificate authenticates the given hostname, considering wildcards and SAN
+  // extensions. If no certificate was provided, always returns false.
+
+  // TODO(someday): Methods for other things. Match hostnames (i.e. evaluate wildcards and SAN)?
+  //   Key fingerprint? Other certificate fields?
+
+private:
+  void* cert;  // actually type X509*, but we don't want to #include the OpenSSL headers here.
+  kj::Own<kj::PeerIdentity> inner;
+
+public:  // (not really public, only TlsConnection can call this)
+  TlsPeerIdentity(void* cert, kj::Own<kj::PeerIdentity> inner, kj::Badge<TlsConnection>)
+      : cert(cert), inner(kj::mv(inner)) {}
+};
+
 } // namespace kj
+
+KJ_END_HEADER

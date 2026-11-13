@@ -1,31 +1,38 @@
-#ifndef _VTR_STRONG_ID_RANGE_H
-#define _VTR_STRONG_ID_RANGE_H
+#pragma once
 
-#include <algorithm>
+#include <iterator>
 #include "vtr_assert.h"
 
 namespace vtr {
 
-/*
- * This header defines a utility class for StrongId's.  StrongId's are
- * described in vtr_strong_id.h.  In some cases, StrongId's be considered
+/**
+ * @file
+ * @brief This header defines a utility class for StrongId's.
+ *
+ * StrongId's are described in vtr_strong_id.h.  In some cases, StrongId's be considered
  * like random access iterators, but not all StrongId's have this property.
- * In addition, there is utility in refering to a range of id's, and being able
+ * In addition, there is utility in referring to a range of id's, and being able
  * to iterator over that range.
+ */
+
+/**
+ * @brief StrongIdIterator class
  *
  * StrongIdIterator allows a StrongId to be treated like a random access
  * iterator.  Whether this is a correct use of the abstraction is up to the
  * called.
  *
- * StrongIdRange allows a pair of StrongId's to defines a continguous range of
- * ids.  The "end" StrongId is excluded from this range.
  */
 template<typename StrongId>
 class StrongIdIterator {
   public:
+    ///@brief constructor
     StrongIdIterator() = default;
+    ///@brief copy constructor
     StrongIdIterator& operator=(const StrongIdIterator& other) = default;
+    ///@brief copy constructor
     StrongIdIterator(const StrongIdIterator& other) = default;
+    ///@brief constructor
     explicit StrongIdIterator(StrongId id)
         : id_(id) {
         VTR_ASSERT(bool(id));
@@ -35,27 +42,31 @@ class StrongIdIterator {
     using value_type = StrongId;
     using reference = StrongId&;
     using pointer = StrongId*;
-    using difference_type = ssize_t;
+    using difference_type = ptrdiff_t;
 
-    StrongId& operator*() {
+    ///@brief Dereference operator (*)
+    StrongId operator*() const {
         VTR_ASSERT_SAFE(bool(id_));
-        return this->id_;
+        return id_;
     }
 
-    StrongIdIterator& operator+=(ssize_t n) {
+    ///@brief += operator
+    StrongIdIterator& operator+=(ptrdiff_t n) {
         VTR_ASSERT_SAFE(bool(id_));
         id_ = StrongId(size_t(id_) + n);
         VTR_ASSERT_SAFE(bool(id_));
         return *this;
     }
 
-    StrongIdIterator& operator-=(ssize_t n) {
+    ///@brief -= operator
+    StrongIdIterator& operator-=(ptrdiff_t n) {
         VTR_ASSERT_SAFE(bool(id_));
         id_ = StrongId(size_t(id_) - n);
         VTR_ASSERT_SAFE(bool(id_));
         return *this;
     }
 
+    ///@brief ++ operator
     StrongIdIterator& operator++() {
         VTR_ASSERT_SAFE(bool(id_));
         *this += 1;
@@ -63,6 +74,15 @@ class StrongIdIterator {
         return *this;
     }
 
+    ///@brief Post-increment operator
+    StrongIdIterator operator++(int) {
+        VTR_ASSERT_SAFE(bool(id_));
+        StrongIdIterator temp = *this; // Create a copy of the current object
+        ++(*this);                     // Use the pre-increment operator to increment
+        return temp;                   // Return the copy
+    }
+
+    ///@brief Decremment operator
     StrongIdIterator& operator--() {
         VTR_ASSERT_SAFE(bool(id_));
         *this -= 1;
@@ -70,75 +90,92 @@ class StrongIdIterator {
         return *this;
     }
 
-    StrongId operator[](ssize_t offset) const {
+    ///@brief Indexing operator []
+    StrongId operator[](ptrdiff_t offset) const {
         return StrongId(size_t(id_) + offset);
     }
 
+    ///@brief ~ operator
     template<typename IdType>
-    friend StrongIdIterator<IdType> operator+(
-        const StrongIdIterator<IdType>& lhs,
-        ssize_t n) {
-        StrongIdIterator ret = lhs;
-        ret += n;
+    ptrdiff_t operator-(const StrongIdIterator<IdType>& other) const {
+        VTR_ASSERT_SAFE(bool(id_));
+        VTR_ASSERT_SAFE(bool(other.id_));
+
+        ptrdiff_t ret = size_t(id_);
+        ret -= size_t(other.id_);
         return ret;
     }
 
+    ///@brief == operator
     template<typename IdType>
-    friend StrongIdIterator<IdType> operator-(
-        const StrongIdIterator<IdType>& lhs,
-        ssize_t n) {
-        StrongIdIterator ret = lhs;
-        ret -= n;
-        return ret;
+    bool operator==(const StrongIdIterator<IdType>& other) const {
+        return id_ == other.id_;
     }
 
+    ///@brief != operator
     template<typename IdType>
-    friend ssize_t operator-(
-        const StrongIdIterator<IdType>& lhs,
-        const StrongIdIterator<IdType>& rhs) {
-        VTR_ASSERT_SAFE(bool(lhs.id_));
-        VTR_ASSERT_SAFE(bool(rhs.id_));
-
-        ssize_t ret = size_t(lhs.id_);
-        ret -= size_t(rhs.id_);
-        return ret;
+    bool operator!=(const StrongIdIterator<IdType>& other) const {
+        return id_ != other.id_;
     }
 
+    ///@brief < operator
     template<typename IdType>
-    friend bool operator==(const StrongIdIterator<IdType>& lhs, const StrongIdIterator<IdType>& rhs) {
-        return lhs.id_ == rhs.id_;
-    }
-
-    template<typename IdType>
-    friend bool operator!=(const StrongIdIterator<IdType>& lhs, const StrongIdIterator<IdType>& rhs) {
-        return lhs.id_ != rhs.id_;
-    }
-
-    template<typename IdType>
-    friend bool operator<(const StrongIdIterator<IdType>& lhs, const StrongIdIterator<IdType>& rhs) {
-        return lhs.id_ < rhs.id_;
+    bool operator<(const StrongIdIterator<IdType>& other) const {
+        return id_ < other.id_;
     }
 
   private:
     StrongId id_;
 };
 
+///@brief + operator
+template<typename IdType>
+inline StrongIdIterator<IdType> operator+(
+    const StrongIdIterator<IdType>& lhs,
+    ptrdiff_t n) {
+    StrongIdIterator ret = lhs;
+    ret += n;
+    return ret;
+}
+
+///@brief - operator
+template<typename IdType>
+inline StrongIdIterator<IdType> operator-(
+    const StrongIdIterator<IdType>& lhs,
+    ptrdiff_t n) {
+    StrongIdIterator ret = lhs;
+    ret -= n;
+    return ret;
+}
+
+/**
+ * @brief StrongIdRange class
+ *
+ * StrongIdRange allows a pair of StrongId's to defines a contiguous range of
+ * ids.  The "end" StrongId is excluded from this range.
+ */
 template<typename StrongId>
 class StrongIdRange {
   public:
+    ///@brief constructor
     StrongIdRange(StrongId b, StrongId e)
         : begin_(b)
         , end_(e) {
         VTR_ASSERT(begin_ < end_ || begin_ == end_);
     }
+
+    ///@brief Returns a StrongIdIterator to the first strongId in the range
     StrongIdIterator<StrongId> begin() const {
         return StrongIdIterator<StrongId>(begin_);
     }
+    ///@brief Returns a StrongIdIterator referring to the past-the-end element in the vector container.
     StrongIdIterator<StrongId> end() const {
         return StrongIdIterator<StrongId>(end_);
     }
 
+    ///@brief Returns true if the range is empty
     bool empty() { return begin_ == end_; }
+    ///@brief Returns the size of the range
     size_t size() {
         return std::distance(begin(), end());
     }
@@ -149,5 +186,3 @@ class StrongIdRange {
 };
 
 } //namespace vtr
-
-#endif /* _VTR_STRONG_ID_RANGE_H */

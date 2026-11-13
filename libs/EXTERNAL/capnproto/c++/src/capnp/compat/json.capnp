@@ -44,6 +44,18 @@ struct Value {
     # "binary" and "date" types in text, since JSON has no analog of these. This is basically the
     # reason this extension exists. We do NOT recommend using `call` unless you specifically need
     # to be compatible with some silly format that uses this syntax.
+
+    raw @7 :Text;
+    # Used to indicate that the text should be written directly to the output without
+    # modifications. Use this if you have an already serialized JSON value and don't want
+    # to feel the cost of deserializing the value just to serialize it again.
+    #
+    # The parser will never produce a `raw` value -- this is only useful for serialization.
+    #
+    # WARNING: You MUST ensure that the value is valid stand-alone JSOn. It will not be verified.
+    # Invalid JSON could mjake the whole message unparsable. Worse, a malicious raw value could
+    # perform JSON injection attacks. Make sure that the value was produced by a trustworthy JSON
+    # encoder.
   }
 
   struct Field {
@@ -66,14 +78,14 @@ struct Value {
 #
 #     myField @0 :Text $Json.name("my_field");
 
-annotation name @0xfa5b1fd61c2e7c3d (field, enumerant, method, group, union): Text;
+annotation name @0xfa5b1fd61c2e7c3d (field, enumerant, method, group, union) :Text;
 # Define an alternative name to use when encoding the given item in JSON. This can be used, for
 # example, to use snake_case names where needed, even though Cap'n Proto uses strictly camelCase.
 #
 # (However, because JSON is derived from JavaScript, you *should* use camelCase names when
 # defining JSON-based APIs. But, when supporting a pre-existing API you may not have a choice.)
 
-annotation flatten @0x82d3e852af0336bf (field, group, union): FlattenOptions;
+annotation flatten @0x82d3e852af0336bf (field, group, union) :FlattenOptions;
 # Specifies that an aggregate field should be flattened into its parent.
 #
 # In order to flatten a member of a union, the union (or, for an anonymous union, the parent
@@ -87,7 +99,7 @@ struct FlattenOptions {
   # Optional: Adds the given prefix to flattened field names.
 }
 
-annotation discriminator @0xcfa794e8d19a0162 (struct, union): DiscriminatorOptions;
+annotation discriminator @0xcfa794e8d19a0162 (struct, union) :DiscriminatorOptions;
 # Specifies that a union's variant will be decided not by which fields are present, but instead
 # by a special discriminator field. The value of the discriminator field is a string naming which
 # variant is active. This allows the members of the union to have the $jsonFlatten annotation, or
@@ -105,8 +117,11 @@ struct DiscriminatorOptions {
   # It is an error to use `valueName` while also declaring some variants as $flatten.
 }
 
-annotation base64 @0xd7d879450a253e4b (field): Void;
+annotation base64 @0xd7d879450a253e4b (field) :Void;
 # Place on a field of type `Data` to indicate that its JSON representation is a Base64 string.
 
-annotation hex @0xf061e22f0ae5c7b5 (field): Void;
+annotation hex @0xf061e22f0ae5c7b5 (field) :Void;
 # Place on a field of type `Data` to indicate that its JSON representation is a hex string.
+
+annotation notification @0xa0a054dea32fd98c (method) :Void;
+# Indicates that this method is a JSON-RPC "notification", meaning it expects no response.

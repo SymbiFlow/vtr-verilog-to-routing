@@ -200,8 +200,7 @@ module mkPktMerge(CLK,
 	     WILL_FIRE_RL_fi0_advance ;
 
   // register fi0HasPrio
-  always@(WILL_FIRE_RL_arbitrate or
-	  fi0HasPrio or WILL_FIRE_RL_fi0_advance or WILL_FIRE_RL_fi1_advance)
+  always@(*)
   begin
    // case (1'b1) // synopsys parallel_case
      // WILL_FIRE_RL_arbitrate: fi0HasPrio__D_IN = !fi0HasPrio;
@@ -246,10 +245,7 @@ module mkPktMerge(CLK,
   assign fi1__CLR = 1'b0 ;
 
   // submodule fo
-  always@(WILL_FIRE_RL_arbitrate or
-	  MUX_fo__enq_1__VAL_1 or
-	  WILL_FIRE_RL_fi0_advance or
-	  fi0__D_OUT or WILL_FIRE_RL_fi1_advance or fi1__D_OUT)
+  always@(*)
   begin
    // case (1'b1) // synopsys parallel_case
       //WILL_FIRE_RL_arbitrate: fo__D_IN = MUX_fo__enq_1__VAL_1;
@@ -310,9 +306,13 @@ output EMPTY_N;
 output FULL_N;
 
 
-
-wire fulln;
-wire emptyn;
+wire full;
+wire empty;
+wire full_n;
+wire empty_n;
+wire full_n_r;
+wire empty_n_r;
+wire [1:0] level;
 
 wire always_one;
 wire always_zero;
@@ -328,12 +328,17 @@ generic_fifo_sc_a fifo_1
  .we (ENQ),
  .dout (D_OUT),
  .re (DEQ),
+ .full(full),
+ .empty(empty),
+ .full_n(full_n),
+ .empty_n(empty_n),
  .full_r (FULL_N),
  .empty_r(EMPTY_N),
- .full_n_r (fulln),
- .empty_n_r (emptyn)
+ .full_n_r (full_n_r),
+ .empty_n_r (empty_n_r),
+ .level(level)
  );
- 
+
 
 
 
@@ -503,8 +508,11 @@ parameter max_size = 1<<aw;
  */
  
 module generic_fifo_sc_a(clk, rst, clr, din, we, dout, re,
-			 full_r, empty_r,
-			 full_n_r, empty_n_r);
+			 full, empty,
+             full_n, empty_n,
+             full_r, empty_r,
+			 full_n_r, empty_n_r,
+             level);
  /*
 parameter dw=8;
 parameter aw=8;
@@ -550,10 +558,14 @@ reg			full_n_r, empty_n_r;
  
  wire [`dw-1:0] junk_in;
  
+ wire [`dw-1:0] doutz;
+
  // manually assign
  assign junk_in = 0;
- 
-dual_port_ram   ram1(
+
+dual_port_ram   
+  # (.ADDR_WIDTH(`aw), .DATA_WIDTH(`dw))
+ram1(
 	.clk(		clk		),
 	.addr1(		rp		),
 	.addr2(		wp		),
@@ -565,7 +577,6 @@ dual_port_ram   ram1(
 	.data2 (	junk_in)
 	);
  
- wire [`dw-1:0] doutz;
 assign dout = (1'b1) ? doutz: junk_out;
 
 ////////////////////////////////////////////////////////////////////
@@ -710,9 +721,13 @@ output EMPTY_N;
 output FULL_N;
 
 
-
-wire fulln;
-wire emptyn;
+wire full;
+wire empty;
+wire full_n;
+wire empty_n;
+wire full_n_r;
+wire empty_n_r;
+wire [1:0] level;
 
 wire always_one;
 wire always_zero;
@@ -728,10 +743,15 @@ generic_fifo_sc_b fifo_1
  .we (ENQ),
  .dout (D_OUT),
  .re (DEQ),
+ .full(full),
+ .empty(empty),
+ .full_n(full_n),
+ .empty_n(empty_n),
  .full_r (FULL_N),
  .empty_r(EMPTY_N),
- .full_n_r (fulln),
- .empty_n_r (emptyn)
+ .full_n_r (full_n_r),
+ .empty_n_r (empty_n_r),
+ .level(level)
  );
  
 
@@ -900,8 +920,11 @@ parameter max_size = 1<<aw;
  */
  
 module generic_fifo_sc_b(clk, rst, clr, din, we, dout, re,
-			 full_r, empty_r,
-			 full_n_r, empty_n_r);
+			 full, empty,
+             full_n, empty_n,
+             full_r, empty_r,
+			 full_n_r, empty_n_r,
+             level);
  /*
 parameter dw=8;
 parameter aw=8;
@@ -947,10 +970,14 @@ reg			full_n_r, empty_n_r;
  
  wire [`dw-1:0] junk_in;
  
+ wire [`dw-1:0] doutz;
+
  // manually assign
  assign junk_in = 0;
- 
-dual_port_ram   ram1(
+
+dual_port_ram   
+  # (.ADDR_WIDTH(`aw), .DATA_WIDTH(`dw))
+ram1(
 	.clk(		clk		),
 	.addr1(		rp		),
 	.addr2(		wp		),
@@ -962,7 +989,6 @@ dual_port_ram   ram1(
 	.data2 (	junk_in)
 	);
  
-wire [`dw-1:0] doutz;
 assign dout = (1'b1) ? doutz: junk_out;
 
 ////////////////////////////////////////////////////////////////////
@@ -1109,9 +1135,13 @@ output EMPTY_N;
 output FULL_N;
 
 
-
-wire fulln;
-wire emptyn;
+wire full;
+wire empty;
+wire full_n;
+wire empty_n;
+wire full_n_r;
+wire empty_n_r;
+wire [1:0] level;
 
 wire always_one;
 wire always_zero;
@@ -1127,10 +1157,15 @@ generic_fifo_sc_c fifo_1
  .we (ENQ),
  .dout (D_OUT),
  .re (DEQ),
+ .full(full),
+ .empty(empty),
+ .full_n(full_n),
+ .empty_n(empty_n),
  .full_r (FULL_N),
  .empty_r(EMPTY_N),
- .full_n_r (fulln),
- .empty_n_r (emptyn)
+ .full_n_r (full_n_r),
+ .empty_n_r (empty_n_r),
+ .level(level)
  );
  
 
@@ -1298,8 +1333,11 @@ parameter max_size = 1<<aw;
  */
  
 module generic_fifo_sc_c(clk, rst, clr, din, we, dout, re,
-			 full_r, empty_r,
-			 full_n_r, empty_n_r);
+			 full, empty,
+             full_n, empty_n,
+             full_r, empty_r,
+			 full_n_r, empty_n_r,
+             level);
  /*
 parameter dw=8;
 parameter aw=8;
@@ -1345,10 +1383,14 @@ reg			full_n_r, empty_n_r;
  
  wire [`dw-1:0] junk_in;
  
+ wire [`dw-1:0] doutz;
+
  // manually assign
  assign junk_in = 0;
- 
-dual_port_ram   ram1(
+
+dual_port_ram   
+  # (.ADDR_WIDTH(`aw), .DATA_WIDTH(`dw))
+ram1(
 	.clk(		clk		),
 	.addr1(		rp		),
 	.addr2(		wp		),
@@ -1360,7 +1402,6 @@ dual_port_ram   ram1(
 	.data2 (	junk_in)
 	);
  
- wire [`dw-1:0] doutz;
 assign dout = (1'b1) ? doutz: junk_out;
 
 ////////////////////////////////////////////////////////////////////

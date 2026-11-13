@@ -4,9 +4,9 @@ Overview
 The VTR documentation is generated using sphinx, a python based documentation generator.
 
 The documentation itself is written in re-structured text (files ending in .rst), which
-is a lightwieght mark-up language for text documents.
+is a lightweight mark-up language for text documents.
 
-Currently VTR's documenation is automatically built by https://readthedocs.org/projects/vtr/ and is served at:
+Currently VTR's documentation is automatically built by https://readthedocs.org/projects/vtr/ and is served at:
 
     https://docs.verilogtorouting.org/
 
@@ -14,19 +14,22 @@ Currently VTR's documenation is automatically built by https://readthedocs.org/p
 How to build documentation
 --------------------------
 
-To build the documentation locally you need sphinx installed:
+To build the documentation locally you need to to install Doxygen (Optional) and the python dependencies. You can use your distribution's package manager to install Doxygen. Ubuntu and Debian users can use the following command:
 
-    For ubuntu/debian based systems:
+    $ sudo apt install doxygen
 
-        $ apt-get install python-sphinx
+While Fedora and RHEL users can use the following command:
 
-    To properly build citations and the bibliography, we use the sphinxcontrib-bibtex extension:
+    $ sudo dnf install doxygen
 
-        $ pip install sphinxcontrib-bibtex
+You can install python dependencies by fist optionally making a virtual environment:
 
-    To install all the python requirements:
+    $ python -m venv .venv
+    $ source .venv/bin/activate
 
-        $ pip install -r requirements.txt
+And then using the requirements file to install the dependencies:
+
+    $ pip install -r requirements.txt
 
 To build the documentation just run:
 
@@ -36,7 +39,7 @@ from the main documentation directory (i.e. <vtr_root>/doc).
 
 This will produce the output html in the _build directory.
 
-You can then view the resulting documention with the web-browser of your choice.
+You can then view the resulting documentation with the web-browser of your choice.
 For instance:
 
     $ firefox _build/html/index.html
@@ -53,7 +56,7 @@ The root of the VTR documentation is the 'src/index.rst' file.
 
 This file references other files using the toctree directive.
 
-Key sub-systems of VTR have their documentation located in a sub-directory (e.g. vpr, arch), with thier own index.rst.
+Key sub-systems of VTR have their documentation located in a sub-directory (e.g. vpr, arch), with their own index.rst.
 
 Within each sub-directory there are usually several other .rst files which containing actual documentation for the subsystem.
 Each of these files must be referred to in the sub-system's index.rst in order to be included in the generated documentation.

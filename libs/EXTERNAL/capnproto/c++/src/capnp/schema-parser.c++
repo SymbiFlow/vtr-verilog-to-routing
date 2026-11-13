@@ -88,7 +88,7 @@ public:
     compiler::lex(content, statements, *this);
 
     auto parsed = orphanage.newOrphan<compiler::ParsedFile>();
-    compiler::parseFile(statements.getStatements(), parsed.get(), *this);
+    compiler::parseFile(statements.getStatements(), parsed.get(), *this, parser.fileIdsRequired);
     return parsed;
   }
 
@@ -148,7 +148,7 @@ private:
 namespace {
 
 struct SchemaFileHash {
-  inline bool operator()(const SchemaFile* f) const {
+  inline size_t operator()(const SchemaFile* f) const {
     return f->hashCode();
   }
 };
@@ -287,7 +287,7 @@ void SchemaParser::setDiskFilesystem(kj::Filesystem& fs) {
 
 ParsedSchema SchemaParser::parseFile(kj::Own<SchemaFile>&& file) const {
   KJ_DEFER(impl->compiler.clearWorkspace());
-  uint64_t id = impl->compiler.add(getModuleImpl(kj::mv(file)));
+  uint64_t id = impl->compiler.add(getModuleImpl(kj::mv(file))).getId();
   impl->compiler.eagerlyCompile(id,
       compiler::Compiler::NODE | compiler::Compiler::CHILDREN |
       compiler::Compiler::DEPENDENCIES | compiler::Compiler::DEPENDENCY_DEPENDENCIES);
@@ -313,7 +313,14 @@ SchemaLoader& SchemaParser::getLoader() {
   return impl->compiler.getLoader();
 }
 
+const SchemaLoader& SchemaParser::getLoader() const {
+  return impl->compiler.getLoader();
+}
+
 kj::Maybe<ParsedSchema> ParsedSchema::findNested(kj::StringPtr name) const {
+  // TODO(someday): lookup() doesn't handle generics correctly. Use the ModuleScope/CompiledType
+  //   interface instead. We can also add an applybrand() method to ParsedSchema using those
+  //   interfaces, which would allow us to expose generics more explicitly to e.g. Python.
   return parser->impl->compiler.lookup(getProto().getId(), name).map(
       [this](uint64_t childId) {
         return ParsedSchema(parser->impl->compiler.getLoader().get(childId), *parser);
@@ -328,8 +335,20 @@ ParsedSchema ParsedSchema::getNested(kj::StringPtr nestedName) const {
   }
 }
 
+ParsedSchema::ParsedSchemaList ParsedSchema::getAllNested() const {
+  return ParsedSchemaList(*this, getProto().getNestedNodes());
+}
+
 schema::Node::SourceInfo::Reader ParsedSchema::getSourceInfo() const {
   return KJ_ASSERT_NONNULL(parser->getSourceInfo(*this));
+}
+
+// -------------------------------------------------------------------
+
+ParsedSchema ParsedSchema::ParsedSchemaList::operator[](uint index) const {
+  return ParsedSchema(
+    parent.parser->impl->compiler.getLoader().get(list[index].getId()),
+    *parent.parser);
 }
 
 // -------------------------------------------------------------------

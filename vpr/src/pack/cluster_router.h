@@ -1,29 +1,615 @@
+#pragma once
 /*
  * Intra-logic block router determines if a candidate packing solution (or intermediate solution) can route.
  *
  * Author: Jason Luu
  * Date: July 22, 2013
+ *
+ * Updated by Alex Singer, February 2026
  */
-#ifndef CLUSTER_ROUTER_H
-#define CLUSTER_ROUTER_H
+
+#include <cstdio>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "atom_netlist_fwd.h"
-#include "pack_types.h"
+#include "atom_pb_bimap.h"
+#include "lb_type_rr_graph.h"
+#include "vpr_types.h"
+#include "vpr_utils.h"
+#include "vtr_priority_queue.h"
+#include "vtr_strong_id.h"
+#include "vtr_vector.h"
 
-/* Constructors/Destructors */
-t_lb_router_data* alloc_and_load_router_data(std::vector<t_lb_type_rr_node>* lb_type_graph, t_logical_block_type_ptr type);
-void free_router_data(t_lb_router_data* router_data);
-void free_intra_lb_nets(std::vector<t_intra_lb_net>* intra_lb_nets);
+/**************************************************************************
+ * Intra-Logic Block Router Data Structures
+ ***************************************************************************/
 
-/* Routing Functions */
-void add_atom_as_target(t_lb_router_data* router_data, const AtomBlockId blk_id);
-void remove_atom_from_target(t_lb_router_data* router_data, const AtomBlockId blk_id);
-void set_reset_pb_modes(t_lb_router_data* router_data, const t_pb* pb, const bool set);
-bool try_intra_lb_route(t_lb_router_data* router_data, int verbosity, t_mode_selection_status* mode_status);
-void reset_intra_lb_route(t_lb_router_data* router_data);
+/// @brief Index into ClusterRouter::intra_lb_nets_. Invalidated when a net is removed.
+typedef vtr::StrongId<struct intra_lb_net_idx_tag, size_t> IntraLbNetIdx;
 
-/* Accessor Functions */
-t_pb_routes alloc_and_load_pb_route(const std::vector<t_intra_lb_net>* intra_lb_nets, t_pb_graph_node* pb_graph_head);
+/**
+ * @brief Describes the status of a logic cluster_ctx.blocks routing resource
+ *        node for a given logic cluster_ctx.blocks instance.
+ */
+struct t_lb_rr_node_stats {
+    /// @brief The number of nets currently using this lb_rr_node.
+    int occ;
+
+    /// @brief The mode that this rr_node is set to.
+    int mode;
+
+    /// @brief The historical usage of using this node.
+    int historical_usage;
+
+    t_lb_rr_node_stats() noexcept {
+        occ = 0;
+        mode = -1;
+        historical_usage = 0;
+    }
+};
+
+/**
+ * @brief Data structure forming the route tree of a net within one logic
+ *        cluster_ctx.blocks.
+ *
+ * A net is implemented using routing resource nodes. The t_lb_trace data
+ * structure records one of the nodes used by the net and the connections
+ * to other nodes.
+ */
+struct t_lb_trace {
+    /// @brief The current lb type rr node used by net.
+    LbRRNodeId current_node;
+
+    /// @brief The index of previous edge that drives current node.
+    std::vector<t_lb_trace> next_nodes;
+};
+
+/**
+ * @brief Represents a net used inside a logic cluster_ctx.blocks and the
+ *        physical nodes used by the net.
+ */
+struct t_intra_lb_net {
+    /// @brief The index of atom net this intra_lb_net represents.
+    AtomNetId atom_net_id;
+
+    /// @brief The endpoints of the intra_lb_net, 0th position is the source, all others are sinks.
+    std::vector<LbRRNodeId> terminals;
+
+    /// @brief The AtomPins associated with each terminal.
+    std::vector<AtomPinId> atom_pins;
+
+    /// @brief Marks a terminal as having a fixed target (i.e. a pin not a sink).
+    std::vector<bool> fixed_terminals;
+
+    /// @brief Route tree head.
+    t_lb_trace rt_tree;
+
+    t_intra_lb_net() noexcept {
+        atom_net_id = AtomNetId::INVALID();
+        rt_tree.current_node = LbRRNodeId::INVALID();
+    }
+};
+
+/**
+ * @brief Tuning parameters used by intra-logic cluster_ctx.blocks router.
+ */
+struct t_lb_router_params {
+    int max_iterations;
+    float pres_fac;
+    float pres_fac_mult;
+    float hist_fac;
+};
+
+/**
+ * @brief Node expanded by router.
+ */
+struct t_expansion_node {
+    /// @brief Index of logic cluster_ctx.blocks rr node this expansion node represents.
+    LbRRNodeId node_index;
+
+    /// @brief Index of logic cluster_ctx.blocks rr node that drives this expansion node.
+    LbRRNodeId prev_index;
+
+    float cost;
+
+    t_expansion_node() {
+        node_index = LbRRNodeId::INVALID();
+        prev_index = LbRRNodeId::INVALID();
+        cost = 0;
+    }
+};
+
+/**
+ * @brief Comparator used by the priority queue to sort the expansion nodes.
+ */
+class compare_expansion_node {
+  public:
+    /**
+     * @brief Returns true if e1 comes before e2.
+     *
+     * Note that because a priority queue outputs the largest element first, the
+     * element that "comes before" are actually output last.
+     *
+     * TL;DR lowest cost is popped first.
+     */
+    bool operator()(t_expansion_node& e1, t_expansion_node& e2) {
+        if (e1.cost > e2.cost) {
+            return true;
+        }
+        return false;
+    }
+};
+
+/**
+ * @brief Explored node by router (trace-back information).
+ */
+struct t_explored_node_tb {
+    /// @brief Previous node that drives this one.
+    LbRRNodeId prev_index;
+
+    /// @brief ID used to determine if this node has been explored.
+    int explored_id;
+
+    /// @brief Net of route tree.
+    IntraLbNetIdx inet;
+
+    /// @brief ID used to determine if this node has been pushed on exploration priority queue.
+    int enqueue_id;
+
+    /// @brief Cost of node pushed on exploration priority queue.
+    float enqueue_cost;
+
+    t_explored_node_tb() noexcept {
+        prev_index = LbRRNodeId::INVALID();
+        explored_id = UNDEFINED;
+        enqueue_id = UNDEFINED;
+        inet = IntraLbNetIdx::INVALID();
+        enqueue_cost = 0;
+    }
+};
+
+/**
+ * @brief Stores status of mode selection during clustering.
+ */
+struct t_mode_selection_status {
+    bool is_mode_conflict = false;
+    bool try_expand_all_modes = false;
+    bool expand_all_modes = false;
+
+    inline bool is_mode_issue() const {
+        return is_mode_conflict || try_expand_all_modes;
+    }
+};
+
+/**
+ * @brief Enumeration used by the commit_remove_rt_ method below to decide if
+ *        we are committing or removing a route tree.
+ */
+enum class e_commit_remove {
+    COMMIT,
+    REMOVE
+};
+
+/**
+ * @brief Class for routing the connections within a cluster.
+ *
+ * This class manages all of the state needed to perform pathfinder within a
+ * cluster during clustering.
+ *
+ * Example usage:
+ *      // Construct the router object.
+ *      ClusterRouter cluster_router(lb_type_rr_graphs[cluster_type->index], cluster_type, valid_feedback_pins);
+ *
+ *      // Add atoms as targets for the router.
+ *      cluster_router.add_atom_as_target(blk_id1, atom_to_pb);
+ *      cluster_router.add_atom_as_target(blk_id2, atom_to_pb);
+ *      ...
+ *
+ *      // (optional) Remove atoms from target if necessary
+ *      cluster_router.remove_atom_from_target(blk_id1, atom_to_pb);
+ *      ...
+ *
+ *      // Perform a cluster route. success would be true if route is successful.
+ *      t_mode_selection_status mode_status;
+ *      bool success = cluster_router.try_intra_lb_route(log_verbosity_, &mode_status);
+ *
+ *      // Output the routing solution.
+ *      auto pb_route = cluster_router.alloc_and_load_pb_route();
+ *
+ *      // (optional) Clean the router data to save space if this object will
+ *      //            have a long lifetime and no further routes will be performed.
+ *      cluster_router.clean_router_data();
+ *
+ */
+class ClusterRouter {
+  public:
+    /**
+     * @brief Default constructor for the ClusterRouter.
+     *
+     * This is needed to allow this object to be stored within the vtr::vector_map
+     * class. When this constructor is used, the cluster router will not be
+     * initialized properly and cannot be used.
+     */
+    ClusterRouter()
+        : lb_type_graph_(nullptr)
+        , valid_feedback_pins_(nullptr)
+        , explore_id_index_(0)
+        , lb_type_(nullptr)
+        , pres_con_fac_(0.0f)
+        , is_clean_(true)
+        , is_valid_(false)
+        , enable_hot_start_(false) {}
+
+    /**
+     * @brief Constructor for the ClusterRouter.
+     *
+     *  @param lb_type_graph        The RR graph for the given lb type.
+     *  @param type                 The logical block type to route to.
+     *  @param valid_feedback_pins  Pre-computed set of top-level output pin
+     *                              indices with Fc_out > 0; owned by the
+     *                              caller and must outlive this router.
+     *  @param enable_hot_start     When true, each call to try_intra_lb_route
+     *                              seeds unchanged nets from the last successful
+     *                              route before running pathfinder, reducing
+     *                              the number of nets that need re-routing.
+     */
+    ClusterRouter(const LbTypeRRGraph& lb_type_graph,
+                  t_logical_block_type_ptr type,
+                  const std::unordered_set<int>& valid_feedback_pins,
+                  bool enable_hot_start = false);
+
+    /**
+     * @brief Add pins of netlist atom to current routing drivers/targets.
+     */
+    void add_atom_as_target(const AtomBlockId blk_id, const AtomPBBimap& atom_to_pb);
+
+    /**
+     * @brief Remove pins of netlist atom from current routing drivers/targets.
+     */
+    void remove_atom_from_target(const AtomBlockId blk_id, const AtomPBBimap& atom_to_pb);
+
+    /**
+     * @brief Set/reset mode of rr nodes to the pb used.
+     *
+     * If set == true, then set all modes of the rr nodes affected by pb to the
+     * mode of the pb. Set all modes related to pb to 0 otherwise.
+     */
+    void set_reset_pb_modes(const t_pb* pb, const bool set);
+
+    /**
+     * @brief Check that the mode stored on every rr node matches the modes
+     *        implied by the given pb tree.
+     *
+     * The router keeps its own copy of each pb's mode (see set_reset_pb_modes).
+     * Every pb with allocated children, and every primitive pb holding an atom,
+     * is expected to have its modes set; all other rr nodes are expected to be
+     * unset (-1). A pb that is freed without clearing its modes leaves stale
+     * modes behind, which silently restrict later intra-cluster routes.
+     *
+     * This walks the whole pb tree and rr graph, so it is only intended for
+     * use in expensive assertions.
+     *
+     *  @param root_pb     The top-level pb of the cluster being routed.
+     *  @param atom_to_pb  Map used to tell which primitive pbs hold an atom.
+     *
+     *  @return True if the router's modes are consistent with the pb tree.
+     */
+    bool pb_modes_match(const t_pb* root_pb, const AtomPBBimap& atom_to_pb) const;
+
+    /**
+     * @brief Attempt to route routing driver/targets on the current architecture.
+     *
+     * Follows pathfinder negotiated congestion algorithm.
+     */
+    bool try_intra_lb_route(int verbosity, t_mode_selection_status* mode_status);
+
+    /**
+     * @brief Clean and free all data within the router.
+     *
+     * This is used in the packer to keep the cluster router object around
+     * without a hit to memory footprint. The router can no longer be used after
+     * this function is called.
+     */
+    void clean_router_data();
+
+    /**
+     * @brief Reset the routing state between calls to intra_lb_route for mode
+     *        changes.
+     *
+     * This is used to clean state associated with mode conflicts in routing.
+     * This state is stored within the pb_graph_pins.
+     *
+     * TODO: It may be safer to store this information internally.
+     */
+    void reset_intra_lb_route();
+
+    /**
+     * @brief Creates an array [0..num_pb_graph_pins-1] for intra-logic block routing lookup.
+     * Given a pb_graph_pin ID for a CLB, this lookup returns t_pb_route corresponding to that
+     * pin.
+     *
+     * t_pb_route describes a route for a given atom net in the pb graph. This
+     * function returns the t_pb_route for all atom nets within the cluster.
+     *
+     * @return t_pb_routes An array [0..num_pb_graph_pins-1] for intra-logic block routing lookup.
+     */
+    t_pb_routes alloc_and_load_pb_route();
+
+    /**
+     * @brief Returns true if the saved route from the last successful
+     *        try_intra_lb_route is still valid for the current intra_lb_nets_.
+     *
+     * A saved route is valid when intra_lb_nets_ and saved_lb_nets_ contain
+     * exactly the same set of nets with exactly the same terminals. In that
+     * case the saved route trees constitute a proven, congestion-free solution
+     * for the current cluster state and no re-route is required.
+     *
+     * This is cheaper than re-running routing and covers the common case where
+     * a molecule that failed routing was removed, restoring the cluster to its
+     * last successfully-routed state.
+     */
+    bool is_saved_route_valid() const;
+
+    /**
+     * @brief Returns true if the router data has been cleaned.
+     */
+    inline bool is_clean() const { return is_clean_; }
+
+  private:
+    /**
+     * @brief Given a pin of a net, assign route tree terminals for it.
+     *
+     * This assumes that the pin is not already assigned.
+     *
+     * @return The pin's net, or an invalid index if the pin has no net.
+     */
+    IntraLbNetIdx add_pin_to_rt_terminals_(const AtomPinId pin_id,
+                                           const AtomPBBimap& atom_to_pb);
+
+    /**
+     * @brief Given a pin of a net, remove route tree terminal from it.
+     */
+    void remove_pin_from_rt_terminals_(const AtomPinId pin_id,
+                                       const AtomPBBimap& atom_to_pb);
+
+    /**
+     * @brief Fixup duplicate connections to a net by a logically equivalent
+     *        set of primitive pins.
+     *
+     * @param ilb_net The net to check.
+     * @param atom_to_pb Mapping from atoms to their placed pbs.
+     */
+    void fix_duplicate_equivalent_pins_(IntraLbNetIdx ilb_net, const AtomPBBimap& atom_to_pb);
+
+    /**
+     * @brief Reset the traceback information used in pathfinder.
+     */
+    void reset_explored_node_tb_();
+
+    /**
+     * @brief Commit or remove route tree from currently routed solution.
+     */
+    void commit_remove_rt_(const t_lb_trace& rt,
+                           e_commit_remove op,
+                           std::unordered_map<const t_pb_graph_node*, const t_mode*>& mode_map,
+                           t_mode_selection_status* mode_status);
+
+    /**
+     * @brief Add source node of net as the starting point to existing route tree.
+     */
+    void add_source_to_rt_(IntraLbNetIdx inet);
+
+    /**
+     * @brief Expand all nodes found in route tree into the priority queue.
+     *
+     *  @param inet     The net to expand the route tree for.
+     */
+    void expand_rt_(IntraLbNetIdx inet);
+
+    /**
+     * @brief Recursive function used by expand_rt_ to expand all nodes in a
+     *        route tree into the priority queue.
+     */
+    void expand_rt_rec_(const t_lb_trace& rt, LbRRNodeId prev_index, IntraLbNetIdx irt_net);
+
+    /**
+     * @brief Add new path from existing route tree to target sink.
+     *
+     * This reads the result of the path search to traceback the path and then
+     * adds the path to the route tree.
+     */
+    bool add_to_rt_(t_lb_trace& rt, LbRRNodeId node_index, IntraLbNetIdx irt_net);
+
+    /**
+     * @brief Expand all nodes for a given lb_net.
+     *
+     * This method continuously pops from the priority queue to find the best
+     * path to the target.
+     */
+    bool try_expand_nodes_(const t_intra_lb_net& lb_net,
+                           t_expansion_node* exp_node,
+                           int itarget,
+                           bool try_other_modes,
+                           int verbosity);
+
+    /**
+     * @brief Explore the given node popped from the priority queue and explore
+     *        its edges.
+     *
+     *  @param exp_node                  The node currently being explored.
+     *  @param net_fanout                The fanout of the net being routed.
+     *  @param target_is_internal_sink   True if the sink we are currently
+     *                                   routing toward lives inside this
+     *                                   cluster
+     */
+    void expand_node_(const t_expansion_node& exp_node,
+                      int net_fanout,
+                      bool target_is_internal_sink);
+
+    /**
+     * @brief Explore the given node popped from the priority queue using all
+     *        possible modes and explore their edges.
+     *
+     * This will explore every possible mode that the given node can be in and
+     * explore their edges.
+     *
+     *  @param exp_node                  The node currently being explored.
+     *  @param net_fanout                The fanout of the net being routed.
+     *  @param target_is_internal_sink   True if the sink we are currently
+     *                                   routing toward lives inside this
+     *                                   cluster.
+     */
+    void expand_node_all_modes_(const t_expansion_node& exp_node,
+                                int net_fanout,
+                                bool target_is_internal_sink);
+
+    /**
+     * @brief Explore all edges of an expansion node and insert connected nodes
+     *        into the priority queue (i.e. connection routing).
+     *
+     *  @param mode                      The mode the node that is being explored is in.
+     *  @param cur_inode                 The node that is being explored.
+     *  @param cur_cost                  The cost of the node that is being explored.
+     *  @param net_fanout                The fanout of the net being routed.
+     *  @param target_is_internal_sink   True iff the sink is inside this cluster;
+     *                                   gates feedback through Fc_out==0 output pins.
+     */
+    void expand_edges_(int mode,
+                       LbRRNodeId cur_inode,
+                       float cur_cost,
+                       int net_fanout,
+                       bool target_is_internal_sink);
+
+    /**
+     * @brief Determine if a completed route is valid.
+     *
+     * A successful route has no congestion (i.e. no routing resource is used by
+     * two nets).
+     */
+    bool is_route_success_();
+
+    /**
+     * @brief Save the last successful intra-logic block route and reset current
+     *        lb_traceback.
+     */
+    void save_and_reset_lb_route_();
+
+    /**
+     * @brief Seed the current routing with route trees from the last successful
+     *        route (hot-start).
+     *
+     * For each saved net whose terminals are unchanged and whose route tree is
+     * still valid under the current mode assignments, commits the saved tree
+     * into intra_lb_nets_ so that the pathfinder loop can skip those nets on
+     * the first iteration via is_skip_route_net.
+     *
+     * @param mode_map    Mode map updated by commit_remove_rt_ as trees are committed.
+     * @param mode_status Mode-selection status updated by commit_remove_rt_.
+     */
+    void hot_start_intra_lb_route_(
+        std::unordered_map<const t_pb_graph_node*, const t_mode*>& mode_map,
+        t_mode_selection_status* mode_status);
+
+    /**
+     * @brief Debugging function, used to print the description of the given
+     *        lb-type RR node.
+     */
+    std::string describe_lb_type_rr_node_(LbRRNodeId inode);
+
+    /**
+     * @brief Debugging function, used to print the given congested RR.
+     */
+    std::string describe_congested_rr_nodes_(const std::vector<LbRRNodeId>& congested_rr_nodes);
+
+    /**
+     * @brief Debugging function, used to print out the trace of a net.
+     */
+    void print_trace_(FILE* fp, const t_lb_trace& trace);
+
+    /**
+     * @brief Debugging function, print out current intra logic block route.
+     */
+    void print_route_(const char* filename);
+
+  private:
+    // =========================================================================
+    // Physical Architecture Info
+    // =========================================================================
+
+    /// @brief Pointer to physical intra-logic cluster_ctx.blocks type rr graph.
+    const LbTypeRRGraph* lb_type_graph_;
+
+    /// @brief Top-level output pins with Fc_out > 0 for this block type; pointer
+    ///        into the map owned by ClusterLegalizer, valid for packing lifetime.
+    const std::unordered_set<int>* valid_feedback_pins_;
+
+    // =========================================================================
+    // Logical Netlist Info
+    // =========================================================================
+
+    /// @brief Vector of intra logic cluster_ctx.blocks nets and their connections.
+    vtr::vector<IntraLbNetIdx, t_intra_lb_net> intra_lb_nets_;
+
+    /// @brief Save vector of intra logic cluster_ctx.blocks nets and their connections.
+    ///        This is used to save the solution for each successful route. This is used
+    ///        to allow for other routes to be attempted, while allowing us to roll-back
+    ///        to a known-legal routing. This is ultimately used by alloc_and_load_pb_route.
+    std::vector<t_intra_lb_net> saved_lb_nets_;
+
+    /// @brief Set that records which atoms are added to cluster router.
+    ///        The cluster legalizer will be adding and removing atoms from the
+    ///        cluster. This set keeps track of which atoms the Cluster Router is
+    ///        aware of being currently in the cluster.
+    std::unordered_set<AtomBlockId> atoms_added_;
+
+    // =========================================================================
+    // Logical-to-Physical Mapping Info
+    // =========================================================================
+
+    /// @brief Stats for each logic cluster_ctx.blocks rr node instance.
+    vtr::vector<LbRRNodeId, t_lb_rr_node_stats> lb_rr_node_stats_;
+
+    // =========================================================================
+    // Stored State Info During Pathfinder Iterative Routing
+    // =========================================================================
+
+    /// @brief Stores mode exploration and lb_traceback info for each rr node.
+    vtr::vector<LbRRNodeId, t_explored_node_tb> explored_node_tb_;
+
+    /// @brief Used in conjunction with explored_node_tb_ to determine whether or not a location has been explored.
+    ///        By using a unique identifier every route, I don't have to clear the previous route exploration.
+    ///        The idea is that for a given route, a specific explore_id is used.
+    ///        When exploring nodes, if the ID does not match, we know this is from
+    ///        another route. This is just an optimization to prevent clearing the
+    ///        global routing data each connection route.
+    int explore_id_index_;
+
+    /// @brief The logical block type that is being routed.
+    t_logical_block_type_ptr lb_type_;
+
+    /// @brief Parameters used by the router.
+    t_lb_router_params params_;
+
+    /// @brief Current congestion factor.
+    float pres_con_fac_;
+
+    /// @brief Priority queue used during path search.
+    vtr::priority_queue<t_expansion_node, std::vector<t_expansion_node>, compare_expansion_node> pq_;
+
+    /// @brief Flag that indicates if this object has been cleaned or not.
+    bool is_clean_;
+
+    /// @brief Flag that indicates if this object has valid state or not. If the
+    ///        router is invalid, none of the methods should be used.
+    bool is_valid_;
+
+    /// @brief When true, try_intra_lb_route seeds unchanged nets from the last
+    ///        successful route before running pathfinder (hot-start).
+    bool enable_hot_start_;
+};
+
+/**
+ * @brief Free the given pb route object.
+ */
 void free_pb_route(t_pb_route* free_pb_route);
-
-#endif

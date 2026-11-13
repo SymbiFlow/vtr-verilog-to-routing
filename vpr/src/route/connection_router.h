@@ -1,26 +1,40 @@
-#ifndef _CONNECTION_ROUTER_H
-#define _CONNECTION_ROUTER_H
+#pragma once
+
+/**
+ * @file
+ * @brief This file defines the ConnectionRouter class.
+ *
+ * Overview
+ * ========
+ * The ConnectionRouter represents the timing-driven connection routers, which
+ * route from some initial set of sources (via the input rt tree) to a particular
+ * sink. VPR supports two timing-driven connection routers, including the serial
+ * connection router and the MultiQueue-based parallel connection router. This
+ * class defines the interface for the two connection routers and encapsulates
+ * the common member variables and helper functions for them.
+ *
+ * @note
+ * When the ConnectionRouter is used, it mutates the provided rr_node_route_inf.
+ * The routed path can be found by tracing from the sink node (which is returned)
+ * through the rr_node_route_inf. See update_traceback as an example of this tracing.
+ */
+
+#include <span>
 
 #include "connection_router_interface.h"
+#include "globals.h"
+#include "route_path_manager.h"
 #include "rr_graph_storage.h"
-#include "route_common.h"
 #include "router_lookahead.h"
-#include "route_tree_type.h"
-#include "rr_rc_data.h"
+#include "route_tree.h"
 #include "router_stats.h"
+#include "rr_graph_view.h"
 #include "spatial_route_tree_lookup.h"
 
-// Prune the heap when it contains 4x the number of nodes in the RR graph.
-constexpr size_t kHeapPruneFactor = 4;
-
-// This class encapsolates the timing driven connection router. This class
-// routes from some initial set of sources (via the input rt tree) to a
-// particular sink.
-//
-// When the ConnectionRouter is used, it mutates the provided
-// rr_node_route_inf.  The routed path can be found by tracing from the sink
-// node (which is returned) through the rr_node_route_inf.  See
-// update_traceback as an example of this tracing.
+/**
+ * @class ConnectionRouter defines the interface for the serial and parallel connection
+ * routers and encapsulates the common variables and helper functions for the two routers
+ */
 template<typename HeapImplementation>
 class ConnectionRouter : public ConnectionRouterInterface {
   public:
@@ -28,244 +42,357 @@ class ConnectionRouter : public ConnectionRouterInterface {
         const DeviceGrid& grid,
         const RouterLookahead& router_lookahead,
         const t_rr_graph_storage& rr_nodes,
-        const std::vector<t_rr_rc_data>& rr_rc_data,
-        const std::vector<t_rr_switch_inf>& rr_switch_inf,
-        std::vector<t_rr_node_route_inf>& rr_node_route_inf)
+        const RRGraphView* rr_graph,
+        const RRRCData& rr_rc_data,
+        const vtr::vector<RRSwitchId, t_rr_switch_inf>& rr_switch_inf,
+        vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf,
+        bool is_flat,
+        int route_verbosity)
         : grid_(grid)
         , router_lookahead_(router_lookahead)
         , rr_nodes_(rr_nodes.view())
-        , rr_rc_data_(rr_rc_data.data(), rr_rc_data.size())
+        , rr_graph_(rr_graph)
+        , rr_rc_data_(rr_rc_data)
         , rr_switch_inf_(rr_switch_inf.data(), rr_switch_inf.size())
-        , rr_node_route_inf_(rr_node_route_inf.data(), rr_node_route_inf.size())
+        , rr_node_route_inf_(rr_node_route_inf)
+        , is_flat_(is_flat)
+        , has_bus_muxes_(is_flat && !g_vpr_ctx.device().rr_bus_muxes.empty())
+        , route_verbosity_(route_verbosity)
         , router_stats_(nullptr)
-        , router_debug_(false) {
+        , router_debug_(false)
+        , path_search_cumulative_time(0) {
         heap_.init_heap(grid);
-        heap_.set_prune_limit(rr_nodes_.size(), kHeapPruneFactor * rr_nodes_.size());
     }
 
-    // Clear's the modified list.  Should be called after reset_path_costs
-    // have been called.
-    void clear_modified_rr_node_info() final {
-        modified_rr_node_inf_.clear();
-    }
+    virtual ~ConnectionRouter() {}
 
-    // Reset modified data in rr_node_route_inf based on modified_rr_node_inf.
-    void reset_path_costs() final {
-        ::reset_path_costs(modified_rr_node_inf_);
-    }
+    /**
+     * @brief Clears the modified list
+     * @note Should be called after reset_path_costs have been called
+     */
+    virtual void clear_modified_rr_node_info() = 0;
 
-    // Finds a path from the route tree rooted at rt_root to sink_node
-    //
-    // This is used when you want to allow previous routing of the same net to
-    // serve as valid start locations for the current connection.
-    //
-    // Returns either the last element of the path, or nullptr if no path is
-    // found
-    std::pair<bool, t_heap> timing_driven_route_connection_from_route_tree(
-        t_rt_node* rt_root,
-        int sink_node,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box,
-        RouterStats& router_stats) final;
+    /**
+     * @brief Resets modified data in rr_node_route_inf based on modified_rr_node_inf
+     */
+    virtual void reset_path_costs() = 0;
 
-    // Finds a path from the route tree rooted at rt_root to sink_node for a
-    // high fanout net.
-    //
-    // Unlike timing_driven_route_connection_from_route_tree(), only part of
-    // the route tree which is spatially close to the sink is added to the heap.
-    std::pair<bool, t_heap> timing_driven_route_connection_from_route_tree_high_fanout(
-        t_rt_node* rt_root,
-        int sink_node,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box,
+    /**
+     * @brief Finds a path from the route tree rooted at rt_root to sink_node
+     * @note This is used when you want to allow previous routing of the same
+     * net to serve as valid start locations for the current connection.
+     * @param rt_root RouteTreeNode describing the current routing state
+     * @param sink_node Sink node ID to route to
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     * @param router_stats Update router statistics
+     * @param conn_params Parameters to guide the routing of the given connection
+     * @return A tuple of:
+     * - bool: path exists? (hard failure, rr graph disconnected)
+     * - bool: should retry with full bounding box? (only used in parallel routing)
+     * - RTExploredNode: the explored sink node, from which the cheapest path can be found via back-tracing
+     */
+    std::tuple<bool, bool, RTExploredNode> timing_driven_route_connection_from_route_tree(
+        const RouteTreeNode& rt_root,
+        RRNodeId sink_node,
+        const t_conn_cost_params& cost_params,
+        const t_bb& bounding_box,
+        RouterStats& router_stats,
+        const ConnectionParameters& conn_params) final;
+
+    /**
+     * @brief Finds a path from the route tree rooted at rt_root to sink_node for a high fanout net
+     * @note Unlike timing_driven_route_connection_from_route_tree(), only part of the route tree which
+     * is spatially close to the sink is added to the heap.
+     * @param rt_root RouteTreeNode describing the current routing state
+     * @param sink_node Sink node ID to route to
+     * @param cost_params Cost function parameters
+     * @param net_bounding_box Keep search confined to this bounding box
+     * @param spatial_rt_lookup Route tree spatial lookup
+     * @param has_3d_switchblocks Per-layer flag indicating whether the layer has 3D switch blocks
+     * @param router_stats Update router statistics
+     * @param conn_params Parameters to guide the routing of the given connection
+     * @return A tuple of:
+     * - bool: path exists? (hard failure, rr graph disconnected)
+     * - bool: should retry with full bounding box? (only used in parallel routing)
+     * - RTExploredNode: the explored sink node, from which the cheapest path can be found via back-tracing
+     */
+    std::tuple<bool, bool, RTExploredNode> timing_driven_route_connection_from_route_tree_high_fanout(
+        const RouteTreeNode& rt_root,
+        RRNodeId sink_node,
+        const t_conn_cost_params& cost_params,
+        const t_bb& net_bounding_box,
         const SpatialRouteTreeLookup& spatial_rt_lookup,
-        RouterStats& router_stats) final;
+        const std::vector<bool>& has_3d_switchblocks,
+        RouterStats& router_stats,
+        const ConnectionParameters& conn_params) final;
 
-    // Finds a path from the route tree rooted at rt_root to all sinks
-    // available.
-    //
-    // Each element of the returned vector is a reachable sink.
-    //
-    // If cost_params.astar_fac is set to 0, this effectively becomes
-    // Dijkstra's algorithm with a modified exit condition (runs until heap is
-    // empty).  When using cost_params.astar_fac = 0, for efficiency the
-    // RouterLookahead used should be the NoOpLookahead.
-    std::vector<t_heap> timing_driven_find_all_shortest_paths_from_route_tree(
-        t_rt_node* rt_root,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box,
-        RouterStats& router_stats) final;
+    /**
+     * @brief Finds shortest paths from the route tree rooted at rt_root to all sinks available
+     * @note Unlike timing_driven_route_connection_from_route_tree(), only part of the route tree which
+     * is spatially close to the sink is added to the heap.
+     * @note If cost_params.astar_fac is set to 0, this effectively becomes Dijkstra's algorithm with a
+     * modified exit condition (runs until heap is empty). When using cost_params.astar_fac = 0, for
+     * efficiency the RouterLookahead used should be the NoOpLookahead.
+     * @note This routine is currently used only to generate information that may be helpful in debugging
+     * an architecture.
+     * @param rt_root RouteTreeNode describing the current routing state
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     * @param router_stats Update router statistics
+     * @param conn_params Parameters to guide the routing of the given connection
+     * @return A vector where each element is a reachable sink
+     */
+    virtual vtr::vector<RRNodeId, RTExploredNode> timing_driven_find_all_shortest_paths_from_route_tree(
+        const RouteTreeNode& rt_root,
+        const t_conn_cost_params& cost_params,
+        const t_bb& bounding_box,
+        RouterStats& router_stats,
+        const ConnectionParameters& conn_params) = 0;
 
+    /**
+     * @brief Sets router debug option
+     * @param router_debug Router debug option
+     */
     void set_router_debug(bool router_debug) final {
         router_debug_ = router_debug;
     }
 
-    // Empty the route tree set used for RCV node detection
-    // Will return if RCV is disabled
-    // Called after each net is finished routing to flush the set
-    void empty_rcv_route_tree_set() final;
-
-    // Enable or disable RCV in connection router
-    // Enabling this will utilize extra path structures, as well as the RCV cost function
-    //
-    // Ensure route budgets have been calculated before enabling this
-    void set_rcv_enabled(bool enable) final;
-
-  private:
-    // Mark that data associated with rr_node "inode" has been modified, and
-    // needs to be reset in reset_path_costs.
-    void add_to_mod_list(int inode) {
-        if (std::isinf(rr_node_route_inf_[inode].path_cost)) {
-            modified_rr_node_inf_.push_back(inode);
-        }
+    /**
+     * @brief Empties the route tree set used for RCV node detection
+     * @note Will immediately return if RCV is disabled. Called after
+     * each net is finished routing to flush the set.
+     */
+    void empty_rcv_route_tree_set() final {
+        rcv_path_manager.empty_route_tree_nodes();
     }
 
-    // Update the route path to the node pointed to by cheapest.
-    inline void update_cheapest(t_heap* cheapest) {
-        update_cheapest(cheapest, &rr_node_route_inf_[cheapest->index]);
-    }
+    /**
+     * @brief Enables or disables RCV in connection router
+     * @note Enabling this will utilize extra path structures, as well as
+     * the RCV cost function. Ensure route budgets have been calculated
+     * before enabling this.
+     * @param enable Whether enabling RCV or not
+     */
+    virtual void set_rcv_enabled(bool enable) = 0;
 
-    inline void update_cheapest(t_heap* cheapest, t_rr_node_route_inf* route_inf) {
-        //Record final link to target
-        add_to_mod_list(cheapest->index);
+  protected:
+    /**
+     * @brief Common logic from timing_driven_route_connection_from_route_tree and
+     * timing_driven_route_connection_from_route_tree_high_fanout for running
+     * the connection router.
+     * @param rt_root RouteTreeNode describing the current routing state
+     * @param sink_node Sink node ID to route to
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     * @return bool signal to retry this connection with a full-device bounding box
+     */
+    bool timing_driven_route_connection_common_setup(
+        const RouteTreeNode& rt_root,
+        RRNodeId sink_node,
+        const t_conn_cost_params& cost_params,
+        const t_bb& bounding_box);
 
-        route_inf->prev_node = cheapest->prev_node();
-        route_inf->prev_edge = cheapest->prev_edge();
-        route_inf->path_cost = cheapest->cost;
-        route_inf->backward_path_cost = cheapest->backward_path_cost;
-    }
+    /**
+     * @brief Finds a path to sink_node, starting from the elements currently in the heap
+     * @note If the path is not found, which means that the path_cost of sink_node in RR
+     * node route info has never been updated, `rr_node_route_inf_[sink_node].path_cost`
+     * will be the initial value (i.e., float infinity). This case can be detected by
+     * `std::isinf(rr_node_route_inf_[sink_node].path_cost)`.
+     * @note This is the core maze routing routine. For understanding the connection
+     * router, start here.
+     * @param sink_node Sink node ID to route to
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     */
+    void timing_driven_route_connection_from_heap(
+        RRNodeId sink_node,
+        const t_conn_cost_params& cost_params,
+        const t_bb& bounding_box);
 
-    // Common logic from timing_driven_route_connection_from_route_tree and
-    // timing_driven_route_connection_from_route_tree_high_fanout for running
-    // connection router.
-    t_heap* timing_driven_route_connection_common_setup(
-        t_rt_node* rt_root,
-        int sink_node,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box);
+    /**
+     * @brief Finds the single shortest path from current heap to the sink node in the RR graph
+     * @param sink_node Sink node ID to route to
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     * @param target_bb Prune IPINs that lead to blocks other than the target block
+     */
+    virtual void timing_driven_find_single_shortest_path_from_heap(RRNodeId sink_node,
+                                                                   const t_conn_cost_params& cost_params,
+                                                                   const t_bb& bounding_box,
+                                                                   const t_bb& target_bb) = 0;
 
-    // Finds a path to sink_node, starting from the elements currently in the
-    // heap.
-    //
-    // This is the core maze routing routine.
-    //
-    // Note: For understanding the connection router, start here.
-    //
-    // Returns either the last element of the path, or nullptr if no path is
-    // found
-    t_heap* timing_driven_route_connection_from_heap(
-        int sink_node,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box);
+    /**
+     * @brief Finds shortest paths from current heap to all nodes in the RR graph
+     * @param cost_params Cost function parameters
+     * @param bounding_box Keep search confined to this bounding box
+     * @return A vector where each element contains the shortest route to a specific sink node
+     */
+    virtual vtr::vector<RRNodeId, RTExploredNode> timing_driven_find_all_shortest_paths_from_heap(
+        const t_conn_cost_params& cost_params,
+        const t_bb& bounding_box) = 0;
 
-    // Expand this current node if it is a cheaper path.
-    void timing_driven_expand_cheapest(
-        t_heap* cheapest,
-        int target_node,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box);
+    /**
+     * @brief Unconditionally adds rt_node to the heap
+     * @note If you want to respect rt_node->re_expand that is the caller's responsibility.
+     * @todo Consider moving this function into the ConnectionRouter class after checking
+     * the different prune functions of the serial and parallel connection routers.
+     * @param rt_node RouteTreeNode to be added to the heap
+     * @param target_node Target node ID to route to
+     * @param cost_params Cost function parameters
+     * @param net_bb Do not push to heap if not in bounding box
+     */
+    virtual void add_route_tree_node_to_heap(
+        const RouteTreeNode& rt_node,
+        RRNodeId target_node,
+        const t_conn_cost_params& cost_params,
+        const t_bb& net_bb) = 0;
 
-    // Expand each neighbor of the current node.
-    void timing_driven_expand_neighbours(
-        t_heap* current,
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box,
-        int target_node);
-
-    // Conditionally adds to_node to the router heap (via path from from_node
-    // via from_edge).
-    //
-    // RR nodes outside bounding box specified in bounding_box are not added
-    // to the heap.
-    void timing_driven_expand_neighbour(
-        t_heap* current,
-        const int from_node,
-        const RREdgeId from_edge,
-        const int to_node,
-        const t_conn_cost_params cost_params,
-        const t_bb bounding_box,
-        int target_node,
-        const t_bb target_bb);
-
-    // Add to_node to the heap, and also add any nodes which are connected by
-    // non-configurable edges
-    void timing_driven_add_to_heap(
-        const t_conn_cost_params cost_params,
-        const t_heap* current,
-        const int from_node,
-        const int to_node,
-        const RREdgeId from_edge,
-        const int target_node);
-
-    // Calculates the cost of reaching to_node
+    /**
+     * @brief Calculates the cost of reaching to_node
+     * @note Equivalent to evaluate_timing_driven_backward_costs() followed by
+     * evaluate_timing_driven_total_cost(). Callers that prune on the backward
+     * cost alone (e.g. the serial router's pre-push prune when RCV is disabled)
+     * can call the two helpers separately and skip the (expensive) lookahead
+     * evaluation for pruned edges.
+     * @param to Neighbor node to calculate costs before being expanded
+     * @param cost_params Cost function parameters
+     * @param from_node Current node ID being explored
+     * @param target_node Target node ID to route to
+     */
     void evaluate_timing_driven_node_costs(
-        t_heap* to,
-        const t_conn_cost_params cost_params,
-        const int from_node,
-        const int to_node,
-        const RREdgeId from_edge,
-        const int target_node);
+        RTExploredNode* to,
+        const t_conn_cost_params& cost_params,
+        RRNodeId from_node,
+        RRNodeId target_node);
 
-    // Find paths from current heap to all nodes in the RR graph
-    std::vector<t_heap> timing_driven_find_all_shortest_paths_from_heap(
-        const t_conn_cost_params cost_params,
-        t_bb bounding_box);
+    /**
+     * @brief Calculates the backward path cost, R_upstream and delay of
+     * reaching to_node (everything except the lookahead-based total cost)
+     * @param to Neighbor node to calculate costs before being expanded
+     * @param cost_params Cost function parameters
+     * @param from_node Current node ID being explored
+     * @return Tdel of to_node, needed by evaluate_timing_driven_total_cost()
+     */
+    float evaluate_timing_driven_backward_costs(RTExploredNode* to,
+                                                const t_conn_cost_params& cost_params,
+                                                RRNodeId from_node);
 
-    void empty_heap_annotating_node_route_inf();
+    /**
+     * @brief Calculates the total cost of to_node (backward cost + expected
+     * cost to the target, or the RCV cost when RCV is enabled)
+     * @note Must be called after evaluate_timing_driven_backward_costs() has
+     * filled in to's backward_path_cost and R_upstream.
+     * @param to Neighbor node to calculate costs before being expanded
+     * @param cost_params Cost function parameters
+     * @param from_node Current node ID being explored
+     * @param target_node Target node ID to route to
+     * @param Tdel Delay of to_node, returned by evaluate_timing_driven_backward_costs()
+     */
+    void evaluate_timing_driven_total_cost(RTExploredNode* to,
+                                           const t_conn_cost_params& cost_params,
+                                           RRNodeId from_node,
+                                           RRNodeId target_node,
+                                           float Tdel);
 
-    //Adds the route tree rooted at rt_node to the heap, preparing it to be
-    //used as branch-points for further routing.
-    void add_route_tree_to_heap(t_rt_node* rt_node,
-                                int target_node,
-                                const t_conn_cost_params cost_params);
-
-    // Evaluate node costs using the RCV algorith
+    /**
+     * @brief Evaluate node costs using the RCV algorithm
+     * @param cost_params Cost function parameters
+     * @param to_node Neighbor node to calculate costs before being expanded
+     * @param target_node Target node ID to route to
+     * @param backwards_delay "Known" delay up to and including to_node
+     * @param backwards_cong "Known" congestion up to and including to_node
+     * @param R_upstream Upstream resistance to ground from to_node
+     * @return Node cost using RCV
+     */
     float compute_node_cost_using_rcv(const t_conn_cost_params cost_params,
-                                      const int to_node,
-                                      const int target_node,
-                                      const float backwards_delay,
-                                      const float backwards_cong,
-                                      const float R_upstream);
+                                      RRNodeId to_node,
+                                      RRNodeId target_node,
+                                      float backwards_delay,
+                                      float backwards_cong,
+                                      float R_upstream);
 
-    //Unconditionally adds rt_node to the heap
-    //
-    //Note that if you want to respect rt_node->re_expand that is the caller's
-    //responsibility.
-    void add_route_tree_node_to_heap(
-        t_rt_node* rt_node,
-        int target_node,
-        const t_conn_cost_params cost_params);
-
+    /**
+     * @brief Adds the route tree rooted at rt_node to the heap, preparing
+     * it to be used as branch-points for further routing
+     * @param rt_node RouteTreeNode to be added to the heap
+     * @param target_node Target node ID to route to
+     * @param cost_params Cost function parameters
+     * @param net_bb Do not push to heap if not in bounding box
+     */
+    void add_route_tree_to_heap(const RouteTreeNode& rt_node,
+                                RRNodeId target_node,
+                                const t_conn_cost_params& cost_params,
+                                const t_bb& net_bb);
+    /**
+     * @brief For high fanout nets, adds only route tree nodes which are
+     * spatially close to the sink
+     * @param rt_root RouteTreeNode to be added to the heap
+     * @param target_node Target node ID to route to
+     * @param cost_params Cost function parameters
+     * @param spatial_route_tree_lookup Route tree spatial lookup
+     * @param net_bounding_box Do not push to heap if not in bounding box
+     * @param has_3d_switchblocks Per-layer flag indicating whether the layer has 3D switch blocks
+     */
     t_bb add_high_fanout_route_tree_to_heap(
-        t_rt_node* rt_root,
-        int target_node,
-        const t_conn_cost_params cost_params,
+        const RouteTreeNode& rt_root,
+        RRNodeId target_node,
+        const t_conn_cost_params& cost_params,
         const SpatialRouteTreeLookup& spatial_route_tree_lookup,
-        t_bb net_bounding_box);
+        const t_bb& net_bounding_box,
+        const std::vector<bool>& has_3d_switchblocks);
 
+    /** Device grid */
     const DeviceGrid& grid_;
+
+    /** Router lookahead */
     const RouterLookahead& router_lookahead_;
+
+    /** RR node data */
     const t_rr_graph_view rr_nodes_;
-    vtr::array_view<const t_rr_rc_data> rr_rc_data_;
-    vtr::array_view<const t_rr_switch_inf> rr_switch_inf_;
-    vtr::array_view<t_rr_node_route_inf> rr_node_route_inf_;
-    std::vector<int> modified_rr_node_inf_;
+
+    /** RR graph */
+    const RRGraphView* rr_graph_;
+
+    /** RR node resistance/capacitance data */
+    const RRRCData& rr_rc_data_;
+
+    /** RR switch data */
+    std::span<const t_rr_switch_inf> rr_switch_inf_;
+
+    /** RR node extra information needed during routing */
+    vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf_;
+
+    /** Is flat router enabled or not? */
+    bool is_flat_;
+
+    /** Does the routed architecture have bus-based muxes to negotiate (flat routing only)? */
+    bool has_bus_muxes_;
+
+    /** The verbosity of log messages in the router. */
+    int route_verbosity_;
+
+    /** Router statistics (e.g., heap push/pop counts) */
     RouterStats* router_stats_;
+
+    /** Parameters to guide the routing of the given connection */
+    const ConnectionParameters* conn_params_;
+
+    /** Templated heap instance (e.g., binary heap, 4-ary heap, MultiQueue-based parallel heap) */
     HeapImplementation heap_;
+
+    /** Router debug option */
     bool router_debug_;
 
-    // The path manager for RCV, keeps track of the route tree as a set, also manages the allocation of the heap types
+    /** Cumulative time spent in the path search part of the connection router */
+    std::chrono::microseconds path_search_cumulative_time;
+
+    //@{
+    /** The path manager for RCV, keeps track of the route tree as a set, also
+     * manages the allocation of `rcv_path_data`. */
     PathManager rcv_path_manager;
+    vtr::vector<RRNodeId, t_heap_path*> rcv_path_data;
+    //@}
 };
 
-// Construct a connection router that uses the specified heap type.
-std::unique_ptr<ConnectionRouterInterface> make_connection_router(
-    e_heap_type heap_type,
-    const DeviceGrid& grid,
-    const RouterLookahead& router_lookahead,
-    const t_rr_graph_storage& rr_nodes,
-    const std::vector<t_rr_rc_data>& rr_rc_data,
-    const std::vector<t_rr_switch_inf>& rr_switch_inf,
-    std::vector<t_rr_node_route_inf>& rr_node_route_inf);
-
-#endif /* _CONNECTION_ROUTER_H */
+#include "connection_router.tpp"

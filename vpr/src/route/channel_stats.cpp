@@ -1,12 +1,12 @@
 #include "channel_stats.h"
-#include "route_util.h"
+#include "route_utilization.h"
 #include "histogram.h"
 #include "globals.h"
 
-void print_channel_stats() {
-    std::vector<HistogramBucket> histogram;
+void print_channel_stats(bool is_flat) {
+    const auto& device_ctx = g_vpr_ctx.device();
 
-    auto& device_ctx = g_vpr_ctx.device();
+    std::vector<HistogramBucket> histogram;
 
     //Bins by 10%, with final > 1 bin
     histogram.emplace_back(0., 0.1);
@@ -20,11 +20,11 @@ void print_channel_stats() {
     histogram.emplace_back(0.9, 1.0);
     histogram.emplace_back(1.0, std::numeric_limits<float>::infinity());
 
-    auto chanx_usage = calculate_routing_usage(CHANX);
-    auto chany_usage = calculate_routing_usage(CHANY);
+    auto chanx_usage = calculate_routing_usage(e_rr_type::CHANX, is_flat, true);
+    auto chany_usage = calculate_routing_usage(e_rr_type::CHANY, is_flat, true);
 
-    auto chanx_avail = calculate_routing_avail(CHANX);
-    auto chany_avail = calculate_routing_avail(CHANY);
+    auto chanx_avail = calculate_routing_avail(e_rr_type::CHANX);
+    auto chany_avail = calculate_routing_avail(e_rr_type::CHANY);
 
     auto comp = [](const HistogramBucket& bucket, float value) {
         return bucket.max_value < value;
@@ -36,7 +36,7 @@ void print_channel_stats() {
     for (size_t x = 0; x < device_ctx.grid.width() - 1; ++x) {
         for (size_t y = 0; y < device_ctx.grid.height() - 1; ++y) {
             float chanx_util = routing_util(chanx_usage[x][y], chanx_avail[x][y]);
-            float chany_util = routing_util(chanx_usage[x][y], chanx_avail[x][y]);
+            float chany_util = routing_util(chany_usage[x][y], chany_avail[x][y]);
 
             for (float util : {chanx_util, chany_util}) {
                 //Record peak utilization
@@ -56,7 +56,7 @@ void print_channel_stats() {
     }
 
     //Makes more sense from high to low, so reverse
-    std::reverse(histogram.begin(), histogram.end());
+    std::ranges::reverse(histogram);
 
     VTR_LOG("\n");
     VTR_LOG("Routing channel utilization histogram:\n");

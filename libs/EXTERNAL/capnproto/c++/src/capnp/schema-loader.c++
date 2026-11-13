@@ -29,8 +29,9 @@
 #include <kj/vector.h>
 #include <algorithm>
 #include <kj/map.h>
+#include <capnp/stream.capnp.h>
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #include <atomic>
 #endif
 
@@ -112,6 +113,8 @@ public:
   const _::RawBrandedSchema* getUnbound(const _::RawSchema* schema);
 
   kj::Array<Schema> getAllLoaded() const;
+
+  void computeOptimizationHints();
 
   void requireStructSize(uint64_t id, uint dataWordCount, uint pointerCount);
   // Require any struct nodes loaded with this ID -- in the past and in the future -- to have at
@@ -1294,7 +1297,7 @@ _::RawSchema* SchemaLoader::Impl::load(const schema::Node::Reader& reader, bool 
     // If this schema is not newly-allocated, it may already be in the wild, specifically in the
     // dependency list of other schemas.  Once the initializer is null, it is live, so we must do
     // a release-store here.
-#if __GNUC__
+#if __GNUC__ || defined(__clang__)
     __atomic_store_n(&schema->lazyInitializer, nullptr, __ATOMIC_RELEASE);
     __atomic_store_n(&schema->defaultBrand.lazyInitializer, nullptr, __ATOMIC_RELEASE);
 #elif _MSC_VER
@@ -1391,7 +1394,7 @@ _::RawSchema* SchemaLoader::Impl::loadNative(const _::RawSchema* nativeSchema) {
     // If this schema is not newly-allocated, it may already be in the wild, specifically in the
     // dependency list of other schemas.  Once the initializer is null, it is live, so we must do
     // a release-store here.
-#if __GNUC__
+#if __GNUC__ || defined(__clang__)
     __atomic_store_n(&schema->lazyInitializer, nullptr, __ATOMIC_RELEASE);
     __atomic_store_n(&schema->defaultBrand.lazyInitializer, nullptr, __ATOMIC_RELEASE);
 #elif _MSC_VER
@@ -1507,14 +1510,8 @@ const _::RawBrandedSchema* SchemaLoader::Impl::makeBranded(
 
 const _::RawBrandedSchema* SchemaLoader::Impl::makeBranded(
     const _::RawSchema* schema, kj::ArrayPtr<const _::RawBrandedSchema::Scope> bindings) {
-  // Note that even if `bindings` is empty, we never want to return defaultBrand here because
-  // defaultBrand has special status. Normally, the lack of bindings means all parameters are
-  // "unspecified", which means their bindings are unknown and should be treated as AnyPointer.
-  // But defaultBrand represents a special case where all parameters are still parameters -- they
-  // haven't been bound in the first place. defaultBrand is used to represent the unbranded generic
-  // type, while a no-binding brand is equivalent to binding all parameters to AnyPointer.
-
   if (bindings.size() == 0) {
+    // `defaultBrand` is the version where all type parameters are bound to `AnyPointer`.
     return &schema->defaultBrand;
   }
 
@@ -1728,9 +1725,17 @@ void SchemaLoader::Impl::makeDep(_::RawBrandedSchema::Binding& result,
     uint64_t typeId, schema::Type::Which whichType, schema::Node::Which expectedKind,
     schema::Brand::Reader brand, kj::StringPtr scopeName,
     kj::Maybe<kj::ArrayPtr<const _::RawBrandedSchema::Scope>> brandBindings) {
-  const _::RawSchema* schema = loadEmpty(typeId,
-      kj::str("(unknown type; seen as dependency of ", scopeName, ")"),
-      expectedKind, true);
+  const _::RawSchema* schema;
+  if (typeId == capnp::typeId<StreamResult>()) {
+    // StreamResult is a very special type that is used to mark when a method is declared as
+    // streaming ("foo @0 () -> stream;"). We like to auto-load it if we see it as someone's
+    // dependency.
+    schema = loadNative(&_::rawSchema<StreamResult>());
+  } else {
+    schema = loadEmpty(typeId,
+        kj::str("(unknown type; seen as dependency of ", scopeName, ")"),
+        expectedKind, true);
+  }
   result.which = static_cast<uint8_t>(whichType);
   result.schema = makeBranded(schema, brand, brandBindings);
 }
@@ -1824,6 +1829,175 @@ kj::Array<Schema> SchemaLoader::Impl::getAllLoaded() const {
   return result;
 }
 
+void SchemaLoader::Impl::computeOptimizationHints() {
+  kj::HashMap<_::RawSchema*, kj::Vector<_::RawSchema*>> undecided;
+  // This map contains schemas for which we haven't yet decided if they might have capabilities.
+  // They at least do not directly contain capabilities, but they can't be fully decided until
+  // the dependents are decided.
+  //
+  // Each entry maps to a list of other schemas whose decisions depend on this schema. When a
+  // schema in the map is discovered to contain capabilities, then all these dependents must also
+  // be presumed to contain capabilities.
+
+  // First pass: Decide on the easy cases and populate the `undecided` map with hard cases.
+  for (auto& entry: schemas) {
+    _::RawSchema* schema = entry.value;
+
+    // Default to assuming everything could contain caps.
+    schema->mayContainCapabilities = true;
+
+    if (schema->lazyInitializer != nullptr) {
+      // Not initialized yet, so we have to be conservative and assume there could be capabilities.
+      continue;
+    }
+
+    auto node = readMessageUnchecked<schema::Node>(schema->encodedNode);
+
+    if (!node.isStruct()) {
+      // Non-structs are irrelevant.
+      continue;
+    }
+
+    auto structSchema = node.getStruct();
+
+    bool foundAnyCaps = false;
+    bool foundAnyStructs = false;
+    for (auto field: structSchema.getFields()) {
+      switch (field.which()) {
+        case schema::Field::GROUP:
+          foundAnyStructs = true;
+          break;
+        case schema::Field::SLOT: {
+          auto type = field.getSlot().getType();
+          while (type.isList()) {
+            type = type.getList().getElementType();
+          }
+
+          switch (type.which()) {
+            case schema::Type::VOID:
+            case schema::Type::BOOL:
+            case schema::Type::INT8:
+            case schema::Type::INT16:
+            case schema::Type::INT32:
+            case schema::Type::INT64:
+            case schema::Type::UINT8:
+            case schema::Type::UINT16:
+            case schema::Type::UINT32:
+            case schema::Type::UINT64:
+            case schema::Type::FLOAT32:
+            case schema::Type::FLOAT64:
+            case schema::Type::TEXT:
+            case schema::Type::DATA:
+            case schema::Type::ENUM:
+              // Not a capability.
+              break;
+
+            case schema::Type::STRUCT:
+              foundAnyStructs = true;
+              break;
+
+            case schema::Type::ANY_POINTER:  // could be a capability, or transitively contain one
+            case schema::Type::INTERFACE:    // definitely a capability
+              foundAnyCaps = true;
+              break;
+
+            case schema::Type::LIST:
+              KJ_UNREACHABLE;  // handled above
+          }
+          break;
+        }
+      }
+
+      if (foundAnyCaps) break;  // no point continuing
+    }
+
+    if (foundAnyCaps) {
+      // Definitely has capabilities, don't add to `undecided`.
+    } else if (!foundAnyStructs) {
+      // Definitely does NOT have capabilities. Go ahead and set the hint and don't add to
+      // `undecided`.
+      schema->mayContainCapabilities = false;
+    } else {
+      // Don't know yet. Mark as no-capabilities for now, but place in `undecided` set to review
+      // later.
+      schema->mayContainCapabilities = false;
+      undecided.insert(schema, {});
+    }
+  }
+
+  // Second pass: For all undecided schemas, check dependencies and register as dependents where
+  // needed.
+  kj::Vector<_::RawSchema*> decisions;  // Schemas that have become decided.
+  for (auto& entry: undecided) {
+    auto schema = entry.key;
+
+    auto node = readMessageUnchecked<schema::Node>(schema->encodedNode).getStruct();
+
+    for (auto field: node.getFields()) {
+      kj::Maybe<uint64_t> depId;
+
+      switch (field.which()) {
+        case schema::Field::GROUP:
+          depId = field.getGroup().getTypeId();
+          break;
+        case schema::Field::SLOT: {
+          auto type = field.getSlot().getType();
+          while (type.isList()) {
+            type = type.getList().getElementType();
+          }
+          if (type.isStruct()) {
+            depId = type.getStruct().getTypeId();
+          }
+          break;
+        }
+      }
+
+      KJ_IF_MAYBE(d, depId) {
+        _::RawSchema* dep = KJ_ASSERT_NONNULL(schemas.find(*d));
+
+        if (dep->mayContainCapabilities) {
+          // Oops, this dependency is already known to have capabilities. So that means the current
+          // schema also has capabilities, transitively. Mark it as such.
+          schema->mayContainCapabilities = true;
+
+          // Schedule this schema for removal later.
+          decisions.add(schema);
+
+          // Might as well end the loop early.
+          break;
+        } else KJ_IF_MAYBE(undecidedEntry, undecided.find(dep)) {
+          // This dependency is in the undecided set. Register interest in it.
+          undecidedEntry->add(schema);
+        } else {
+          // This dependency is decided, and the decision is that it has no capabilities. So it
+          // has no impact on the dependent.
+        }
+      }
+    }
+  }
+
+  // Third pass: For each decision we made, remove it and propagate to its dependents.
+  while (!decisions.empty()) {
+    _::RawSchema* decision = decisions.back();
+    decisions.removeLast();
+
+    auto& entry = KJ_ASSERT_NONNULL(undecided.findEntry(decision));
+    for (auto& dependent: entry.value) {
+      if (!dependent->mayContainCapabilities) {
+        // The dependent was not previously decided. But, we now know it has a dependency which has
+        // capabilities, therefore we can decide the dependent.
+        dependent->mayContainCapabilities = true;
+        decisions.add(dependent);
+      }
+    }
+    undecided.erase(entry);
+  }
+
+  // Everything that is left in `undecided` must only be waiting on other undecided schemas. We
+  // can therefore decide that none of them have any capabilities. We marked them as such
+  // earlier so now we're all done.
+}
+
 void SchemaLoader::Impl::requireStructSize(uint64_t id, uint dataWordCount, uint pointerCount) {
   structSizeRequirements.upsert(id, { uint16_t(dataWordCount), uint16_t(pointerCount) },
       [&](RequiredSize& existingValue, RequiredSize&& newValue) {
@@ -1909,7 +2083,7 @@ void SchemaLoader::InitializerImpl::init(const _::RawSchema* schema) const {
               "A schema not belonging to this loader used its initializer.");
 
     // Disable the initializer.
-#if __GNUC__
+#if __GNUC__ || defined(__clang__)
     __atomic_store_n(&mutableSchema->lazyInitializer, nullptr, __ATOMIC_RELEASE);
     __atomic_store_n(&mutableSchema->defaultBrand.lazyInitializer, nullptr, __ATOMIC_RELEASE);
 #elif _MSC_VER
@@ -1946,7 +2120,7 @@ void SchemaLoader::BrandedInitializerImpl::init(const _::RawBrandedSchema* schem
   mutableSchema->dependencyCount = deps.size();
 
   // It's initialized now, so disable the initializer.
-#if __GNUC__
+#if __GNUC__ || defined(__clang__)
   __atomic_store_n(&mutableSchema->lazyInitializer, nullptr, __ATOMIC_RELEASE);
 #elif _MSC_VER
   std::atomic_thread_fence(std::memory_order_release);
@@ -1986,7 +2160,10 @@ kj::Maybe<Schema> SchemaLoader::tryGet(
   if (getResult.schema != nullptr && getResult.schema->lazyInitializer == nullptr) {
     if (brand.getScopes().size() > 0) {
       auto brandedSchema = impl.lockExclusive()->get()->makeBranded(
-          getResult.schema, brand, kj::arrayPtr(scope.raw->scopes, scope.raw->scopeCount));
+          getResult.schema, brand,
+          scope.raw->isUnbound()
+              ? kj::Maybe<kj::ArrayPtr<const _::RawBrandedSchema::Scope>>(nullptr)
+              : kj::arrayPtr(scope.raw->scopes, scope.raw->scopeCount));
       brandedSchema->ensureInitialized();
       return Schema(brandedSchema);
     } else {
@@ -2078,6 +2255,10 @@ Schema SchemaLoader::loadOnce(const schema::Node::Reader& reader) const {
 
 kj::Array<Schema> SchemaLoader::getAllLoaded() const {
   return impl.lockShared()->get()->getAllLoaded();
+}
+
+void SchemaLoader::computeOptimizationHints() {
+  impl.lockExclusive()->get()->computeOptimizationHints();
 }
 
 void SchemaLoader::loadNative(const _::RawSchema* nativeSchema) {

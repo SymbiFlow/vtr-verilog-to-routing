@@ -23,6 +23,11 @@
 #include "debug.h"
 #include <stdlib.h>
 
+#if KJ_DEBUG_TABLE_IMPL
+#undef KJ_DASSERT
+#define KJ_DASSERT KJ_ASSERT
+#endif
+
 namespace kj {
 namespace _ {
 
@@ -30,7 +35,7 @@ static inline uint lg(uint value) {
   // Compute floor(log2(value)).
   //
   // Undefined for value = 0.
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
   unsigned long i;
   auto found = _BitScanReverse(&i, value);
   KJ_DASSERT(found);  // !found means value = 0
@@ -161,15 +166,29 @@ kj::Array<HashBucket> rehash(kj::ArrayPtr<const HashBucket> oldBuckets, size_t t
   auto newBuckets = kj::heapArray<HashBucket>(size);
   memset(newBuckets.begin(), 0, sizeof(HashBucket) * size);
 
+  uint entryCount = 0;
+  uint collisionCount = 0;
+
   for (auto& oldBucket: oldBuckets) {
     if (oldBucket.isOccupied()) {
+      ++entryCount;
       for (uint i = oldBucket.hash % newBuckets.size();; i = probeHash(newBuckets, i)) {
         auto& newBucket = newBuckets[i];
         if (newBucket.isEmpty()) {
           newBucket = oldBucket;
           break;
         }
+        ++collisionCount;
       }
+    }
+  }
+
+  if (collisionCount > 16 + entryCount * 4) {
+    static bool warned = false;
+    if (!warned) {
+      KJ_LOG(WARNING, "detected excessive collisions in hash table; is your hash function OK?",
+          entryCount, collisionCount, kj::getStackTrace());
+      warned = true;
     }
   }
 
@@ -193,10 +212,41 @@ BTreeImpl::BTreeImpl()
       freelistSize(0),
       beginLeaf(0),
       endLeaf(0) {}
+
 BTreeImpl::~BTreeImpl() noexcept(false) {
   if (tree != &EMPTY_NODE) {
     aligned_free(tree);
   }
+}
+
+BTreeImpl::BTreeImpl(BTreeImpl&& other)
+  : BTreeImpl() {
+  *this = kj::mv(other);
+}
+
+BTreeImpl& BTreeImpl::operator=(BTreeImpl&& other) {
+  KJ_DASSERT(&other != this);
+
+  if (tree != &EMPTY_NODE) {
+    aligned_free(tree);
+  }
+  tree = other.tree;
+  treeCapacity = other.treeCapacity;
+  height = other.height;
+  freelistHead = other.freelistHead;
+  freelistSize = other.freelistSize;
+  beginLeaf = other.beginLeaf;
+  endLeaf = other.endLeaf;
+
+  other.tree = const_cast<NodeUnion*>(&EMPTY_NODE);
+  other.treeCapacity = 1;
+  other.height = 0;
+  other.freelistHead = 1;
+  other.freelistSize = 0;
+  other.beginLeaf = 0;
+  other.endLeaf = 0;
+
+  return *this;
 }
 
 const BTreeImpl::NodeUnion BTreeImpl::EMPTY_NODE = {{{0, {0}}}};
@@ -212,26 +262,37 @@ size_t BTreeImpl::verifyNode(size_t size, FunctionParam<bool(uint, uint)>& f,
     auto n = parent.keyCount();
     size_t total = 0;
     for (auto i: kj::zeroTo(n)) {
-      KJ_ASSERT(*parent.keys[i] < size);
+      KJ_ASSERT(*parent.keys[i] < size, n, i);
       total += verifyNode(size, f, parent.children[i], height - 1, parent.keys[i]);
-      KJ_ASSERT(i + 1 == n || f(*parent.keys[i], *parent.keys[i + 1]));
+      if (i > 0) {
+        KJ_ASSERT(f(*parent.keys[i - 1], *parent.keys[i]),
+            n, i, parent.keys[i - 1], parent.keys[i]);
+      }
     }
     total += verifyNode(size, f, parent.children[n], height - 1, maxRow);
-    KJ_ASSERT(maxRow == nullptr || f(*parent.keys[n-1], *maxRow));
+    if (maxRow != nullptr) {
+      KJ_ASSERT(f(*parent.keys[n-1], *maxRow), n, parent.keys[n-1], maxRow);
+    }
     return total;
   } else {
     auto& leaf = tree[pos].leaf;
     auto n = leaf.size();
     for (auto i: kj::zeroTo(n)) {
-      KJ_ASSERT(*leaf.rows[i] < size);
-      if (i + 1 < n) {
-        KJ_ASSERT(f(*leaf.rows[i], *leaf.rows[i + 1]));
-      } else {
-        KJ_ASSERT(maxRow == nullptr || leaf.rows[n-1] == maxRow);
+      KJ_ASSERT(*leaf.rows[i] < size, n, i);
+      if (i > 0) {
+        KJ_ASSERT(f(*leaf.rows[i - 1], *leaf.rows[i]),
+            n, i, leaf.rows[i - 1], leaf.rows[i]);
       }
+    }
+    if (maxRow != nullptr) {
+      KJ_ASSERT(leaf.rows[n-1] == maxRow, n);
     }
     return n;
   }
+}
+
+kj::String BTreeImpl::MaybeUint::toString() const {
+  return i == 0 ? kj::str("(null)") : kj::str(i - 1);
 }
 
 void BTreeImpl::logInconsistency() const {
@@ -274,7 +335,7 @@ void BTreeImpl::clear() {
     azero(tree, treeCapacity);
     height = 0;
     freelistHead = 1;
-    freelistSize = treeCapacity;
+    freelistSize = treeCapacity - 1;  // subtract one to account for the root node
     beginLeaf = 0;
     endLeaf = 0;
   }
@@ -288,16 +349,7 @@ void BTreeImpl::growTree(uint minCapacity) {
   // aligned_alloc() function. Unfortunately, many platforms don't implement it. Luckily, there
   // are usually alternatives.
 
-#if __APPLE__ || __BIONIC__
-  // OSX and Android lack aligned_alloc(), but have posix_memalign(). Fine.
-  void* allocPtr;
-  int error = posix_memalign(&allocPtr,
-      sizeof(BTreeImpl::NodeUnion), newCapacity * sizeof(BTreeImpl::NodeUnion));
-  if (error != 0) {
-    KJ_FAIL_SYSCALL("posix_memalign", error);
-  }
-  NodeUnion* newTree = reinterpret_cast<NodeUnion*>(allocPtr);
-#elif _WIN32
+#if _WIN32
   // Windows lacks aligned_alloc() but has its own _aligned_malloc() (which requires freeing using
   // _aligned_free()).
   // WATCH OUT: The argument order for _aligned_malloc() is opposite of aligned_alloc()!
@@ -305,11 +357,21 @@ void BTreeImpl::growTree(uint minCapacity) {
       _aligned_malloc(newCapacity * sizeof(BTreeImpl::NodeUnion), sizeof(BTreeImpl::NodeUnion)));
   KJ_ASSERT(newTree != nullptr, "memory allocation failed", newCapacity);
 #else
-  // Let's use the C11 standard.
-  NodeUnion* newTree = reinterpret_cast<NodeUnion*>(
-      aligned_alloc(sizeof(BTreeImpl::NodeUnion), newCapacity * sizeof(BTreeImpl::NodeUnion)));
-  KJ_ASSERT(newTree != nullptr, "memory allocation failed", newCapacity);
+  // macOS, OpenBSD, and Android lack aligned_alloc(), but have posix_memalign(). Fine.
+  void* allocPtr;
+  int error = posix_memalign(&allocPtr,
+      sizeof(BTreeImpl::NodeUnion), newCapacity * sizeof(BTreeImpl::NodeUnion));
+  if (error != 0) {
+    KJ_FAIL_SYSCALL("posix_memalign", error);
+  }
+  NodeUnion* newTree = reinterpret_cast<NodeUnion*>(allocPtr);
 #endif
+
+  // Note: C11 introduces aligned_alloc() as a standard, but it's still missing on many platforms,
+  //   so we don't use it. But if you wanted to use it, you'd do this:
+//  NodeUnion* newTree = reinterpret_cast<NodeUnion*>(
+//      aligned_alloc(sizeof(BTreeImpl::NodeUnion), newCapacity * sizeof(BTreeImpl::NodeUnion)));
+//  KJ_ASSERT(newTree != nullptr, "memory allocation failed", newCapacity);
 
   acopy(newTree, tree, treeCapacity);
   azero(newTree + treeCapacity, newCapacity - treeCapacity);
@@ -605,7 +667,7 @@ void BTreeImpl::renumber(uint oldRow, uint newRow, const SearchKey& searchKey) {
     auto& node = tree[pos].parent;
     uint indexInParent = searchKey.search(node);
     pos = node.children[indexInParent];
-    if (node.keys[indexInParent] == oldRow) {
+    if (indexInParent < kj::size(node.keys) && node.keys[indexInParent] == oldRow) {
       node.keys[indexInParent] = newRow;
     }
     KJ_DASSERT(pos != 0);
@@ -669,7 +731,7 @@ void BTreeImpl::merge(Leaf& dst, uint dstPos, uint pivot, Leaf& src) {
   KJ_DASSERT(dst.isHalfFull());
 
   constexpr size_t mid = Leaf::NROWS/2;
-  dst.rows[mid] = pivot;
+  KJ_DASSERT(dst.rows[mid-1] == pivot);
   acopy(dst.rows + mid, src.rows, mid);
 
   dst.next = src.next;
@@ -808,6 +870,19 @@ void BTreeImpl::Parent::eraseAfter(uint i) {
 const InsertionOrderIndex::Link InsertionOrderIndex::EMPTY_LINK = { 0, 0 };
 
 InsertionOrderIndex::InsertionOrderIndex(): capacity(0), links(const_cast<Link*>(&EMPTY_LINK)) {}
+InsertionOrderIndex::InsertionOrderIndex(InsertionOrderIndex&& other)
+    : capacity(other.capacity), links(other.links) {
+  other.capacity = 0;
+  other.links = const_cast<Link*>(&EMPTY_LINK);
+}
+InsertionOrderIndex& InsertionOrderIndex::operator=(InsertionOrderIndex&& other) {
+  KJ_DASSERT(&other != this);
+  capacity = other.capacity;
+  links = other.links;
+  other.capacity = 0;
+  other.links = const_cast<Link*>(&EMPTY_LINK);
+  return *this;
+}
 InsertionOrderIndex::~InsertionOrderIndex() noexcept(false) {
   if (links != &EMPTY_LINK) delete[] links;
 }

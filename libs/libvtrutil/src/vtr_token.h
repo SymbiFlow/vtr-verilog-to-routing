@@ -1,37 +1,56 @@
+#pragma once
 /**
- * Jason Luu
- * July 22, 2009
- * Tokenizer
+ * @file
+ * @author Jason Luu
+ * @Date July 22, 2009
+ * @brief Tokenizer
  */
 
-#ifndef TOKEN_H
-#define TOKEN_H
+#include <string>
+#include <string_view>
+#include <vector>
 
-enum e_token_type {
-    TOKEN_NULL,
-    TOKEN_STRING,
-    TOKEN_INT,
-    TOKEN_OPEN_SQUARE_BRACKET,
-    TOKEN_CLOSE_SQUARE_BRACKET,
-    TOKEN_OPEN_SQUIG_BRACKET,
-    TOKEN_CLOSE_SQUIG_BRACKET,
-    TOKEN_COLON,
-    TOKEN_DOT
+#include "vtr_ndmatrix.h"
+
+///@brief Token types
+enum class e_token_type {
+    NULL_TOKEN,
+    STRING,
+    INT,
+    OPEN_SQUARE_BRACKET,
+    CLOSE_SQUARE_BRACKET,
+    OPEN_SQUIG_BRACKET,
+    CLOSE_SQUIG_BRACKET,
+    COLON,
+    DOT
 };
 
+///@brief Token structure
 struct t_token {
-    enum e_token_type type;
-    char* data;
+    e_token_type type;
+    std::string data;
 };
 
-t_token* GetTokensFromString(const char* inString, int* num_tokens);
+class Tokens {
+  public:
+    /// @brief Creates tokens for a given string
+    Tokens(std::string_view inString);
 
-void freeTokens(t_token* tokens, const int num_tokens);
+    const t_token& operator[](size_t idx) const;
 
-bool checkTokenType(const t_token token, enum e_token_type token_type);
+    size_t size() const { return tokens_.size(); }
 
-void my_atof_2D(float** matrix, const int max_i, const int max_j, const char* instring);
+  private:
+    static const t_token null_token_;
+    std::vector<t_token> tokens_;
+};
 
-bool check_my_atof_2D(const int max_i, const int max_j, const char* instring, int* num_entries);
+/// @brief Returns a 2D array representing the atof result of all the input string entries separated by whitespace
+void my_atof_2D(vtr::Matrix<float>& matrix, const int max_i, const int max_j, std::string_view instring);
 
-#endif
+/**
+ * @brief Checks if the number of entries (separated by whitespace)	matches the expected number (max_i * max_j)
+ *
+ * can be used before calling my_atof_2D
+ */
+bool check_my_atof_2D(const int max_i, const int max_j, std::string_view instring, int* num_entries);

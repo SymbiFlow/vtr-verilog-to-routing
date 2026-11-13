@@ -2,7 +2,7 @@ Titan Benchmarks
 --------------------------------------------------
 This folder contains architecture files for use with Titan.
 
-The `Titan <http://www.eecg.utoronto.ca/~kmurray/titan/>` benchmarks are distributed
+The `Titan <http://www.eecg.utoronto.ca/~vaughn/titan/>` benchmarks are distributed
 separately from VTR due to their large size.
 
 To integrate them into VTR run:
@@ -15,17 +15,16 @@ This will download and extract the benchmark netlists to:
 
     <vtr>/vtr_flow/benchmarks/titan_blif/
 
-and
-
-    <vtr>/vtr_flow/benchmarks/titan_other_blif/
-
-where 'titan_blif' contains the main Titan23 benchmarks, and 'titan_other_blif' contains smaller 
-titan-like benchmarks which are useful for testing (but should not be used for architecture and 
-CAD evaluation).
 
 
 Directory Structure
 --------------------------------------------------
+
+stratix10_arch.timing.xml:
+    A detailed capture of Intel's Stratix 10 FPGA architecture, with 
+    small architectural adjustments to ensure compatibility with VPR. It 
+    incorporates a timing model that has been fine-tuned to match the 
+    Stratix 10 timing model integrated into Intel's Quartus Prime CAD tools.
 
 stratixiv_arch.timing.xml:
     An enhanced capture of Altera's Stratix IV FPGA architecture. It makes some 
@@ -93,7 +92,7 @@ interest.
 
 Most parts of the Architecture can be modified by hand. However care must
 be taken when changing some fields (e.g. a <pb_type>'s num_pb) to ensure
-that the the interconnect between pb_types remains correct.
+that the interconnect between pb_types remains correct.
 
 If you wish to modify the memory architecture (i.e. RAM blocks), it is 
 probably best to use gen_stratixiv_memories_class.py, rather than attempt 
@@ -104,7 +103,7 @@ Adding Support for New Architectures
 Support can be added for additional Quartus II supported FPGA architectures 
 (Cyclone III, Stratix II etc), by defining models for the architecture's VQM
 primitives.  Good places to look for this information include:
-   * Altera's Quartus Univeristy Interface Program (QUIP) documentation
+   * Altera's Quartus University Interface Program (QUIP) documentation
    * The 'fv_lib' directory under a Quartus installation
 
 For more details see vqm_to_blif's README.txt

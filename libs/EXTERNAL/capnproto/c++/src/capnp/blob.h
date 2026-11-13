@@ -21,14 +21,12 @@
 
 #pragma once
 
-#if defined(__GNUC__) && !defined(CAPNP_HEADER_WARNINGS)
-#pragma GCC system_header
-#endif
-
 #include <kj/common.h>
 #include <kj/string.h>
 #include "common.h"
 #include <string.h>
+
+CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
@@ -175,8 +173,8 @@ inline kj::StringPtr KJ_STRINGIFY(Text::Builder builder) {
   return builder.asString();
 }
 
-inline bool operator==(const char* a, const Text::Builder& b) { return a == b.asString(); }
-inline bool operator!=(const char* a, const Text::Builder& b) { return a != b.asString(); }
+inline bool operator==(const char* a, const Text::Builder& b) { return b.asString() == a; }
+inline bool operator!=(const char* a, const Text::Builder& b) { return b.asString() != a; }
 
 inline Text::Builder::operator kj::StringPtr() const {
   return kj::StringPtr(content.begin(), content.size() - 1);
@@ -217,3 +215,5 @@ inline kj::ArrayPtr<char> Text::Builder::slice(size_t start, size_t end) {
 }
 
 }  // namespace capnp
+
+CAPNP_END_HEADER

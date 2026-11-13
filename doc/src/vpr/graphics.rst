@@ -2,7 +2,7 @@
 
 Graphics
 ========
-VPR includes easy-to-use graphics for visualizing both the targetted FPGA architecture, and the circuit VPR has implementation on the architecture.
+VPR includes easy-to-use graphics for visualizing both the targeted FPGA architecture, and the circuit VPR has implemented on the architecture.
 
 .. image:: https://www.verilogtorouting.org/img/des90_routing_util.gif
     :align: center
@@ -12,22 +12,47 @@ Enabling Graphics
 
 Compiling with Graphics Support
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The build system will attempt to build VPR with graphics support by default.
+VPR's graphics are built on `Qt6 <https://www.qt.io/>`_. A plain ``make`` builds
+the GUI **only if a suitable Qt6 (>= 6.9.3) is found**; otherwise VPR is built
+headless. The 6.9.3 floor exists because earlier Qt6 releases have QRhi
+(Render Hardware Interface, GPU accelerated) rendering bugs.
 
-If all the required libraries are found the build system will report::
+The Qt6 GUI links against your system's OpenGL / EGL / xkbcommon runtime
+libraries. On Debian/Ubuntu these prerequisites are installed for you by
+``./install_apt_packages.sh``, or manually with::
 
-    -- EZGL: graphics enabled
+    > sudo apt-get install libxkbcommon-dev libgl-dev libegl-dev libopengl0 libegl-mesa0 libgl1-mesa-dri
 
-If the required libraries are not found cmake will report::
+With those in place, install Qt6 itself. On the currently supported
+distributions (e.g. Ubuntu 24.04) the system Qt6 is too old (24.04 ships
+Qt 6.4.2), so the recommended way to get a suitable Qt6 is the repo-local SDK
+installed by ``ensure_qt6_sdk.sh`` (no root required)::
 
-    -- EZGL: graphics disabled
+    > ./dev/ensure_qt6_sdk.sh
 
-and list the missing libraries::
+During configuration the build reports whether graphics were enabled. If a
+suitable Qt6 is found::
 
-    -- EZGL: Failed to find required X11 library (on debian/ubuntu try 'sudo apt-get install libx11-dev' to install)
-    -- EZGL: Failed to find required Xft library (on debian/ubuntu try 'sudo apt-get install libxft-dev' to install)
-    -- EZGL: Failed to find required fontconfig library (on debian/ubuntu try 'sudo apt-get install fontconfig' to install)
-    -- EZGL: Failed to find required cairo library (on debian/ubuntu try 'sudo apt-get install libcairo2-dev' to install)
+    -- VPR Graphics: Enabled (Qt6 6.9.3 found)
+
+Otherwise (and VPR is built without graphics)::
+
+    -- VPR Graphics: Disabled (no Qt6 >= 6.9.3; run ./dev/ensure_qt6_sdk.sh or install a system Qt6 if its version >= 6.9.3)
+
+.. note:: On future distributions that ship Qt6 >= 6.9.3 (Ubuntu 26.04 onward)
+    you can instead install Qt6 system-wide and skip ``ensure_qt6_sdk.sh``
+    entirely — at which point the script becomes obsolete. The GUI needs the
+    base, private (QRhi/QShader headers), SVG, and shader-tools (the ``qsb``
+    shader baker) packages::
+
+        > sudo apt-get install qt6-base-dev qt6-base-private-dev qt6-svg-dev qt6-shadertools-dev
+
+Two convenience targets make the choice explicit::
+
+    > make ensure-gui        # build vpr WITH the GUI (runs ensure_qt6_sdk.sh first)
+    > make ensure-headless   # build vpr WITHOUT the GUI
+
+.. seealso:: :doc:`Building VTR </BUILDING>` for the full build instructions.
 
 Enabling Graphics at Run-time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -35,182 +60,281 @@ When running VPR provide :option:`vpr --disp` ``on`` to enable graphics.
 
 Saving Graphics at Run-time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-When running VPR provide :option:`vpr --save_graphics` ``on`` to enable graphics.
+When running VPR provide :option:`vpr --save_graphics` ``on`` to save an image of the final placement and the final routing created by vpr to pdf files on disk. The files are named vpr_placement.pdf and vpr_routing.pdf.
 
 A graphical window will now pop up when you run VPR.
 
 Navigation
 ----------
-Click on **Zoom-Fit** buttons to zoom the view.
-Click and drag the mouse wheel to pan the view, or scroll the mouse wheel to zoom in and out.
-Click on the **Window**, then on the diagonally opposite corners of a box, to zoom in on a particular area.
-
-Click on **Save** to save the image on screen to PDF, PNG, or SVG file.
-
-**Proceed** tells VPR to continue with the next step in placing and routing the circuit.
+* Click on the **Zoom Fit** button to get an over-encompassing view of the FPGA architecture.
+* Click and drag with the left mouse button to pan the view, or scroll the mouse wheel to zoom in and out.
+* Click on the **Zoom Select** button, then on the diagonally opposite corners of a box, to zoom in on a particular area.
+* **Next Step** tells VPR to continue with the next step in placing and routing the circuit.
 
 
 .. note:: Menu buttons will be greyed out when they are not selectable (e.g. VPR is working).
 
-Visualizing Placement
+Placement
 --------------------------------
-By default VPR's graphics displays the FPGA floorplan (block grid) and current placement.
+By default VPR's graphics displays the FPGA floorplan (block grid) and current placement during global (analytical) placement
+and detailed (SA) placement.
 
-.. figure:: https://www.verilogtorouting.org/img/neuron_placement_macros.gif
-    :align: center
+The FPGA floorplan during global placement does not preserve space for routing resources (the white space between the clustered blocks)
+and is therefore easy to distinguish.
 
-    Placement with macros (carry chains) highlighted
+.. figure:: ../Images/analytical_place.png
+    :align: center 
+    :width: 75%
+
+    FPGA floorplan (block grid) during analytical placement
+
+.. figure:: ../Images/detailed_place.png
+    :align: center 
+    :width: 75%
+
+    FPGA floorplan (block grid) during detailed placement  
 
 If the **Placement Macros** drop down is set, any placement macros (e.g. carry chains, which require specific relative placements between some blocks) will be highlighted.
 
-Visualizing Netlist Connectivity
---------------------------------
-The **Toggle Nets** drop-down list toggles the nets in the circuit visible/invisible.
-
-When a placement is being displayed, routing information is not yet known so nets are simply drawn as a “star;” that is, a straight line is drawn from the net source to each of its sinks.
-Click on any clb in the display, and it will be highlighted in green, while its fanin and fanout are highlighted in blue and red, respectively.
-Once a circuit has been routed the true path of each net will be shown.
-
-.. figure:: https://www.verilogtorouting.org/img/des90_nets.gif
+.. figure:: https://www.verilogtorouting.org/img/neuron_placement_macros.gif
     :align: center
+    :width: 50%
 
-    Logical net connectivity during placement
+    Placement with macros (carry chains) highlighted
 
-If the nets routing are shown, click on a clb or pad to highlight its fanins and fanouts, or click on a pin or channel wire to highlight a whole net in magenta.
+Nets
+----------------
+To visualize nets, first enable the **Display Nets** switch under the **Net** Tab.
+
+The user can choose between drawing nets as **Flylines** (direct connections between sources and sinks) or as **Routing** (the actual routed path of the net).
+Only the **Flylines** option is available during placement, as routing has not yet been performed.
+
+The Inter-Cluster Nets and Intra-Cluster Nets options allow the user to choose whether to visualize nets between clbs or within a clb, respectively. The Intra-Cluster Routed Nets option is currently only available when **flat routing is enabled**.
+
+.. figure:: ../Images/Net_Settings.png
+    :align: center 
+    :width: 25%
+
+    Net Tab
+
+If routing is shown, clicking on a pin or channel wire will highlight the whole net in magenta.
 Multiple nets can be highlighted by pressing ctrl + mouse click.
 
-Visualizing the Critical Path
+.. figure:: ../Images/show_nets.gif
+    :align: center
+    :width: 100%
+
+    Visualizing Nets
+
+When the **Highlight Block Fan-in and Fan-out** option is enabled, clicking on an internal block will draw its fan-in, fan-out, and internal flylines in blue, red, and yellow, respectively. 
+
+.. figure:: ../Images/highlight_flylines.png
+    :align: center
+    :width: 50%
+
+    Highlight Block Fan-in and Fan-out Flylines
+
+Clicking on a clb (not the internal physical blocks) will also highlight all the fan-in and fan-out routed nets in blue and red, respectively.
+
+Critical Paths
 -----------------------------
-During placement and routing you can click on the **Crit. Path** drop-down menu to visualize the critical path.
+During placement and routing you can click on the **Display Critical Paths** switch under the **Net** tab to visualize the critical paths.
+
+The user can choose the number of critical paths to visualize using the **Num Critical Paths** spinbox.
+If the requested number exceeds what are currently available, only the available paths are visualized.
+
 Each stage between primitive pins is shown in a different colour.
-Cliking the **Crit. Path** button again will toggle through the various visualizations:
+
+.. figure:: ../Images/crit_paths.png
+    :align: center 
+    :width: 75%
+
+    Critical Path with all options enabled.
+
 * During placement the critical path is shown only as flylines.
 * During routing the critical path can be shown as both flylines and routed net connections.
 
 .. figure:: https://www.verilogtorouting.org/img/des90_cpd.gif
     :align: center
+    :width: 50%
 
     Critical Path flylines during placement and routing
 
-Visualizing Routing Architecture
+Routing Architecture
 --------------------------------
-When a routing is on-screen, clicking on **Toggle RR** lets you to choose between various views of the routing resources available in the FPGA.
 
-.. figure:: https://github.com/verilog-to-routing/verilog-to-routing.github.io/raw/master/img/routing_arch.gif
+During the route stage, the **Route** tab provides various options to visualize router resources and statistics.
+
+.. figure:: ../Images/Routing_Options.png
+    :align: center 
+    :width: 25%
+
+    Routing Options
+
+To visualize routing architecture, first enable the **Display Routing Resources** switch under the Route tab. Then, click on the checkboxes below to show/hide the types of nodes and edges you want to visualize. 
+
+The intra-cluster options are currently only available when **flat routing is enabled**. 
+
+The **Highlight Fan-In Fan-Out Edges** option will highlight the fan-in and fan-out edges of the selected routing resource in blue and red, respectively. 
+
+Multiple routing resources can be highlighted by pressing ctrl + mouse click.
+
+.. figure:: ../Images/show_rr_graph.gif
     :align: center
+    :width: 100%
 
-    Routing Architecture Views
+    Visualizing Routing Architecture
 
-The routing resource view can be very useful in ensuring that you have correctly described your FPGA in the architecture description file -- if you see switches where they shouldn’t be or pins on the wrong side of a clb, your architecture description needs to be revised.
+**Node Colors**:
 
-Wiring segments are drawn in black, input pins are drawn in sky blue, and output pins are drawn in pink.
-Sinks are drawn in dark slate blue, and sources in plum.
-Direct connections between output and input pins are shown in medium purple.
-Connections from wiring segments to input pins are shown in sky blue, connections from output pins to wiring segments are shown in pink, and connections between wiring segments are shown in green.
++------------+--------+
+| Node Type  | Color  |
++============+========+
+| Channel    | Black  |
++------------+--------+
+| Input Pin  | Purple |
++------------+--------+
+| Output Pin | Pink   |
++------------+--------+
+
+**Edge Colors**:
+
++-----------------------+---------------+
+| Edge Type             | Color         |
++=======================+===============+
+| Pin to Output Pin     | Light Pink    |
++-----------------------+---------------+
+| Pin to Input Pin      | Medium Purple |
++-----------------------+---------------+
+| Output Pin to Channel | Pink          |
++-----------------------+---------------+
+| Channel to Input Pin  | Purple        |
++-----------------------+---------------+
+| Channel to Channel    | Dark Green    |
++-----------------------+---------------+
+| Non-Configurable Edge | Dark Grey     |
++-----------------------+---------------+
+
 The points at which wiring segments connect to clb pins (connection box switches) are marked with an ``x``.
 
 Switch box connections will have buffers (triangles) or pass transistors (circles) drawn on top of them, depending on the type of switch each connection uses.
-Clicking on a clb or pad will overlay the routing of all nets connected to that block on top of the drawing of the FPGA routing resources, and will label each of the pins on that block with its pin number.
-Clicking on a routing resource will highlight it in magenta, and its fanouts will be highlighted in red and fanins in blue.
-Multiple routing resources can be highlighted by pressing ctrl + mouse click.
 
-Visualizing Routing Congestion
+Routing Congestion
 ------------------------------
-When a routing is shown on-screen, clicking on the **Congestion** drop-down menu will show a heat map of any overused routing resources (wires or pins).
+When a routing is shown on-screen, clicking on the **Congestion** drop-down menu under the **Routing Options** tab will show a heat map of any overused routing resources (wires or pins).
 Lighter colours (e.g. yellow) correspond to highly overused resources, while darker colours (e.g. blue) correspond to lower overuse.
 The overuse range shown at the bottom of the window.
 
 .. figure:: https://www.verilogtorouting.org/img/bitcoin_congestion.gif
     :align: center
+    :width: 50%
 
     Routing Congestion during placement and routing
 
-Visualizing Routing Utilization
+Routing Utilization
 -------------------------------
 When a routing is shown on-screen, clicking on the **Routing Util** drop-down menu will show a heat map of routing wire utilization (i.e. fraction of wires used in each channel).
 Lighter colours (e.g. yellow) correspond to highly utilized channels, while darker colours (e.g. blue) correspond to lower utilization.
 
 .. figure:: https://www.verilogtorouting.org/img/bitcoin_routing_util.gif
     :align: center
+    :width: 50%
 
     Routing Utilization during placement and routing
 
-Toggle Block Internal
+Block Internals
 -------------------------------
-During placement and routing you can adjust the level of block detail you visualize by using the **Toggle Block Internal**. Each block can contain a number of flip flops (ff), look up tables (lut), and other primitives. The higher the number, the deeper into the hierarchy within the cluster level block you see. 
+During placement and routing you can adjust the level of block detail you visualize by using the **Block Internal** option under the **Block** tab. 
 
-.. figure:: https://www.verilogtorouting.org/img/ToggleBlockInternal.gif
+.. figure:: ../Images/Block_Settings.png
+    :align: center 
+    :width: 100%
+
+    Block Settings 
+
+Each block can contain a number of flip flops (ff), look up tables (lut), and other primitives. The higher the number, the deeper into the hierarchy within the cluster level block you see. 
+The format of the internal block names is <block_type_name>[<placement_index>]:<mode_name>.
+
+Layers Dropdown
+-----------------------------
+.. figure:: ../Images/view_menu.png
+    :align: center 
+    :width: 50%
+
+    Items under the layers dropdown
+
+The layers dropdown is displayed when vpr is targeting a stacked multi-die architecture (more than 1 layer).
+Layers are drawn in ascending order for many drawing features (e.g. blocks); that is layer 0 is drawn first, and (if visible), layer 1 is drawn on top of it etc.
+The visibility and transparency of a layer can be changed, which will affect blocks, nets, routing, and critical path.
+Cross-layer connections refer to connections that are in different layers. 
+
+Misc. Display Controls
+----------------------
+
+The **Misc.** drop-down menu provides several useful control tools to facilitate user interaction.
+
+.. figure:: ../Images/misc_tab.png
     :align: center
+    :width: 25%
 
-    Visualizing Block Internals
+    Misc. Tab
 
+Proceed by Step
+~~~~~~~~~~~~~~~
 
-Button Description Table
-------------------------
-+-------------------+-------------------+------------------------------+------------------------------+
-|      Buttons      |      Stages       |        Functionalities       |     Detailed Descriptions    |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Blk Internal      | Placement/Routing | Controls depth of sub-blocks | Click multiple times to show |
-|                   |                   | shown                        | more details; Click to reset |
-|                   |                   |                              | when reached maximum level   |
-|                   |                   |                              | of detail                    |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Toggle Block      | Placement/Routing | Adjusts the level of         | Click multiple times to      |
-| Internal          |                   | visualized block detail      | go deeper into the           |
-|                   |                   |                              | hierarchy within the cluster |
-|                   |                   |                              | level block                  |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Blk Pin Util      | Placement/Routing | Visualizes block pin         | Click multiple times to      |
-|                   |                   | utilization                  | visualize all block pin      |
-|                   |                   |                              | utilization, input block pin |
-|                   |                   |                              | utilization, or output block |
-|                   |                   |                              | pin utilization              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Cong. Cost        | Routing           | Visualizes the congestion    |                              |
-|                   |                   | costs of routing resouces    |                              |
-|                   |                   |                              |                              |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Congestion        | Routing           | Visualizes a heat map of     |                              |
-|                   |                   | overused routing resources   |                              |
-|                   |                   |                              |                              |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Crit. Path        | Placement/Routing | Visualizes the critical path |                              |
-|                   |                   | of the circuit               |                              |
-|                   |                   |                              |                              |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Place Macros      | Placement/Routing | Visualizes placement macros  |                              |
-|                   |                   |                              |                              |
-|                   |                   |                              |                              |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Route BB          | Routing           | Visualizes net bounding      | Click multiple times to      |
-|                   |                   | boxes one by one             | sequence through the net     |
-|                   |                   |                              | being shown                  |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Router Cost       | Routing           | Visualizes the router costs  |                              |
-|                   |                   | of different routing         |                              |
-|                   |                   | resources                    |                              |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Routing Util      | Routing           | Visualizes routing channel   |                              |
-|                   |                   | utilization with colors      |                              |
-|                   |                   | indicating the fraction of   |                              |
-|                   |                   | wires used within a channel  |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Toggle Nets       | Placement/Routing | Visualizes the nets in the   | Click multiple times to      |
-|                   |                   | circuit                      | set the nets to be visible / |
-|                   |                   |                              | invisible                    |
-|                   |                   |                              |                              |
-+-------------------+-------------------+------------------------------+------------------------------+
-| Toggle RR         | Placement/Routing | Visualizes different views   | Click multiple times to      |
-|                   |                   | of the routing resources     | switch between routing       |
-|                   |                   |                              | resources available in the   |
-|                   |                   |                              | FPGA                         |
-+-------------------+-------------------+------------------------------+------------------------------+
+The **Proceed by Step** switch allows you to interactively visualize the evolving placement and routing
+after a specified number of optimization steps (see below for the definition of step).
+You can use the **Steps to Proceed** spinbox to set how many steps to proceed until the graphics pauses.
 
+During global (analytical) placement, step refers to every solver or legalizer iteration.
+During detailed (SA) placement, step refers to every temperature update.
+During routing, step refers to every router iteration.
 
+After you have finished interacting with the graphics, clicking **Proceed** resumes optimization until the next selected step boundary,
+or the next major optimization state (e.g. the transition point from placement to routing) is reached. In the latter case, the number of steps completed
+since the last graphics view will not be carried over; the step count performed will reset to zero.
+
+Turn off **Proceed by Step** to only view the graphics at major optimization states.
+
+Save
+~~~~
+
+The **Save** button allows the user to output the current graphics into an image file. A popup will ask the file name and format.
+
+.. figure:: ../Images/save_popup.png
+    :align: center
+    :width: 50%
+
+    Save Popup
+
+Debug
+~~~~~
+
+The CAD optimization algorithms can be paused at different user-specified points so you can examine the current placement
+and/or routing solution, as detailed `here <https://vtr-verilog-to-routing.readthedocs.io/en/master/vpr/debug_aids/#placer-and-router-debugger>`_.
+
+Manual Moves
+~~~~~~~~~~~~
+
+The manual moves feature allows the user to specify the next move in placement. If the move is legal, blocks are swapped and the new move is shown on the architecture. 
+
+To enable the feature, activate the **Manual Move** checkbox and press Done. Alternatively, the user can activate the **Manual Move** checkbox and click on the block to be moved.
+
+.. figure:: https://www.verilogtorouting.org/img/draw_manual_moves_window.png
+   :align: center
+   :width: 50%
+
+On the manual move window, the user can specify the Block ID/Block name of the block to move and the To location, with the x position, y position and subtile position. For the manual move to be valid:
+
+- The To location requested by the user should be within the grid's dimensions.
+- The block to be moved is found, valid and not fixed.
+- The blocks to be swapped are compatible.
+- The location chosen by the user is different from the block's current location.
+  
+If the manual move is legal, the cost summary window will display the delta cost, delta timing, delta bounding box cost and the placer's annealing decision that would result from this move. 
+
+.. figure:: https://www.verilogtorouting.org/img/manual_move_cost_dialog.png
+   :align: center
+   :width: 50%
+
+The user can Accept or Reject the manual move based on the values provided. If accepted the block's new location is shown.

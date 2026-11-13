@@ -1,32 +1,3 @@
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <set>
-#include <map>
-#include <vector>
-#include <string>
-#include <algorithm>
-#include <bitset>
-#include <memory>
-#include <unordered_set>
-#include <cmath>
-
-#include "vtr_assert.h"
-#include "vtr_util.h"
-#include "vtr_log.h"
-#include "vtr_logic.h"
-#include "vtr_version.h"
-
-#include "vpr_error.h"
-
-#include "netlist_walker.h"
-#include "netlist_writer.h"
-
-#include "globals.h"
-#include "atom_netlist.h"
-#include "atom_netlist_utils.h"
-#include "logic_vec.h"
-
 /**
  * @file
  *
@@ -51,9 +22,9 @@
  * 'Instance' object to represent the primitive. NetlistWriterVisitor saves these representations for later
  * output.
  *
- * 'Instance' is an abstract class representing objects which know how to create thier own representation in
+ * 'Instance' is an abstract class representing objects which know how to create their own representation in
  * BLIF, Verilog and SDF formats.  Most primitives can be represented by the BlackBoxInst class, but special
- * primitives like LUTs and Latchs have thier own implementations (LutInst, LatchInst) to handle some of their
+ * primitives like LUTs and Latchs have their own implementations (LutInst, LatchInst) to handle some of their
  * unique requirements.
  *
  * Once the entire netlist has been traversed the netlist walker will call NetlistWriterVisitor's finish_impl()
@@ -64,11 +35,11 @@
  * Name Escaping
  * =============
  * One of the challenges in generating netlists is producing consistent naming of netlist elements.
- * In particular valid BLIF names, Verilog names and SDF names are not neccessarily the same.
+ * In particular valid BLIF names, Verilog names and SDF names are not necessarily the same.
  * As a result we must escape invalid characters/identifiers when producing some formats.
  *
  * All name escaping is handled at the output stage (i.e. in the print_*() functions) since it is
- * very format dependant.
+ * very format dependent.
  *
  * VPR stores names internally generally following BLIF conventions.  As a result these names need
  * to be escaped when generating Verilog or SDF.  This is handled with escape_verilog_identifier()
@@ -76,7 +47,7 @@
  *
  * Primitives
  * ==========
- * Verilog netlist generation assumes the existance of appropriate primitives for the various
+ * Verilog netlist generation assumes the existence of appropriate primitives for the various
  * atom types (i.e. a LUT_K module, a DFF module etc.).  These are currently defined the file
  * `<vtr>/vtr_flow/primitives.v`, where `<vtr>` is the root of the VTR source tree.
  *
@@ -85,17 +56,131 @@
  * simulation.
  */
 
+#include "netlist_writer.h"
+#include <algorithm>
+#include <bitset>
+#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <memory>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include "atom_lookup.h"
+#include "atom_netlist.h"
+#include "atom_netlist_utils.h"
+#include "globals.h"
+#include "logic_vec.h"
+#include "netlist_walker.h"
+#include "read_blif.h"
+#include "tatum/TimingGraph.hpp"
+#include "tatum/TimingGraphFwd.hpp"
+#include "vpr_error.h"
+#include "vpr_types.h"
+#include "vtr_assert.h"
+#include "vtr_log.h"
+#include "vtr_logic.h"
+#include "vtr_version.h"
+
 /* Enable for extra output while calculating LUT masks */
 //#define DEBUG_LUT_MASK
+
+namespace {
 
 //
 //File local type declarations
 //
 
-// This pair cointains the following values:
+/**
+ * @brief A triple of delay values (all delays should be in seconds).
+ *
+ * For delay values in SDF files, three numbers are specified to describe the
+ * minimum, typical, and maximum delays along a timing edge.
+ */
+struct DelayTriple {
+    DelayTriple() = default;
+    constexpr DelayTriple(double minimum_sec, double typical_sec, double maximum_sec)
+        : minimum(minimum_sec)
+        , typical(typical_sec)
+        , maximum(maximum_sec) {}
+
+    /// @brief The minimum delay along a timing edge.
+    double minimum = std::numeric_limits<double>::quiet_NaN();
+    /// @brief The typical delay along a timing edge.
+    double typical = std::numeric_limits<double>::quiet_NaN();
+    /// @brief The maximum delay along a timing edge.
+    double maximum = std::numeric_limits<double>::quiet_NaN();
+
+    /**
+     * @brief Returns true if the minimum, typical, and maximum delay values have
+     *        been assigned a number.
+     *
+     * These values are defaulted to NaN, so this checks if the values have changed.
+     */
+    inline bool has_value() const {
+        return !std::isnan(minimum) && !std::isnan(typical) && !std::isnan(maximum);
+    }
+
+    /**
+     * @brief Convert the triple into a string. This string will be of the form:
+     *          (minimum:typical:maximum)
+     *
+     * This string is expected to be written directly into an SDF file.
+     *
+     * Since the delays stored in this struct are implied to be in seconds, this
+     * print method converts the output into picoseconds.
+     */
+    inline std::string str() const {
+        VTR_ASSERT_MSG(has_value(),
+                       "Cannot create a non-initialized delay triple string");
+
+        // Convert the delays to picoseconds for printing.
+        double minimum_ps = minimum * 1e12;
+        double typical_ps = typical * 1e12;
+        double maximum_ps = maximum * 1e12;
+
+        // Create the string.
+        std::stringstream delay_ss;
+        delay_ss << '(' << minimum_ps << ':' << typical_ps << ':' << maximum_ps << ')';
+        return delay_ss.str();
+    }
+
+    /**
+     * @brief Operator overloading to add the values from the provided other
+     *        delay triple with this delay triple to produce a new triple.
+     *
+     * If either this or the other delay triple have undefined values, an undefined
+     * delay triple will be returned.
+     */
+    DelayTriple operator+(const DelayTriple& other) const {
+        // Cannot add a delay which is not initialized.
+        if (!has_value() || !other.has_value())
+            return DelayTriple();
+
+        return DelayTriple(minimum + other.minimum,
+                           typical + other.typical,
+                           maximum + other.maximum);
+    }
+};
+
+// This pair contains the following values:
 //      - double: hold, setup or clock-to-q delays of the port
 //      - string: port name of the associated source clock pin of the sequential port
-typedef std::pair<double, std::string> sequential_port_delay_pair;
+typedef std::pair<DelayTriple, std::string> sequential_port_delay_pair;
+
+/**
+ * @brief Information needed to describe a delay on a port in an SDF file.
+ */
+struct PortDelay {
+    std::string port_name;         ///<The name of the port to annotate with delay.
+    int ipin;                      ///<The pin in the port to annotate (if a multi-pin port).
+    DelayTriple port_delay_triple; ///<The delay triple to annotate.
+};
 
 /*enum class PortType {
  * IN,
@@ -106,11 +191,24 @@ typedef std::pair<double, std::string> sequential_port_delay_pair;
 //
 // File local function declarations
 //
+
+/**
+ * @brief Get the tco delay triple for the given pb_graph pin.
+ */
+DelayTriple get_pin_tco_delay_triple(const t_pb_graph_pin& pin);
+
+/**
+ * @brief Get the edge delay triple for the given edge, as found in the given
+ *        timing graph.
+ */
+DelayTriple get_edge_delay_triple(tatum::EdgeId edge_id,
+                                  const AnalysisDelayCalculator& delay_calc,
+                                  const tatum::TimingGraph& timing_graph);
+
 std::string indent(size_t depth);
-double get_delay_ps(double delay_sec);
 
 void print_blif_port(std::ostream& os, size_t& unconn_count, const std::string& port_name, const std::vector<std::string>& nets, int depth);
-void print_verilog_port(std::ostream& os, const std::string& port_name, const std::vector<std::string>& nets, PortType type, int depth);
+void print_verilog_port(std::ostream& os, size_t& unconn_count, const std::string& port_name, const std::vector<std::string>& nets, PortType type, int depth, struct t_analysis_opts& opts);
 
 std::string create_unconn_net(size_t& unconn_count);
 std::string escape_verilog_identifier(const std::string id);
@@ -124,6 +222,9 @@ std::string join_identifier(std::string lhs, std::string rhs);
 //
 //
 
+// Unconnected net prefix
+const std::string unconn_prefix = "__vpr__unconn";
+
 //A combinational timing arc
 class Arc {
   public:
@@ -131,7 +232,7 @@ class Arc {
         int src_ipin,          ///<Source pin index
         std::string snk_port,  ///<Sink of the arc
         int snk_ipin,          ///<Sink pin index
-        float del,             ///<Delay on this arc
+        DelayTriple del,       ///<Delay on this arc
         std::string cond = "") ///<Condition associated with the arc
         : source_name_(src_port)
         , source_ipin_(src_ipin)
@@ -145,7 +246,7 @@ class Arc {
     int source_ipin() const { return source_ipin_; }
     std::string sink_name() const { return sink_name_; }
     int sink_ipin() const { return sink_ipin_; }
-    double delay() const { return delay_; }
+    const DelayTriple& delay() const { return delay_; }
     std::string condition() const { return condition_; }
 
   private:
@@ -153,7 +254,7 @@ class Arc {
     int source_ipin_;
     std::string sink_name_;
     int sink_ipin_;
-    double delay_;
+    DelayTriple delay_;
     std::string condition_;
 };
 
@@ -186,10 +287,10 @@ class Instance {
      */
     virtual void print_blif(std::ostream& os, size_t& unconn_count, int depth = 0) = 0;
 
-    ///@brief Print the current instanse in Verilog, see print_blif() for argument descriptions
-    virtual void print_verilog(std::ostream& os, int depth = 0) = 0;
+    ///@brief Print the current instance in Verilog, see print_blif() for argument descriptions
+    virtual void print_verilog(std::ostream& os, size_t& unconn_count, int depth = 0) = 0;
 
-    ///@brief Print the current instanse in SDF, see print_blif() for argument descriptions
+    ///@brief Print the current instance in SDF, see print_blif() for argument descriptions
     virtual void print_sdf(std::ostream& os, int depth = 0) = 0;
 };
 
@@ -200,13 +301,15 @@ class LutInst : public Instance {
             LogicVec lut_mask,                                          ///<The LUT mask representing the logic function
             std::string inst_name,                                      ///<The name of this instance
             std::map<std::string, std::vector<std::string>> port_conns, ///<The port connections of this instance. Key: port name, Value: connected nets
-            std::vector<Arc> timing_arc_values)                         ///<The timing arcs of this instance
-        : type_("LUT_K")
+            std::vector<Arc> timing_arc_values,                         ///<The timing arcs of this instance
+            struct t_analysis_opts opts)
+        : type_(opts.post_synth_netlist_module_parameters ? "LUT_K" : "LUT_" + std::to_string(lut_size))
         , lut_size_(lut_size)
         , lut_mask_(lut_mask)
         , inst_name_(inst_name)
         , port_conns_(port_conns)
-        , timing_arcs_(timing_arc_values) {
+        , timing_arcs_(timing_arc_values)
+        , opts_(opts) {
     }
 
     //Accessors
@@ -215,26 +318,39 @@ class LutInst : public Instance {
     std::string type() { return type_; }
 
   public: //Instance interface method implementations
-    void print_verilog(std::ostream& os, int depth) override {
+    void print_verilog(std::ostream& os, size_t& unconn_count, int depth) override {
         //Instantiate the lut
-        os << indent(depth) << type_ << " #(\n";
+        os << indent(depth) << type_;
 
-        os << indent(depth + 1) << ".K(" << lut_size_ << "),\n";
+        // If module parameters are on, pass the lut size and the lut mask as parameters.
+        if (opts_.post_synth_netlist_module_parameters) {
+            os << " #(\n";
 
-        std::stringstream param_ss;
-        param_ss << lut_mask_;
-        os << indent(depth + 1) << ".LUT_MASK(" << param_ss.str() << ")\n";
+            os << indent(depth + 1) << ".K(" << lut_size_ << "),\n";
 
-        os << indent(depth) << ") " << escape_verilog_identifier(inst_name_) << " (\n";
+            std::stringstream param_ss;
+            param_ss << lut_mask_;
+            os << indent(depth + 1) << ".LUT_MASK(" << param_ss.str() << ")\n";
+
+            os << indent(depth) << ")";
+        }
+
+        os << " " << escape_verilog_identifier(inst_name_) << " (\n";
 
         VTR_ASSERT(port_conns_.count("in"));
         VTR_ASSERT(port_conns_.count("out"));
         VTR_ASSERT(port_conns_.size() == 2);
 
-        print_verilog_port(os, "in", port_conns_["in"], PortType::INPUT, depth + 1);
+        // If module parameters are not on, the mask of the lut will be passed
+        // as input to the module.
+        if (!opts_.post_synth_netlist_module_parameters) {
+            os << indent(depth + 1) << ".mask(" << lut_mask_ << "),\n";
+        }
+
+        print_verilog_port(os, unconn_count, "in", port_conns_["in"], PortType::INPUT, depth + 1, opts_);
         os << ","
            << "\n";
-        print_verilog_port(os, "out", port_conns_["out"], PortType::OUTPUT, depth + 1);
+        print_verilog_port(os, unconn_count, "out", port_conns_["out"], PortType::OUTPUT, depth + 1, opts_);
         os << "\n";
 
         os << indent(depth) << ");\n\n";
@@ -346,11 +462,6 @@ class LutInst : public Instance {
             os << indent(depth + 2) << "(ABSOLUTE\n";
 
             for (auto& arc : timing_arcs()) {
-                double delay_ps = arc.delay();
-
-                std::stringstream delay_triple;
-                delay_triple << "(" << delay_ps << ":" << delay_ps << ":" << delay_ps << ")";
-
                 os << indent(depth + 3) << "(IOPATH ";
                 //Note we do not escape the last index of multi-bit signals since they are used to
                 //match multi-bit ports
@@ -359,7 +470,7 @@ class LutInst : public Instance {
 
                 VTR_ASSERT(arc.sink_ipin() == 0); //Should only be one output
                 os << escape_sdf_identifier(arc.sink_name()) << " ";
-                os << delay_triple.str() << " " << delay_triple.str() << ")\n";
+                os << arc.delay().str() << " " << arc.delay().str() << ")\n";
             }
             os << indent(depth + 2) << ")\n";
             os << indent(depth + 1) << ")\n";
@@ -376,6 +487,7 @@ class LutInst : public Instance {
     std::string inst_name_;
     std::map<std::string, std::vector<std::string>> port_conns_;
     std::vector<Arc> timing_arcs_;
+    struct t_analysis_opts opts_;
 };
 
 class LatchInst : public Instance {
@@ -403,7 +515,7 @@ class LatchInst : public Instance {
             VTR_ASSERT(false);
         return os;
     }
-    friend std::istream& operator>>(std::istream& is, Type& type) {
+    [[maybe_unused]] friend std::istream& operator>>(std::istream& is, Type& type) {
         std::string tok;
         is >> tok;
         if (tok == "re")
@@ -422,20 +534,22 @@ class LatchInst : public Instance {
     }
 
   public:
-    LatchInst(std::string inst_name,                                  ///<Name of this instance
-              std::map<std::string, std::string> port_conns,          ///<Instance's port-to-net connections
-              Type type,                                              ///<Type of this latch
-              vtr::LogicValue init_value,                             ///<Initial value of the latch
-              double tcq = std::numeric_limits<double>::quiet_NaN(),  ///<Clock-to-Q delay
-              double tsu = std::numeric_limits<double>::quiet_NaN(),  ///<Setup time
-              double thld = std::numeric_limits<double>::quiet_NaN()) ///<Hold time
+    LatchInst(std::string inst_name,                         ///<Name of this instance
+              std::map<std::string, std::string> port_conns, ///<Instance's port-to-net connections
+              Type type,                                     ///<Type of this latch
+              vtr::LogicValue init_value,                    ///<Initial value of the latch
+              DelayTriple tcq,                               ///<Clock-to-Q delay
+              DelayTriple tsu,                               ///<Setup time
+              DelayTriple thld,                              ///<Hold time
+              t_analysis_opts opts)
         : instance_name_(inst_name)
         , port_connections_(port_conns)
         , type_(type)
         , initial_value_(init_value)
-        , tcq_(tcq)
-        , tsu_(tsu)
-        , thld_(thld) {}
+        , tcq_delay_triple_(tcq)
+        , tsu_delay_triple_(tsu)
+        , thld_delay_triple_(thld)
+        , opts_(opts) {}
 
     void print_blif(std::ostream& os, size_t& /*unconn_count*/, int depth = 0) override {
         os << indent(depth) << ".latch"
@@ -462,25 +576,33 @@ class LatchInst : public Instance {
         os << "\n";
     }
 
-    void print_verilog(std::ostream& os, int depth = 0) override {
+    void print_verilog(std::ostream& os, size_t& /*unconn_count*/, int depth = 0) override {
         //Currently assume a standard DFF
         VTR_ASSERT(type_ == Type::RISING_EDGE);
 
-        os << indent(depth) << "DFF"
-           << " #(\n";
-        os << indent(depth + 1) << ".INITIAL_VALUE(";
-        if (initial_value_ == vtr::LogicValue::TRUE)
-            os << "1'b1";
-        else if (initial_value_ == vtr::LogicValue::FALSE)
-            os << "1'b0";
-        else if (initial_value_ == vtr::LogicValue::DONT_CARE)
-            os << "1'bx";
-        else if (initial_value_ == vtr::LogicValue::UNKOWN)
-            os << "1'bx";
-        else
-            VTR_ASSERT(false);
-        os << ")\n";
-        os << indent(depth) << ") " << escape_verilog_identifier(instance_name_) << " (\n";
+        os << indent(depth) << "DFF";
+
+        // If module parameters are turned on, pass in the initial value of the
+        // register as a parameter.
+        // Note: This initial value is only used for simulation.
+        if (opts_.post_synth_netlist_module_parameters) {
+            os << " #(\n";
+            os << indent(depth + 1) << ".INITIAL_VALUE(";
+            if (initial_value_ == vtr::LogicValue::TRUE)
+                os << "1'b1";
+            else if (initial_value_ == vtr::LogicValue::FALSE)
+                os << "1'b0";
+            else if (initial_value_ == vtr::LogicValue::DONT_CARE)
+                os << "1'bx";
+            else if (initial_value_ == vtr::LogicValue::UNKNOWN)
+                os << "1'bx";
+            else
+                VTR_ASSERT(false);
+            os << ")\n";
+            os << indent(depth) << ")";
+        }
+
+        os << " " << escape_verilog_identifier(instance_name_) << " (\n";
 
         for (auto iter = port_connections_.begin(); iter != port_connections_.end(); ++iter) {
             os << indent(depth + 1) << "." << iter->first << "(" << escape_verilog_identifier(iter->second) << ")";
@@ -504,39 +626,28 @@ class LatchInst : public Instance {
         os << indent(depth + 1) << "(INSTANCE " << escape_sdf_identifier(instance_name_) << ")\n";
 
         //Clock to Q
-        if (!std::isnan(tcq_)) {
+        if (tcq_delay_triple_.has_value()) {
             os << indent(depth + 1) << "(DELAY\n";
             os << indent(depth + 2) << "(ABSOLUTE\n";
-            double delay_ps = get_delay_ps(tcq_);
-
-            std::stringstream delay_triple;
-            delay_triple << "(" << delay_ps << ":" << delay_ps << ":" << delay_ps << ")";
-
             os << indent(depth + 3) << "(IOPATH "
-               << "(posedge clock) Q " << delay_triple.str() << " " << delay_triple.str() << ")\n";
+               << "(posedge clock) Q " << tcq_delay_triple_.str() << " " << tcq_delay_triple_.str() << ")\n";
             os << indent(depth + 2) << ")\n";
             os << indent(depth + 1) << ")\n";
         }
 
         //Setup/Hold
-        if (!std::isnan(tsu_) || !std::isnan(thld_)) {
+        if (tsu_delay_triple_.has_value() || thld_delay_triple_.has_value()) {
             os << indent(depth + 1) << "(TIMINGCHECK\n";
-            if (!std::isnan(tsu_)) {
-                std::stringstream setup_triple;
-                double setup_ps = get_delay_ps(tsu_);
-                setup_triple << "(" << setup_ps << ":" << setup_ps << ":" << setup_ps << ")";
-                os << indent(depth + 2) << "(SETUP D (posedge clock) " << setup_triple.str() << ")\n";
+            if (tsu_delay_triple_.has_value()) {
+                os << indent(depth + 2) << "(SETUP D (posedge clock) " << tsu_delay_triple_.str() << ")\n";
             }
-            if (!std::isnan(thld_)) {
-                std::stringstream hold_triple;
-                double hold_ps = get_delay_ps(thld_);
-                hold_triple << "(" << hold_ps << ":" << hold_ps << ":" << hold_ps << ")";
-                os << indent(depth + 2) << "(HOLD D (posedge clock) " << hold_triple.str() << ")\n";
+            if (thld_delay_triple_.has_value()) {
+                os << indent(depth + 2) << "(HOLD D (posedge clock) " << thld_delay_triple_.str() << ")\n";
             }
         }
         os << indent(depth + 1) << ")\n";
         os << indent(depth) << ")\n";
-        os << indent(depth) << "\n";
+        os << "\n";
     }
 
   private:
@@ -544,23 +655,26 @@ class LatchInst : public Instance {
     std::map<std::string, std::string> port_connections_;
     Type type_;
     vtr::LogicValue initial_value_;
-    double tcq_;  ///<Clock delay + tcq
-    double tsu_;  ///<Setup time
-    double thld_; ///<Hold time
+    DelayTriple tcq_delay_triple_;  ///<Clock delay + tcq
+    DelayTriple tsu_delay_triple_;  ///<Setup time
+    DelayTriple thld_delay_triple_; ///<Hold time
+    t_analysis_opts opts_;
 };
 
 class BlackBoxInst : public Instance {
   public:
     BlackBoxInst(std::string type_name,                                             ///<Instance type
                  std::string inst_name,                                             ///<Instance name
-                 std::map<std::string, std::string> params,                         ///<Verilog parameters: Dictonary of <param_name,value>
-                 std::map<std::string, std::string> attrs,                          ///<Instance attributes: Dictonary of <attr_name,value>
+                 std::map<std::string, std::string> params,                         ///<Verilog parameters: Dictionary of <param_name,value>
+                 std::map<std::string, std::string> attrs,                          ///<Instance attributes: Dictionary of <attr_name,value>
                  std::map<std::string, std::vector<std::string>> input_port_conns,  ///<Port connections: Dictionary of <port,nets>
                  std::map<std::string, std::vector<std::string>> output_port_conns, ///<Port connections: Dictionary of <port,nets>
                  std::vector<Arc> timing_arcs,                                      ///<Combinational timing arcs
-                 std::map<std::string, sequential_port_delay_pair> ports_tsu,       ///<Port setup checks
-                 std::map<std::string, sequential_port_delay_pair> ports_thld,      ///<Port hold checks
-                 std::map<std::string, sequential_port_delay_pair> ports_tcq)       ///<Port clock-to-q delays
+                 std::vector<Arc> su_timing_arcs,                                   ///<Pin setup constraints
+                 std::vector<Arc> hld_timing_arcs,                                  ///<Pin hold constraints
+                 std::vector<Arc> cq_timing_arcs,                                   ///<Pin clock-to-q timing arcs
+                 std::vector<PortDelay> port_delays,
+                 struct t_analysis_opts opts)
         : type_name_(type_name)
         , inst_name_(inst_name)
         , params_(params)
@@ -568,9 +682,11 @@ class BlackBoxInst : public Instance {
         , input_port_conns_(input_port_conns)
         , output_port_conns_(output_port_conns)
         , timing_arcs_(timing_arcs)
-        , ports_tsu_(ports_tsu)
-        , ports_thld_(ports_thld)
-        , ports_tcq_(ports_tcq) {}
+        , su_timing_arcs_(su_timing_arcs)
+        , hld_timing_arcs_(hld_timing_arcs)
+        , cq_timing_arcs_(cq_timing_arcs)
+        , port_delays_(port_delays)
+        , opts_(opts) {}
 
     void print_blif(std::ostream& os, size_t& unconn_count, int depth = 0) override {
         os << indent(depth) << ".subckt " << type_name_ << " \\"
@@ -613,27 +729,48 @@ class BlackBoxInst : public Instance {
         os << "\n";
     }
 
-    void print_verilog(std::ostream& os, int depth = 0) override {
+    void print_verilog(std::ostream& os, size_t& unconn_count, int depth = 0) override {
         //Instance type
-        os << indent(depth) << type_name_ << " #(\n";
+        os << indent(depth) << type_name_;
 
-        //Verilog parameters
-        for (auto iter = params_.begin(); iter != params_.end(); ++iter) {
-            os << indent(depth + 1) << "." << iter->first << "(" << iter->second << ")";
-            if (iter != --params_.end()) {
-                os << ",";
+        // Print the parameters if any are provided.
+        if (params_.size() > 0) {
+            if (opts_.post_synth_netlist_module_parameters) {
+                os << " #(\n";
+
+                //Verilog parameters
+                for (auto iter = params_.begin(); iter != params_.end(); ++iter) {
+                    /* Prepend a prefix if needed */
+                    std::stringstream prefix;
+                    if (is_binary_param(iter->second)) {
+                        prefix << iter->second.length() << "'b";
+                    }
+
+                    os << indent(depth + 1) << "." << iter->first << "(" << prefix.str() << iter->second << ")";
+                    if (iter != --params_.end()) {
+                        os << ",";
+                    }
+                    os << "\n";
+                }
+                os << indent(depth) << ")";
+            } else {
+                // TODO: RAMs are considered black box instructions. These can
+                // probably be handled similar to LUTs.
+                VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
+                                "Cannot generate black box instruction of type %s "
+                                "without using parameters.",
+                                type_name_.c_str());
             }
-            os << "\n";
         }
 
         //Instance name
-        os << indent(depth) << ") " << escape_verilog_identifier(inst_name_) << " (\n";
+        os << " " << escape_verilog_identifier(inst_name_) << " (\n";
 
         //Input Port connections
         for (auto iter = input_port_conns_.begin(); iter != input_port_conns_.end(); ++iter) {
             auto& port_name = iter->first;
             auto& nets = iter->second;
-            print_verilog_port(os, port_name, nets, PortType::INPUT, depth + 1);
+            print_verilog_port(os, unconn_count, port_name, nets, PortType::INPUT, depth + 1, opts_);
             if (!(iter == --input_port_conns_.end() && output_port_conns_.empty())) {
                 os << ",";
             }
@@ -644,7 +781,7 @@ class BlackBoxInst : public Instance {
         for (auto iter = output_port_conns_.begin(); iter != output_port_conns_.end(); ++iter) {
             auto& port_name = iter->first;
             auto& nets = iter->second;
-            print_verilog_port(os, port_name, nets, PortType::OUTPUT, depth + 1);
+            print_verilog_port(os, unconn_count, port_name, nets, PortType::OUTPUT, depth + 1, opts_);
             if (!(iter == --output_port_conns_.end())) {
                 os << ",";
             }
@@ -655,22 +792,17 @@ class BlackBoxInst : public Instance {
     }
 
     void print_sdf(std::ostream& os, int depth = 0) override {
-        if (!timing_arcs_.empty() || !ports_tcq_.empty() || !ports_tsu_.empty() || !ports_thld_.empty()) {
+        if (!timing_arcs_.empty() || !cq_timing_arcs_.empty() || !su_timing_arcs_.empty() || !hld_timing_arcs_.empty()) {
             os << indent(depth) << "(CELL\n";
             os << indent(depth + 1) << "(CELLTYPE \"" << type_name_ << "\")\n";
             os << indent(depth + 1) << "(INSTANCE " << escape_sdf_identifier(inst_name_) << ")\n";
-            os << indent(depth + 1) << "(DELAY\n";
 
-            if (!timing_arcs_.empty() || !ports_tcq_.empty()) {
+            if (!timing_arcs_.empty() || !cq_timing_arcs_.empty() || !port_delays_.empty()) {
+                os << indent(depth + 1) << "(DELAY\n";
                 os << indent(depth + 2) << "(ABSOLUTE\n";
 
                 //Combinational paths
-                for (const auto& arc : timing_arcs_) {
-                    double delay_ps = get_delay_ps(arc.delay());
-
-                    std::stringstream delay_triple;
-                    delay_triple << "(" << delay_ps << ":" << delay_ps << ":" << delay_ps << ")";
-
+                for (const Arc& arc : timing_arcs_) {
                     //Note that we explicitly do not escape the last array indexing so an SDF
                     //reader will treat the ports as multi-bit
                     //
@@ -686,45 +818,76 @@ class BlackBoxInst : public Instance {
                         os << "[" << arc.sink_ipin() << "]";
                     }
                     os << " ";
-                    os << delay_triple.str();
+                    os << arc.delay().str();
                     os << ")\n";
                 }
 
                 //Clock-to-Q delays
-                for (auto kv : ports_tcq_) {
-                    double clock_to_q_ps = get_delay_ps(kv.second.first);
-
-                    std::stringstream delay_triple;
-                    delay_triple << "(" << clock_to_q_ps << ":" << clock_to_q_ps << ":" << clock_to_q_ps << ")";
-
-                    os << indent(depth + 3) << "(IOPATH (posedge " << escape_sdf_identifier(kv.second.second) << ") " << escape_sdf_identifier(kv.first) << " " << delay_triple.str() << " " << delay_triple.str() << ")\n";
+                for (const Arc& cq_arc : cq_timing_arcs_) {
+                    os << indent(depth + 3) << "(IOPATH (posedge ";
+                    os << escape_sdf_identifier(cq_arc.source_name());
+                    if (find_port_size(cq_arc.source_name()) > 1) {
+                        os << "[" << cq_arc.source_ipin() << "]";
+                    }
+                    os << ") ";
+                    os << escape_sdf_identifier(cq_arc.sink_name());
+                    if (find_port_size(cq_arc.sink_name()) > 1) {
+                        os << "[" << cq_arc.sink_ipin() << "]";
+                    }
+                    os << " ";
+                    os << cq_arc.delay().str();
+                    os << ")\n";
                 }
+
+                // Port delays
+                for (const PortDelay& port_delay : port_delays_) {
+                    os << indent(depth + 3) << "(PORT ";
+                    os << escape_sdf_identifier(port_delay.port_name);
+                    if (find_port_size(port_delay.port_name) > 1) {
+                        os << "[" << port_delay.ipin << "]";
+                    }
+                    os << " ";
+                    os << port_delay.port_delay_triple.str();
+                    os << ")\n";
+                }
+
                 os << indent(depth + 2) << ")\n"; //ABSOLUTE
+                os << indent(depth + 1) << ")\n"; //DELAY
             }
-            os << indent(depth + 1) << ")\n"; //DELAY
 
-            if (!ports_tsu_.empty() || !ports_thld_.empty()) {
-                //Setup checks
+            if (!su_timing_arcs_.empty() || !hld_timing_arcs_.empty()) {
+                //Setup and hold timing checks
                 os << indent(depth + 1) << "(TIMINGCHECK\n";
-                for (auto kv : ports_tsu_) {
-                    double setup_ps = get_delay_ps(kv.second.first);
-
-                    std::stringstream delay_triple;
-                    delay_triple << "(" << setup_ps << ":" << setup_ps << ":" << setup_ps << ")";
-
-                    os << indent(depth + 2) << "(SETUP " << escape_sdf_identifier(kv.first) << " (posedge  " << escape_sdf_identifier(kv.second.second) << ") " << delay_triple.str() << ")\n";
+                for (const Arc& su_arc : su_timing_arcs_) {
+                    os << indent(depth + 2) << "(SETUP ";
+                    os << escape_sdf_identifier(su_arc.source_name());
+                    if (find_port_size(su_arc.source_name()) > 1) {
+                        os << "[" << su_arc.source_ipin() << "]";
+                    }
+                    os << " (posedge  ";
+                    os << escape_sdf_identifier(su_arc.sink_name());
+                    if (find_port_size(su_arc.sink_name()) > 1) {
+                        os << "[" << su_arc.sink_ipin() << "]";
+                    }
+                    os << ") " << su_arc.delay().str() << ")\n";
                 }
-                for (auto kv : ports_thld_) {
-                    double hold_ps = get_delay_ps(kv.second.first);
-
-                    std::stringstream delay_triple;
-                    delay_triple << "(" << hold_ps << ":" << hold_ps << ":" << hold_ps << ")";
-
-                    os << indent(depth + 2) << "(HOLD " << escape_sdf_identifier(kv.first) << " (posedge " << escape_sdf_identifier(kv.second.second) << ") " << delay_triple.str() << ")\n";
+                for (const Arc& hld_arc : hld_timing_arcs_) {
+                    os << indent(depth + 2) << "(HOLD ";
+                    os << escape_sdf_identifier(hld_arc.source_name());
+                    if (find_port_size(hld_arc.source_name()) > 1) {
+                        os << "[" << hld_arc.source_ipin() << "]";
+                    }
+                    os << " (posedge  ";
+                    os << escape_sdf_identifier(hld_arc.sink_name());
+                    if (find_port_size(hld_arc.sink_name()) > 1) {
+                        os << "[" << hld_arc.sink_ipin() << "]";
+                    }
+                    os << ") " << hld_arc.delay().str() << ")\n";
                 }
                 os << indent(depth + 1) << ")\n"; //TIMINGCHECK
             }
             os << indent(depth) << ")\n"; //CELL
+            os << "\n";
         }
     }
 
@@ -752,15 +915,17 @@ class BlackBoxInst : public Instance {
     std::map<std::string, std::vector<std::string>> input_port_conns_;
     std::map<std::string, std::vector<std::string>> output_port_conns_;
     std::vector<Arc> timing_arcs_;
-    std::map<std::string, sequential_port_delay_pair> ports_tsu_;
-    std::map<std::string, sequential_port_delay_pair> ports_thld_;
-    std::map<std::string, sequential_port_delay_pair> ports_tcq_;
+    std::vector<Arc> su_timing_arcs_;
+    std::vector<Arc> hld_timing_arcs_;
+    std::vector<Arc> cq_timing_arcs_;
+    std::vector<PortDelay> port_delays_;
+    struct t_analysis_opts opts_;
 };
 
 /**
  * @brief Assignment represents the logical connection between two nets
  *
- * This is synonomous with verilog's 'assign x = y' which connects
+ * This is synonymous with verilog's 'assign x = y' which connects
  * two nets with logical identity, assigning the value of 'y' to 'x'
  */
 class Assignment {
@@ -773,6 +938,11 @@ class Assignment {
     void print_verilog(std::ostream& os, std::string indent) {
         os << indent << "assign " << escape_verilog_identifier(lval_) << " = " << escape_verilog_identifier(rval_) << ";\n";
     }
+
+    void print_merged_verilog(std::ostream& os, std::string indent) {
+        os << indent << "assign " << lval_ << " = " << rval_ << ";\n";
+    }
+
     void print_blif(std::ostream& os, std::string indent) {
         os << indent << ".names " << rval_ << " " << lval_ << "\n";
         os << indent << "1 1\n";
@@ -793,23 +963,27 @@ class NetlistWriterVisitor : public NetlistVisitor {
     NetlistWriterVisitor(std::ostream& verilog_os, ///<Output stream for verilog netlist
                          std::ostream& blif_os,    ///<Output stream for blif netlist
                          std::ostream& sdf_os,     ///<Output stream for SDF
-                         std::shared_ptr<const AnalysisDelayCalculator> delay_calc)
+                         std::shared_ptr<const AnalysisDelayCalculator> delay_calc,
+                         const LogicalModels& models,
+                         struct t_analysis_opts opts)
         : verilog_os_(verilog_os)
         , blif_os_(blif_os)
         , sdf_os_(sdf_os)
-        , delay_calc_(delay_calc) {
+        , delay_calc_(delay_calc)
+        , models_(models)
+        , opts_(opts) {
         auto& atom_ctx = g_vpr_ctx.atom();
 
         //Initialize the pin to tnode look-up
-        for (AtomPinId pin : atom_ctx.nlist.pins()) {
-            AtomBlockId blk = atom_ctx.nlist.pin_block(pin);
-            ClusterBlockId clb_idx = atom_ctx.lookup.atom_clb(blk);
+        for (AtomPinId pin : atom_ctx.netlist().pins()) {
+            AtomBlockId blk = atom_ctx.netlist().pin_block(pin);
+            ClusterBlockId clb_idx = atom_ctx.lookup().atom_clb(blk);
 
-            const t_pb_graph_pin* gpin = atom_ctx.lookup.atom_pin_pb_graph_pin(pin);
+            const t_pb_graph_pin* gpin = atom_ctx.lookup().atom_pin_pb_graph_pin(pin);
             VTR_ASSERT(gpin);
             int pb_pin_idx = gpin->pin_count_in_cluster;
 
-            tatum::NodeId tnode_id = atom_ctx.lookup.atom_pin_tnode(pin);
+            tatum::NodeId tnode_id = atom_ctx.lookup().atom_pin_tnode(pin);
 
             auto key = std::make_pair(clb_idx, pb_pin_idx);
             auto value = std::make_pair(key, tnode_id);
@@ -833,27 +1007,28 @@ class NetlistWriterVisitor : public NetlistVisitor {
     void visit_atom_impl(const t_pb* atom) override {
         auto& atom_ctx = g_vpr_ctx.atom();
 
-        auto atom_pb = atom_ctx.lookup.pb_atom(atom);
+        auto atom_pb = atom_ctx.lookup().atom_pb_bimap().pb_atom(atom);
         if (atom_pb == AtomBlockId::INVALID()) {
             return;
         }
-        const t_model* model = atom_ctx.nlist.block_model(atom_pb);
+        LogicalModelId model_id = atom_ctx.netlist().block_model(atom_pb);
+        std::string model_name = models_.model_name(model_id);
 
-        if (model->name == std::string(MODEL_INPUT)) {
+        if (model_name == LogicalModels::MODEL_INPUT) {
             inputs_.emplace_back(make_io(atom, PortType::INPUT));
-        } else if (model->name == std::string(MODEL_OUTPUT)) {
+        } else if (model_name == LogicalModels::MODEL_OUTPUT) {
             outputs_.emplace_back(make_io(atom, PortType::OUTPUT));
-        } else if (model->name == std::string(MODEL_NAMES)) {
+        } else if (model_name == LogicalModels::MODEL_NAMES) {
             cell_instances_.push_back(make_lut_instance(atom));
-        } else if (model->name == std::string(MODEL_LATCH)) {
+        } else if (model_name == LogicalModels::MODEL_LATCH) {
             cell_instances_.push_back(make_latch_instance(atom));
-        } else if (model->name == std::string("single_port_ram")) {
+        } else if (model_name == std::string("single_port_ram")) {
             cell_instances_.push_back(make_ram_instance(atom));
-        } else if (model->name == std::string("dual_port_ram")) {
+        } else if (model_name == std::string("dual_port_ram")) {
             cell_instances_.push_back(make_ram_instance(atom));
-        } else if (model->name == std::string("multiply")) {
+        } else if (model_name == std::string("multiply")) {
             cell_instances_.push_back(make_multiply_instance(atom));
-        } else if (model->name == std::string("adder")) {
+        } else if (model_name == std::string("adder")) {
             cell_instances_.push_back(make_adder_instance(atom));
         } else {
             cell_instances_.push_back(make_blackbox_instance(atom));
@@ -866,12 +1041,8 @@ class NetlistWriterVisitor : public NetlistVisitor {
         print_sdf();
     }
 
-  private: //Internal Helper functions
-    ///@brief Writes out the verilog netlist
-    void print_verilog(int depth = 0) {
-        verilog_os_ << indent(depth) << "//Verilog generated by VPR " << vtr::VERSION << " from post-place-and-route implementation\n";
-        verilog_os_ << indent(depth) << "module " << top_module_name_ << " (\n";
-
+  protected:
+    virtual void print_primary_io(int depth) {
         //Primary Inputs
         for (auto iter = inputs_.begin(); iter != inputs_.end(); ++iter) {
             verilog_os_ << indent(depth + 1) << "input " << escape_verilog_identifier(*iter);
@@ -880,7 +1051,6 @@ class NetlistWriterVisitor : public NetlistVisitor {
             }
             verilog_os_ << "\n";
         }
-
         //Primary Outputs
         for (auto iter = outputs_.begin(); iter != outputs_.end(); ++iter) {
             verilog_os_ << indent(depth + 1) << "output " << escape_verilog_identifier(*iter);
@@ -889,6 +1059,22 @@ class NetlistWriterVisitor : public NetlistVisitor {
             }
             verilog_os_ << "\n";
         }
+    }
+
+    virtual void print_assignments(int depth) {
+        verilog_os_ << "\n";
+        verilog_os_ << indent(depth + 1) << "//IO assignments\n";
+        for (auto& assign : assignments_) {
+            assign.print_verilog(verilog_os_, indent(depth + 1));
+        }
+    }
+
+    ///@brief Writes out the verilog netlist
+    void print_verilog(int depth = 0) {
+        verilog_os_ << indent(depth) << "//Verilog generated by VPR " << vtr::VERSION << " from post-place-and-route implementation\n";
+        verilog_os_ << indent(depth) << "module " << top_module_name_ << " (\n";
+
+        print_primary_io(depth);
         verilog_os_ << indent(depth) << ");\n";
 
         //Wire declarations
@@ -903,14 +1089,8 @@ class NetlistWriterVisitor : public NetlistVisitor {
             }
         }
 
-        verilog_os_ << indent(depth + 1) << "wire DummyOut;\n";
-
         //connections between primary I/Os and their internal wires
-        verilog_os_ << "\n";
-        verilog_os_ << indent(depth + 1) << "//IO assignments\n";
-        for (auto& assign : assignments_) {
-            assign.print_verilog(verilog_os_, indent(depth + 1));
-        }
+        print_assignments(depth);
 
         //Interconnect between cell instances
         verilog_os_ << "\n";
@@ -930,17 +1110,34 @@ class NetlistWriterVisitor : public NetlistVisitor {
             }
         }
 
+        //All the cell instances (to an internal buffer for now)
+        std::stringstream instances_ss;
+
+        size_t unconn_count = 0;
+        for (auto& inst : cell_instances_) {
+            inst->print_verilog(instances_ss, unconn_count, depth + 1);
+        }
+
+        //Unconnected wires declarations
+        if (unconn_count) {
+            verilog_os_ << "\n";
+            verilog_os_ << indent(depth + 1) << "//Unconnected wires\n";
+            for (size_t i = 0; i < unconn_count; ++i) {
+                auto name = unconn_prefix + std::to_string(i);
+                verilog_os_ << indent(depth + 1) << "wire " << escape_verilog_identifier(name) << ";\n";
+            }
+        }
+
         //All the cell instances
         verilog_os_ << "\n";
         verilog_os_ << indent(depth + 1) << "//Cell instances\n";
-        for (auto& inst : cell_instances_) {
-            inst->print_verilog(verilog_os_, depth + 1);
-        }
+        verilog_os_ << instances_ss.str();
 
         verilog_os_ << "\n";
         verilog_os_ << indent(depth) << "endmodule\n";
     }
 
+  private: //Internal Helper functions
     ///@brief Writes out the blif netlist
     void print_blif(int depth = 0) {
         blif_os_ << indent(depth) << "#BLIF generated by VPR " << vtr::VERSION << " from post-place-and-route implementation\n";
@@ -1024,10 +1221,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
                 sdf_os_ << indent(depth + 2) << "(DELAY\n";
                 sdf_os_ << indent(depth + 3) << "(ABSOLUTE\n";
 
-                double delay = get_delay_ps(driver_tnode, sink_tnode);
-
-                std::stringstream delay_triple;
-                delay_triple << "(" << delay << ":" << delay << ":" << delay << ")";
+                DelayTriple delay_triple = get_src_to_sink_delay_triple(driver_tnode, sink_tnode);
 
                 sdf_os_ << indent(depth + 4) << "(IOPATH datain dataout " << delay_triple.str() << " " << delay_triple.str() << ")\n";
                 sdf_os_ << indent(depth + 3) << ")\n";
@@ -1045,6 +1239,62 @@ class NetlistWriterVisitor : public NetlistVisitor {
         sdf_os_ << indent(depth) << ")\n";
     }
 
+    /**
+     * @brief Returns the name of a circuit-level Input/Output
+     *
+     * The I/O is recorded and instantiated by the top level output routines
+     *   @param atom  The implementation primitive representing the I/O
+     *   @param dir   The IO direction
+     */
+    std::string make_io(const t_pb* atom,
+                        PortType dir) {
+        const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
+
+        std::string io_name;
+        int cluster_pin_idx = -1;
+        if (dir == PortType::INPUT) {
+            VTR_ASSERT(pb_graph_node->num_output_ports == 1);                                // One output port
+            VTR_ASSERT(pb_graph_node->num_output_pins[0] == 1);                              // One output pin
+            cluster_pin_idx = pb_graph_node->pins_by_output_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
+
+            io_name = atom->name;
+
+        } else {
+            VTR_ASSERT(pb_graph_node->num_input_ports == 1);                                // One input port
+            VTR_ASSERT(pb_graph_node->num_input_pins[0] == 1);                              // One input pin
+            cluster_pin_idx = pb_graph_node->pins_by_input_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
+
+            //Strip off the starting 'out:' that vpr adds to uniqify outputs
+            //this makes the port names match the input blif file
+            io_name = atom->name.substr(4);
+        }
+
+        const auto& top_pb_route = find_top_pb_route(atom);
+
+        if (top_pb_route.count(cluster_pin_idx)) {
+            //Net exists
+            auto atom_net_id = top_pb_route[cluster_pin_idx].atom_net_id; //Connected net in atom netlist
+
+            //Port direction is inverted (inputs drive internal nets, outputs sink internal nets)
+            PortType wire_dir = (dir == PortType::INPUT) ? PortType::OUTPUT : PortType::INPUT;
+
+            //Look up the tnode associated with this pin (used for delay calculation)
+            tatum::NodeId tnode_id = find_tnode(atom, cluster_pin_idx);
+
+            auto wire_name = make_inst_wire(atom_net_id, tnode_id, io_name, wire_dir, 0, 0);
+
+            //Connect the wires to to I/Os with assign statements
+            if (wire_dir == PortType::INPUT) {
+                assignments_.emplace_back(io_name, wire_name);
+            } else {
+                assignments_.emplace_back(wire_name, io_name);
+            }
+        }
+
+        return io_name;
+    }
+
+  protected:
     /**
      * @brief Returns the name of a wire connecting a primitive and global net.
      *
@@ -1086,61 +1336,6 @@ class NetlistWriterVisitor : public NetlistVisitor {
         return wire_name;
     }
 
-    /**
-     * @brief Returns the name of a circuit-level Input/Output
-     *
-     * The I/O is recorded and instantiated by the top level output routines
-     *   @param atom  The implementation primitive representing the I/O
-     *   @param dir   The IO direction
-     */
-    std::string make_io(const t_pb* atom,
-                        PortType dir) {
-        const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
-
-        std::string io_name;
-        int cluster_pin_idx = -1;
-        if (dir == PortType::INPUT) {
-            VTR_ASSERT(pb_graph_node->num_output_ports == 1);                        //One output port
-            VTR_ASSERT(pb_graph_node->num_output_pins[0] == 1);                      //One output pin
-            cluster_pin_idx = pb_graph_node->output_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
-
-            io_name = atom->name;
-
-        } else {
-            VTR_ASSERT(pb_graph_node->num_input_ports == 1);                        //One input port
-            VTR_ASSERT(pb_graph_node->num_input_pins[0] == 1);                      //One input pin
-            cluster_pin_idx = pb_graph_node->input_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
-
-            //Strip off the starting 'out:' that vpr adds to uniqify outputs
-            //this makes the port names match the input blif file
-            io_name = atom->name + 4;
-        }
-
-        const auto& top_pb_route = find_top_pb_route(atom);
-
-        if (top_pb_route.count(cluster_pin_idx)) {
-            //Net exists
-            auto atom_net_id = top_pb_route[cluster_pin_idx].atom_net_id; //Connected net in atom netlist
-
-            //Port direction is inverted (inputs drive internal nets, outputs sink internal nets)
-            PortType wire_dir = (dir == PortType::INPUT) ? PortType::OUTPUT : PortType::INPUT;
-
-            //Look up the tnode associated with this pin (used for delay calculation)
-            tatum::NodeId tnode_id = find_tnode(atom, cluster_pin_idx);
-
-            auto wire_name = make_inst_wire(atom_net_id, tnode_id, io_name, wire_dir, 0, 0);
-
-            //Connect the wires to to I/Os with assign statements
-            if (wire_dir == PortType::INPUT) {
-                assignments_.emplace_back(io_name, wire_name);
-            } else {
-                assignments_.emplace_back(wire_name, io_name);
-            }
-        }
-
-        return io_name;
-    }
-
     ///@brief Returns an Instance object representing the LUT
     std::shared_ptr<Instance> make_lut_instance(const t_pb* atom) {
         //Determine what size LUT
@@ -1160,14 +1355,14 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
         const auto& top_pb_route = find_top_pb_route(atom);
 
-        VTR_ASSERT(pb_graph_node->num_output_ports == 1);                                 //LUT has one output port
-        VTR_ASSERT(pb_graph_node->num_output_pins[0] == 1);                               //LUT has one output pin
-        int sink_cluster_pin_idx = pb_graph_node->output_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
+        VTR_ASSERT(pb_graph_node->num_output_ports == 1);                                         // LUT has one output port
+        VTR_ASSERT(pb_graph_node->num_output_pins[0] == 1);                                       // LUT has one output pin
+        int sink_cluster_pin_idx = pb_graph_node->pins_by_output_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
 
         //Add inputs connections
         std::vector<Arc> timing_arcs;
         for (int pin_idx = 0; pin_idx < pb_graph_node->num_input_pins[0]; pin_idx++) {
-            int cluster_pin_idx = pb_graph_node->input_pins[0][pin_idx].pin_count_in_cluster; //Unique pin index in cluster
+            int cluster_pin_idx = pb_graph_node->pins_by_input_port[0][pin_idx].pin_count_in_cluster; // Unique pin index in cluster
 
             std::string net;
             if (!top_pb_route.count(cluster_pin_idx)) {
@@ -1185,9 +1380,9 @@ class NetlistWriterVisitor : public NetlistVisitor {
                 net = make_inst_wire(atom_net_id, src_tnode_id, inst_name, PortType::INPUT, 0, pin_idx);
 
                 //Record the timing arc
-                float delay = get_delay_ps(src_tnode_id, sink_tnode_id);
+                DelayTriple delay_triple = get_src_to_sink_delay_triple(src_tnode_id, sink_tnode_id);
 
-                Arc timing_arc("in", pin_idx, "out", 0, delay);
+                Arc timing_arc("in", pin_idx, "out", 0, delay_triple);
 
                 timing_arcs.push_back(timing_arc);
             }
@@ -1196,7 +1391,10 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
         //Add the single output connection
         {
-            auto atom_net_id = top_pb_route[sink_cluster_pin_idx].atom_net_id; //Connected net in atom netlist
+            /* Check if the output is connected */
+            AtomNetId atom_net_id = AtomNetId::INVALID();
+            if (top_pb_route.count(sink_cluster_pin_idx))
+                atom_net_id = top_pb_route[sink_cluster_pin_idx].atom_net_id; //Connected net in atom netlist
 
             std::string net;
             if (!atom_net_id) {
@@ -1213,7 +1411,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
             port_conns["out"].push_back(net);
         }
 
-        auto inst = std::make_shared<LutInst>(lut_size, lut_mask, inst_name, port_conns, timing_arcs);
+        auto inst = std::make_shared<LutInst>(lut_size, lut_mask, inst_name, port_conns, timing_arcs, opts_);
 
         return inst;
     }
@@ -1237,25 +1435,29 @@ class NetlistWriterVisitor : public NetlistVisitor {
         std::map<std::string, std::string> port_conns;
 
         //Input (D)
-        int input_cluster_pin_idx = pb_graph_node->input_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
+        int input_cluster_pin_idx = pb_graph_node->pins_by_input_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
         VTR_ASSERT(top_pb_route.count(input_cluster_pin_idx));
         auto input_atom_net_id = top_pb_route[input_cluster_pin_idx].atom_net_id; //Connected net in atom netlist
         std::string input_net = make_inst_wire(input_atom_net_id, find_tnode(atom, input_cluster_pin_idx), inst_name, PortType::INPUT, 0, 0);
         port_conns["D"] = input_net;
 
-        double tsu = pb_graph_node->input_pins[0][0].tsu;
+        double tsu = pb_graph_node->pins_by_input_port[0][0].tsu;
+        DelayTriple tsu_triple(tsu, tsu, tsu);
+
+        double thld = pb_graph_node->pins_by_input_port[0][0].thld;
+        DelayTriple thld_triple(thld, thld, thld);
 
         //Output (Q)
-        int output_cluster_pin_idx = pb_graph_node->output_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
+        int output_cluster_pin_idx = pb_graph_node->pins_by_output_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
         VTR_ASSERT(top_pb_route.count(output_cluster_pin_idx));
         auto output_atom_net_id = top_pb_route[output_cluster_pin_idx].atom_net_id; //Connected net in atom netlist
         std::string output_net = make_inst_wire(output_atom_net_id, find_tnode(atom, output_cluster_pin_idx), inst_name, PortType::OUTPUT, 0, 0);
         port_conns["Q"] = output_net;
 
-        double tcq = pb_graph_node->output_pins[0][0].tco_max;
+        DelayTriple tcq_triple = get_pin_tco_delay_triple(pb_graph_node->pins_by_output_port[0][0]);
 
         //Clock (control)
-        int control_cluster_pin_idx = pb_graph_node->clock_pins[0][0].pin_count_in_cluster; //Unique pin index in cluster
+        int control_cluster_pin_idx = pb_graph_node->pins_by_clock_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
         VTR_ASSERT(top_pb_route.count(control_cluster_pin_idx));
         auto control_atom_net_id = top_pb_route[control_cluster_pin_idx].atom_net_id; //Connected net in atom netlist
         std::string control_net = make_inst_wire(control_atom_net_id, find_tnode(atom, control_cluster_pin_idx), inst_name, PortType::CLOCK, 0, 0);
@@ -1266,12 +1468,12 @@ class NetlistWriterVisitor : public NetlistVisitor {
         LatchInst::Type type = LatchInst::Type::RISING_EDGE;
         vtr::LogicValue init_value = vtr::LogicValue::FALSE;
 
-        return std::make_shared<LatchInst>(inst_name, port_conns, type, init_value, tcq, tsu);
+        return std::make_shared<LatchInst>(inst_name, port_conns, type, init_value, tcq_triple, tsu_triple, thld_triple, opts_);
     }
 
     /**
      * @brief Returns an Instance object representing the RAM
-     * @note  the primtive interface to dual and single port rams is nearly identical,
+     * @note  the primitive interface to dual and single port rams is nearly identical,
      *        so we using a single function to handle both
      */
     std::shared_ptr<Instance> make_ram_instance(const t_pb* atom) {
@@ -1281,16 +1483,17 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
         VTR_ASSERT(pb_type->class_type == MEMORY_CLASS);
 
-        std::string type = pb_type->model->name;
+        std::string type = models_.model_name(pb_type->model_id);
         std::string inst_name = join_identifier(type, atom->name);
         std::map<std::string, std::string> params;
         std::map<std::string, std::string> attrs;
         std::map<std::string, std::vector<std::string>> input_port_conns;
         std::map<std::string, std::vector<std::string>> output_port_conns;
         std::vector<Arc> timing_arcs;
-        std::map<std::string, sequential_port_delay_pair> ports_tsu;
-        std::map<std::string, sequential_port_delay_pair> ports_thld;
-        std::map<std::string, sequential_port_delay_pair> ports_tcq;
+        std::vector<Arc> su_timing_arcs;
+        std::vector<Arc> hld_timing_arcs;
+        std::vector<Arc> cq_timing_arcs;
+        std::vector<PortDelay> port_delays;
 
         params["ADDR_WIDTH"] = "0";
         params["DATA_WIDTH"] = "0";
@@ -1298,7 +1501,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         //Process the input ports
         for (int iport = 0; iport < pb_graph_node->num_input_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_input_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->input_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_input_port[iport][ipin];
                 const t_port* port = pin->port;
                 std::string port_class = port->port_class;
 
@@ -1342,18 +1545,23 @@ class NetlistWriterVisitor : public NetlistVisitor {
                     port_name = "we2";
                 } else {
                     VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
-                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name, pb_type->name);
+                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name.c_str(), pb_type->name);
                 }
 
                 input_port_conns[port_name].push_back(net);
-                ports_tsu[port_name] = std::make_pair(pin->tsu, pin->associated_clock_pin->port->name);
+                DelayTriple delay_triple(pin->tsu, pin->tsu, pin->tsu);
+                su_timing_arcs.emplace_back(port_name,
+                                            ipin,
+                                            pin->associated_clock_pin->port->name,
+                                            pin->associated_clock_pin->pin_number,
+                                            delay_triple);
             }
         }
 
         //Process the output ports
         for (int iport = 0; iport < pb_graph_node->num_output_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_output_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->output_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_output_port[iport][ipin];
                 const t_port* port = pin->port;
                 std::string port_class = port->port_class;
 
@@ -1379,10 +1587,15 @@ class NetlistWriterVisitor : public NetlistVisitor {
                     port_name = "out2";
                 } else {
                     VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
-                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name, pb_type->name);
+                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name.c_str(), pb_type->name);
                 }
                 output_port_conns[port_name].push_back(net);
-                ports_tcq[port_name] = std::make_pair(pin->tco_max, pin->associated_clock_pin->port->name);
+                DelayTriple delay_triple = get_pin_tco_delay_triple(*pin);
+                cq_timing_arcs.emplace_back(pin->associated_clock_pin->port->name,
+                                            pin->associated_clock_pin->pin_number,
+                                            port_name,
+                                            ipin,
+                                            delay_triple);
             }
         }
 
@@ -1391,7 +1604,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
             VTR_ASSERT(pb_graph_node->num_clock_pins[iport] == 1); //Expect a single clock port
 
             for (int ipin = 0; ipin < pb_graph_node->num_clock_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->clock_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_clock_port[iport][ipin];
                 const t_port* port = pin->port;
                 std::string port_class = port->port_class;
 
@@ -1405,15 +1618,18 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
                 if (port_class == "clock") {
                     VTR_ASSERT(pb_graph_node->num_clock_pins[iport] == 1); //Expect a single clock pin
-                    input_port_conns["clock"].push_back(net);
+                    input_port_conns[port->name].push_back(net);
                 } else {
                     VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
-                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name, pb_type->name);
+                                    "Unrecognized input port class '%s' for primitive '%s' (%s)\n", port_class.c_str(), atom->name.c_str(), pb_type->name);
                 }
             }
         }
 
-        return std::make_shared<BlackBoxInst>(type, inst_name, params, attrs, input_port_conns, output_port_conns, timing_arcs, ports_tsu, ports_thld, ports_tcq);
+        return std::make_shared<BlackBoxInst>(type, inst_name, params, attrs,
+                                              input_port_conns, output_port_conns,
+                                              timing_arcs, su_timing_arcs, hld_timing_arcs, cq_timing_arcs, port_delays,
+                                              opts_);
     }
 
     ///@brief Returns an Instance object representing a Multiplier
@@ -1424,26 +1640,27 @@ class NetlistWriterVisitor : public NetlistVisitor {
         const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
         const t_pb_type* pb_type = pb_graph_node->pb_type;
 
-        std::string type_name = pb_type->model->name;
+        std::string type_name = models_.model_name(pb_type->model_id);
         std::string inst_name = join_identifier(type_name, atom->name);
         std::map<std::string, std::string> params;
         std::map<std::string, std::string> attrs;
         std::map<std::string, std::vector<std::string>> input_port_conns;
         std::map<std::string, std::vector<std::string>> output_port_conns;
         std::vector<Arc> timing_arcs;
-        std::map<std::string, sequential_port_delay_pair> ports_tsu;
-        std::map<std::string, sequential_port_delay_pair> ports_thld;
-        std::map<std::string, sequential_port_delay_pair> ports_tcq;
+        std::vector<Arc> su_timing_arcs;
+        std::vector<Arc> hld_timing_arcs;
+        std::vector<Arc> cq_timing_arcs;
+        std::vector<PortDelay> port_delays;
 
         params["WIDTH"] = "0";
 
         //Delay matrix[sink_tnode] -> tuple of source_port_name, pin index, delay
-        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, double>>> tnode_delay_matrix;
+        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, DelayTriple>>> tnode_delay_matrix;
 
         //Process the input ports
         for (int iport = 0; iport < pb_graph_node->num_input_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_input_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->input_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_input_port[iport][ipin];
                 const t_port* port = pin->port;
                 params["WIDTH"] = std::to_string(port->num_pins); //Assume same width on all ports
 
@@ -1462,12 +1679,11 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
                     //Delays
                     //
-                    //We record the souce sink tnodes and thier delays here
+                    //We record the source sink tnodes and their delays here
                     for (tatum::EdgeId edge : timing_ctx.graph->node_out_edges(src_tnode)) {
-                        double delay = delay_calc_->max_edge_delay(*timing_ctx.graph, edge);
-
+                        DelayTriple delay_triple = get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
                         auto sink_tnode = timing_ctx.graph->edge_sink_node(edge);
-                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay);
+                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay_triple);
                     }
                 }
 
@@ -1478,7 +1694,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         //Process the output ports
         for (int iport = 0; iport < pb_graph_node->num_output_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_output_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->output_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_output_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 int cluster_pin_idx = pin->pin_count_in_cluster;
@@ -1498,8 +1714,8 @@ class NetlistWriterVisitor : public NetlistVisitor {
                     for (auto& data_tuple : tnode_delay_matrix[inode]) {
                         auto src_name = std::get<0>(data_tuple);
                         auto src_ipin = std::get<1>(data_tuple);
-                        auto delay = std::get<2>(data_tuple);
-                        timing_arcs.emplace_back(src_name, src_ipin, port->name, ipin, delay);
+                        auto delay_triple = std::get<2>(data_tuple);
+                        timing_arcs.emplace_back(src_name, src_ipin, port->name, ipin, delay_triple);
                     }
                 }
 
@@ -1509,7 +1725,10 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
         VTR_ASSERT(pb_graph_node->num_clock_ports == 0); //No clocks
 
-        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs, input_port_conns, output_port_conns, timing_arcs, ports_tsu, ports_thld, ports_tcq);
+        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs,
+                                              input_port_conns, output_port_conns,
+                                              timing_arcs, su_timing_arcs, hld_timing_arcs, cq_timing_arcs, port_delays,
+                                              opts_);
     }
 
     ///@brief Returns an Instance object representing an Adder
@@ -1520,26 +1739,27 @@ class NetlistWriterVisitor : public NetlistVisitor {
         const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
         const t_pb_type* pb_type = pb_graph_node->pb_type;
 
-        std::string type_name = pb_type->model->name;
+        std::string type_name = models_.model_name(pb_type->model_id);
         std::string inst_name = join_identifier(type_name, atom->name);
         std::map<std::string, std::string> params;
         std::map<std::string, std::string> attrs;
         std::map<std::string, std::vector<std::string>> input_port_conns;
         std::map<std::string, std::vector<std::string>> output_port_conns;
         std::vector<Arc> timing_arcs;
-        std::map<std::string, sequential_port_delay_pair> ports_tsu;
-        std::map<std::string, sequential_port_delay_pair> ports_thld;
-        std::map<std::string, sequential_port_delay_pair> ports_tcq;
+        std::vector<Arc> su_timing_arcs;
+        std::vector<Arc> hld_timing_arcs;
+        std::vector<Arc> cq_timing_arcs;
+        std::vector<PortDelay> port_delays;
 
         params["WIDTH"] = "0";
 
         //Delay matrix[sink_tnode] -> tuple of source_port_name, pin index, delay
-        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, double>>> tnode_delay_matrix;
+        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, DelayTriple>>> tnode_delay_matrix;
 
         //Process the input ports
         for (int iport = 0; iport < pb_graph_node->num_input_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_input_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->input_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_input_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 if (port->name == std::string("a") || port->name == std::string("b")) {
@@ -1563,12 +1783,11 @@ class NetlistWriterVisitor : public NetlistVisitor {
 
                     //Delays
                     //
-                    //We record the souce sink tnodes and thier delays here
+                    //We record the source sink tnodes and their delays here
                     for (tatum::EdgeId edge : timing_ctx.graph->node_out_edges(src_tnode)) {
-                        double delay = delay_calc_->max_edge_delay(*timing_ctx.graph, edge);
-
+                        DelayTriple delay_triple = get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
                         auto sink_tnode = timing_ctx.graph->edge_sink_node(edge);
-                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay);
+                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay_triple);
                     }
                 }
 
@@ -1579,7 +1798,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         //Process the output ports
         for (int iport = 0; iport < pb_graph_node->num_output_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_output_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->output_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_output_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 int cluster_pin_idx = pin->pin_count_in_cluster;
@@ -1609,16 +1828,22 @@ class NetlistWriterVisitor : public NetlistVisitor {
             }
         }
 
-        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs, input_port_conns, output_port_conns, timing_arcs, ports_tsu, ports_thld, ports_tcq);
+        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs,
+                                              input_port_conns, output_port_conns,
+                                              timing_arcs, su_timing_arcs, hld_timing_arcs, cq_timing_arcs, port_delays,
+                                              opts_);
     }
 
     std::shared_ptr<Instance> make_blackbox_instance(const t_pb* atom) {
+        const AtomNetlist& atom_netlist = g_vpr_ctx.atom().netlist();
+        const AtomLookup& atom_lookup = g_vpr_ctx.atom().lookup();
+
         const auto& top_pb_route = find_top_pb_route(atom);
         const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
         const t_pb_type* pb_type = pb_graph_node->pb_type;
 
         auto& timing_ctx = g_vpr_ctx.timing();
-        std::string type_name = pb_type->model->name;
+        std::string type_name = models_.model_name(pb_type->model_id);
         std::string inst_name = join_identifier(type_name, atom->name);
         std::map<std::string, std::string> params;
         std::map<std::string, std::string> attrs;
@@ -1626,24 +1851,22 @@ class NetlistWriterVisitor : public NetlistVisitor {
         std::map<std::string, std::vector<std::string>> output_port_conns;
         std::vector<Arc> timing_arcs;
 
-        // Maps to store a sink's port with the corresponding timing edge to that sink
-        //  - key   : string corresponding to the port's name
-        //  - value : pair with the delay and the associated clock pin port name
-        //
-        //  tsu : Setup
-        //  thld: Hold
-        //  tcq : Clock-to-Q
-        std::map<std::string, sequential_port_delay_pair> ports_tsu;
-        std::map<std::string, sequential_port_delay_pair> ports_thld;
-        std::map<std::string, sequential_port_delay_pair> ports_tcq;
+        // Vectors of the setup, hold, and clock-to-Q timing arcs.
+        std::vector<Arc> su_timing_arcs;
+        std::vector<Arc> hld_timing_arcs;
+        std::vector<Arc> cq_timing_arcs;
+
+        // Vector of port delays. These are delays that are experienced at the
+        // port of the blackbox.
+        std::vector<PortDelay> port_delays;
 
         //Delay matrix[sink_tnode] -> tuple of source_port_name, pin index, delay
-        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, double>>> tnode_delay_matrix;
+        std::map<tatum::NodeId, std::vector<std::tuple<std::string, int, DelayTriple>>> tnode_delay_matrix;
 
         //Process the input ports
         for (int iport = 0; iport < pb_graph_node->num_input_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_input_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->input_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_input_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 int cluster_pin_idx = pin->pin_count_in_cluster;
@@ -1664,17 +1887,134 @@ class NetlistWriterVisitor : public NetlistVisitor {
                     //
                     //We record the source's sink tnodes and their delays here
                     for (tatum::EdgeId edge : timing_ctx.graph->node_out_edges(src_tnode)) {
-                        double delay = delay_calc_->max_edge_delay(*timing_ctx.graph, edge);
-
+                        DelayTriple delay_triple = get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
                         auto sink_tnode = timing_ctx.graph->edge_sink_node(edge);
-                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay);
+                        tnode_delay_matrix[sink_tnode].emplace_back(port->name, ipin, delay_triple);
                     }
                 }
-
                 input_port_conns[port->name].push_back(net);
-                if (pin->type == PB_PIN_SEQUENTIAL) {
-                    if (!std::isnan(pin->tsu)) ports_tsu[port->name] = std::make_pair(pin->tsu, pin->associated_clock_pin->port->name);
-                    if (!std::isnan(pin->thld)) ports_thld[port->name] = std::make_pair(pin->thld, pin->associated_clock_pin->port->name);
+
+                if (pin->type == PB_PIN_SEQUENTIAL && (!std::isnan(pin->tsu) || !std::isnan(pin->thld))) {
+                    if (!std::isnan(pin->tsu)) {
+                        DelayTriple delay_triple(pin->tsu, pin->tsu, pin->tsu);
+                        su_timing_arcs.emplace_back(port->name,
+                                                    ipin,
+                                                    pin->associated_clock_pin->port->name,
+                                                    pin->associated_clock_pin->pin_number,
+                                                    delay_triple);
+                    }
+                    if (!std::isnan(pin->thld)) {
+                        DelayTriple delay_triple(pin->thld, pin->thld, pin->thld);
+                        hld_timing_arcs.emplace_back(port->name,
+                                                     ipin,
+                                                     pin->associated_clock_pin->port->name,
+                                                     pin->associated_clock_pin->pin_number,
+                                                     delay_triple);
+                    }
+                } else if (top_pb_route.count(cluster_pin_idx) > 0) {
+                    // If this pin is not sequential, but has a timing path which
+                    // ultimately leads to an internal register, then this pin
+                    // will have setup and hold constraints. This pin will absorb
+                    // the maximum setup and hold constraints of all paths. To
+                    // account for the internal delays of the black-box, we add
+                    // port delays equal to the max/min path delays to registers.
+                    //
+                    // NOTE: Here we are implicitly changing the underlying timing
+                    //       model from how VTR normally represents the internals of
+                    //       primitives. In order to properly model the internals of
+                    //       primitives in the same was as VTR, the timing model must
+                    //       include internal timing nodes which are explicitly defined
+                    //       in the model. VTR implicitly creates these nodes, but leaves
+                    //       them unnamed. This causes issues when trying to use SDF
+                    //       files to annotate those nodes since the names are not
+                    //       guaranteed. Here, we simplify the timing model to act
+                    //       as if it is a single register-file, where all inputs
+                    //       which have timing arcs through registers have setup/
+                    //       hold delays and all outputs which have timing arcs
+                    //       through registers have clock to Q delays. This is
+                    //       a pessimistic model which is more stable for modeling
+                    //       purposes.
+                    //       Ideally we should strive to use the same timing model
+                    //       as VTR externally; however, we would need to specify
+                    //       the names of the internal nodes in the architecture
+                    //       description somehow or come up with a common convention.
+
+                    // Maintain a mapping from [clock port ID][clock pin ID] -> max setup/hold time of this ipin.
+                    std::unordered_map<AtomPortId, std::unordered_map<AtomPinId, std::pair<double, double>>> ipin_su_hld_time;
+                    // Maintain the min and max propagation delays from this ipin to any internal register.
+                    DelayTriple ipin_port_delay_triple;
+
+                    // Iterate over all outgoing timing edges to this ipin.
+                    auto inode = find_tnode(atom, cluster_pin_idx);
+                    for (tatum::EdgeId edge : timing_ctx.graph->node_out_edges(inode)) {
+                        // Get the clock capture edge (if it exists)
+                        tatum::EdgeId clock_capture_edge = timing_ctx.graph->node_clock_capture_edge(timing_ctx.graph->edge_sink_node(edge));
+                        // If the sink of an outgoing edge was captured by a clock, then this pin has a CQ delay.
+                        if (clock_capture_edge.is_valid()) {
+                            DelayTriple prop_delay_triple = get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
+                            double tsu = delay_calc_->setup_time(*timing_ctx.graph, clock_capture_edge);
+                            double thld = delay_calc_->hold_time(*timing_ctx.graph, clock_capture_edge);
+
+                            // Get the clock port and pin that launched this delay path.
+                            AtomPinId clk_pin_id = atom_lookup.tnode_atom_pin(timing_ctx.graph->edge_src_node(clock_capture_edge));
+                            AtomPortId clk_port_id = atom_netlist.pin_port(clk_pin_id);
+
+                            // Store the max setup and hold times.
+                            if (ipin_su_hld_time.count(clk_port_id) == 0 || ipin_su_hld_time[clk_port_id].count(clk_pin_id) == 0) {
+                                ipin_su_hld_time[clk_port_id][clk_pin_id] = std::make_pair(tsu, thld);
+                            } else {
+                                auto [old_tsu, old_thld] = ipin_su_hld_time[clk_port_id][clk_pin_id];
+                                double new_tsu = std::max(old_tsu, tsu);
+                                double new_thld = std::max(old_thld, thld);
+                                ipin_su_hld_time[clk_port_id][clk_pin_id] = std::make_pair(new_tsu, new_thld);
+                            }
+
+                            // Store the min and max propagation delays from the ipin to any internal register.
+                            if (!ipin_port_delay_triple.has_value()) {
+                                ipin_port_delay_triple = prop_delay_triple;
+                            } else {
+                                DelayTriple old_port_delay_time = ipin_port_delay_triple;
+                                DelayTriple new_port_delay_time;
+                                new_port_delay_time.maximum = std::max(old_port_delay_time.maximum, prop_delay_triple.maximum);
+                                new_port_delay_time.minimum = std::max(old_port_delay_time.minimum, prop_delay_triple.minimum);
+                                new_port_delay_time.typical = (new_port_delay_time.maximum + new_port_delay_time.minimum) / 2.0;
+
+                                ipin_port_delay_triple = new_port_delay_time;
+                            }
+                        }
+                    }
+
+                    // Add the setup and hold constraints for this input pin.
+                    for (const auto& port_pair : ipin_su_hld_time) {
+                        for (const auto& pin_pair : port_pair.second) {
+                            AtomPortId clk_port_id = port_pair.first;
+                            AtomPinId clk_pin_id = pin_pair.first;
+                            double tsu = pin_pair.second.first;
+                            double thld = pin_pair.second.second;
+
+                            if (!std::isnan(tsu)) {
+                                su_timing_arcs.emplace_back(port->name,
+                                                            ipin,
+                                                            atom_netlist.port_name(clk_port_id),
+                                                            atom_netlist.pin_port_bit(clk_pin_id),
+                                                            DelayTriple(tsu, tsu, tsu));
+                            }
+                            if (!std::isnan(thld)) {
+                                hld_timing_arcs.emplace_back(port->name,
+                                                             ipin,
+                                                             atom_netlist.port_name(clk_port_id),
+                                                             atom_netlist.pin_port_bit(clk_pin_id),
+                                                             DelayTriple(thld, thld, thld));
+                            }
+                        }
+                    }
+
+                    // Add the port delays.
+                    if (ipin_port_delay_triple.has_value()) {
+                        port_delays.emplace_back(port->name,
+                                                 ipin,
+                                                 ipin_port_delay_triple);
+                    }
                 }
             }
         }
@@ -1682,7 +2022,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         //Process the output ports
         for (int iport = 0; iport < pb_graph_node->num_output_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_output_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->output_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_output_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 int cluster_pin_idx = pin->pin_count_in_cluster;
@@ -1708,14 +2048,82 @@ class NetlistWriterVisitor : public NetlistVisitor {
                 }
 
                 output_port_conns[port->name].push_back(net);
-                if (pin->type == PB_PIN_SEQUENTIAL && !std::isnan(pin->tco_max)) ports_tcq[port->name] = std::make_pair(pin->tco_max, pin->associated_clock_pin->port->name);
+                if (pin->type == PB_PIN_SEQUENTIAL && !std::isnan(pin->tco_max)) {
+                    DelayTriple delay_triple = get_pin_tco_delay_triple(*pin);
+                    cq_timing_arcs.emplace_back(pin->associated_clock_pin->port->name,
+                                                pin->associated_clock_pin->pin_number,
+                                                port->name,
+                                                ipin,
+                                                delay_triple);
+                } else if (top_pb_route.count(cluster_pin_idx) > 0) {
+                    // If this pin is not sequential, however a path exists from
+                    // a sequential input pin to this pin, then this black-box pin
+                    // would have a clock to q delay equal to the input pin's tcq plus
+                    // the propagation delay. This tcq would need to be the min / max
+                    // delay across all clocks with timing paths going through this
+                    // output pin.
+                    //
+                    // NOTE: See the comment in the input ports processing. This
+                    //       code is implicitly changing the timing model from
+                    //       VTR's model which pretends that inputs and outputs
+                    //       act like registers, to a more explicit model where
+                    //       the entire primitive acts like a register.
+
+                    // Maintain a mapping from [clock port ID][clock pin ID] -> min/max delay to this opin.
+                    std::unordered_map<AtomPortId, std::unordered_map<AtomPinId, DelayTriple>> opin_total_cq_delays;
+
+                    // Iterate over all incoming timing edges to this opin.
+                    auto inode = find_tnode(atom, cluster_pin_idx);
+                    for (tatum::EdgeId edge : timing_ctx.graph->node_in_edges(inode)) {
+                        // Get the clock launch edge (if it exists)
+                        tatum::EdgeId clock_launch_edge = timing_ctx.graph->node_clock_launch_edge(timing_ctx.graph->edge_src_node(edge));
+                        // If the source of an incoming edge was launched by a clock, then this pin has a CQ delay.
+                        if (clock_launch_edge.is_valid()) {
+                            // Compute the total clock to Q delay including the propagation delay to the output pin.
+                            DelayTriple prop_delay_triple = get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
+                            DelayTriple cq_delay_triple = get_edge_delay_triple(clock_launch_edge, *delay_calc_, *timing_ctx.graph);
+                            DelayTriple total_cq_delay_triple = cq_delay_triple + prop_delay_triple;
+
+                            // Get the clock port and pin that launched this delay path.
+                            AtomPinId clk_pin_id = atom_lookup.tnode_atom_pin(timing_ctx.graph->edge_src_node(clock_launch_edge));
+                            AtomPortId clk_port_id = atom_netlist.pin_port(clk_pin_id);
+
+                            // Store the min and max delays from each clock port,pin pair to this output pin.
+                            if (opin_total_cq_delays.count(clk_port_id) == 0 || opin_total_cq_delays[clk_port_id].count(clk_pin_id) == 0) {
+                                opin_total_cq_delays[clk_port_id][clk_pin_id] = total_cq_delay_triple;
+                            } else {
+                                DelayTriple old_total_cq_delay = opin_total_cq_delays[clk_port_id][clk_pin_id];
+                                DelayTriple new_total_cq_delay;
+                                new_total_cq_delay.maximum = std::max(old_total_cq_delay.maximum, total_cq_delay_triple.maximum);
+                                new_total_cq_delay.minimum = std::min(old_total_cq_delay.minimum, total_cq_delay_triple.minimum);
+                                new_total_cq_delay.typical = (new_total_cq_delay.maximum + new_total_cq_delay.minimum) / 2.0;
+
+                                opin_total_cq_delays[clk_port_id][clk_pin_id] = new_total_cq_delay;
+                            }
+                        }
+                    }
+
+                    // Add the clock to Q timing arcs for this output port.
+                    for (const auto& port_pair : opin_total_cq_delays) {
+                        for (const auto& pin_pair : port_pair.second) {
+                            AtomPortId clk_port_id = port_pair.first;
+                            AtomPinId clk_pin_id = pin_pair.first;
+                            const DelayTriple& total_cq_delay_triple = pin_pair.second;
+                            cq_timing_arcs.emplace_back(atom_netlist.port_name(clk_port_id),
+                                                        atom_netlist.pin_port_bit(clk_pin_id),
+                                                        port->name,
+                                                        ipin,
+                                                        total_cq_delay_triple);
+                        }
+                    }
+                }
             }
         }
 
         //Process the clock ports
         for (int iport = 0; iport < pb_graph_node->num_clock_ports; ++iport) {
             for (int ipin = 0; ipin < pb_graph_node->num_clock_pins[iport]; ++ipin) {
-                const t_pb_graph_pin* pin = &pb_graph_node->clock_pins[iport][ipin];
+                const t_pb_graph_pin* pin = &pb_graph_node->pins_by_clock_port[iport][ipin];
                 const t_port* port = pin->port;
 
                 int cluster_pin_idx = pin->pin_count_in_cluster;
@@ -1738,16 +2146,19 @@ class NetlistWriterVisitor : public NetlistVisitor {
         }
 
         auto& atom_ctx = g_vpr_ctx.atom();
-        AtomBlockId blk_id = atom_ctx.lookup.pb_atom(atom);
-        for (auto param : atom_ctx.nlist.block_params(blk_id)) {
+        AtomBlockId blk_id = atom_ctx.lookup().atom_pb_bimap().pb_atom(atom);
+        for (auto param : atom_ctx.netlist().block_params(blk_id)) {
             params[param.first] = param.second;
         }
 
-        for (auto attr : atom_ctx.nlist.block_attrs(blk_id)) {
+        for (auto attr : atom_ctx.netlist().block_attrs(blk_id)) {
             attrs[attr.first] = attr.second;
         }
 
-        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs, input_port_conns, output_port_conns, timing_arcs, ports_tsu, ports_thld, ports_tcq);
+        return std::make_shared<BlackBoxInst>(type_name, inst_name, params, attrs,
+                                              input_port_conns, output_port_conns,
+                                              timing_arcs, su_timing_arcs, hld_timing_arcs, cq_timing_arcs, port_delays,
+                                              opts_);
     }
 
     ///@brief Returns the top level pb_route associated with the given pb
@@ -1756,6 +2167,24 @@ class NetlistWriterVisitor : public NetlistVisitor {
         return top_pb->pb_route;
     }
 
+    ///@brief Returns the tnode ID of the given atom's connected cluster pin
+    tatum::NodeId find_tnode(const t_pb* atom, int cluster_pin_idx) {
+        auto& atom_ctx = g_vpr_ctx.atom();
+
+        AtomBlockId blk_id = atom_ctx.lookup().atom_pb_bimap().pb_atom(atom);
+        ClusterBlockId clb_index = atom_ctx.lookup().atom_clb(blk_id);
+
+        auto key = std::make_pair(clb_index, cluster_pin_idx);
+        auto iter = pin_id_to_tnode_lookup_.find(key);
+        VTR_ASSERT(iter != pin_id_to_tnode_lookup_.end());
+
+        tatum::NodeId tnode_id = iter->second;
+        VTR_ASSERT(tnode_id);
+
+        return tnode_id;
+    }
+
+  private:
     ///@brief Returns the top complex block which contains the given pb
     const t_pb* find_top_cb(const t_pb* curr) {
         //Walk up through the pb graph until curr
@@ -1768,30 +2197,14 @@ class NetlistWriterVisitor : public NetlistVisitor {
         return curr;
     }
 
-    ///@brief Returns the tnode ID of the given atom's connected cluster pin
-    tatum::NodeId find_tnode(const t_pb* atom, int cluster_pin_idx) {
-        auto& atom_ctx = g_vpr_ctx.atom();
-
-        AtomBlockId blk_id = atom_ctx.lookup.pb_atom(atom);
-        ClusterBlockId clb_index = atom_ctx.lookup.atom_clb(blk_id);
-
-        auto key = std::make_pair(clb_index, cluster_pin_idx);
-        auto iter = pin_id_to_tnode_lookup_.find(key);
-        VTR_ASSERT(iter != pin_id_to_tnode_lookup_.end());
-
-        tatum::NodeId tnode_id = iter->second;
-        VTR_ASSERT(tnode_id);
-
-        return tnode_id;
-    }
-
     ///@brief Returns a LogicVec representing the LUT mask of the given LUT atom
     LogicVec load_lut_mask(size_t num_inputs,  //LUT size
                            const t_pb* atom) { //LUT primitive
         auto& atom_ctx = g_vpr_ctx.atom();
 
-        const t_model* model = atom_ctx.nlist.block_model(atom_ctx.lookup.pb_atom(atom));
-        VTR_ASSERT(model->name == std::string(MODEL_NAMES));
+        LogicalModelId model_id = atom_ctx.netlist().block_model(atom_ctx.lookup().atom_pb_bimap().pb_atom(atom));
+        std::string model_name = models_.model_name(model_id);
+        VTR_ASSERT(model_name == LogicalModels::MODEL_NAMES);
 
 #ifdef DEBUG_LUT_MASK
         std::cout << "Loading LUT mask for: " << atom->name << std::endl;
@@ -1801,7 +2214,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         std::vector<int> permute = determine_lut_permutation(num_inputs, atom);
 
         //Retrieve the truth table
-        const auto& truth_table = atom_ctx.nlist.block_truth_table(atom_ctx.lookup.pb_atom(atom));
+        const auto& truth_table = atom_ctx.netlist().block_truth_table(atom_ctx.lookup().atom_pb_bimap().pb_atom(atom));
 
         //Apply the permutation
         auto permuted_truth_table = permute_truth_table(truth_table, num_inputs, permute);
@@ -1832,7 +2245,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
     std::vector<int> determine_lut_permutation(size_t num_inputs, const t_pb* atom_pb) {
         auto& atom_ctx = g_vpr_ctx.atom();
 
-        std::vector<int> permute(num_inputs, OPEN);
+        std::vector<int> permute(num_inputs, UNDEFINED);
 
 #ifdef DEBUG_LUT_MASK
         std::cout << "\tInit Permute: {";
@@ -1846,7 +2259,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         //
         //We walk through the logical inputs to this atom (i.e. in the original truth table/netlist)
         //and find the corresponding input in the implementation atom (i.e. in the current netlist)
-        auto ports = atom_ctx.nlist.block_input_ports(atom_ctx.lookup.pb_atom(atom_pb));
+        auto ports = atom_ctx.netlist().block_input_ports(atom_ctx.lookup().atom_pb_bimap().pb_atom(atom_pb));
         if (ports.size() == 1) {
             const t_pb_graph_node* gnode = atom_pb->pb_graph_node;
             VTR_ASSERT(gnode->num_input_ports == 1);
@@ -1858,21 +2271,21 @@ class NetlistWriterVisitor : public NetlistVisitor {
                 AtomNetId impl_input_net_id = find_atom_input_logical_net(atom_pb, ipin); //The net currently connected to input j
 
                 //Find the original pin index
-                const t_pb_graph_pin* gpin = &gnode->input_pins[0][ipin];
+                const t_pb_graph_pin* gpin = &gnode->pins_by_input_port[0][ipin];
                 BitIndex orig_index = atom_pb->atom_pin_bit_index(gpin);
 
                 if (impl_input_net_id) {
                     //If there is a valid net connected in the implementation
-                    AtomNetId logical_net_id = atom_ctx.nlist.port_net(port_id, orig_index);
+                    AtomNetId logical_net_id = atom_ctx.netlist().port_net(port_id, orig_index);
 
                     // Fatal error should be flagged when the net marked in implementation
                     // does not match the net marked in input netlist
                     if (impl_input_net_id != logical_net_id) {
                         VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
                                         "Unmatch:\n\tlogical net is '%s' at pin '%lu'\n\timplmented net is '%s' at pin '%s'\n",
-                                        atom_ctx.nlist.net_name(logical_net_id).c_str(),
+                                        atom_ctx.netlist().net_name(logical_net_id).c_str(),
                                         size_t(orig_index),
-                                        atom_ctx.nlist.net_name(impl_input_net_id).c_str(),
+                                        atom_ctx.netlist().net_name(impl_input_net_id).c_str(),
                                         gpin->to_string().c_str());
                     }
 
@@ -1891,7 +2304,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         std::set<int> perm_indicies(permute.begin(), permute.end());
         size_t unused_index = 0;
         for (size_t i = 0; i < permute.size(); i++) {
-            if (permute[i] == OPEN) {
+            if (permute[i] == UNDEFINED) {
                 while (perm_indicies.count(unused_index)) {
                     unused_index++;
                 }
@@ -1982,7 +2395,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
         size_t i = 0;
         //Walk through each input in the input cube for this row
         while (names_row[i] != ' ') {
-            vtr::LogicValue input_val = vtr::LogicValue::UNKOWN;
+            vtr::LogicValue input_val = vtr::LogicValue::UNKNOWN;
             if (names_row[i] == '1') {
                 input_val = vtr::LogicValue::TRUE;
             } else if (names_row[i] == '0') {
@@ -2012,7 +2425,7 @@ class NetlistWriterVisitor : public NetlistVisitor {
     AtomNetId find_atom_input_logical_net(const t_pb* atom, int atom_input_idx) {
         const t_pb_graph_node* pb_node = atom->pb_graph_node;
 
-        int cluster_pin_idx = pb_node->input_pins[0][atom_input_idx].pin_count_in_cluster;
+        int cluster_pin_idx = pb_node->pins_by_input_port[0][atom_input_idx].pin_count_in_cluster;
         const auto& top_pb_route = find_top_pb_route(atom);
         AtomNetId atom_net_id;
         if (top_pb_route.count(cluster_pin_idx)) {
@@ -2030,25 +2443,25 @@ class NetlistWriterVisitor : public NetlistVisitor {
         return name;
     }
 
-    ///@brief Returns the delay in pico-seconds from source_tnode to sink_tnode
-    double get_delay_ps(tatum::NodeId source_tnode, tatum::NodeId sink_tnode) {
+    ///@brief Returns the delay triple from source_tnode to sink_tnode
+    DelayTriple get_src_to_sink_delay_triple(tatum::NodeId source_tnode, tatum::NodeId sink_tnode) {
         auto& timing_ctx = g_vpr_ctx.timing();
 
         tatum::EdgeId edge = timing_ctx.graph->find_edge(source_tnode, sink_tnode);
         VTR_ASSERT(edge);
 
-        double delay_sec = delay_calc_->max_edge_delay(*timing_ctx.graph, edge);
-
-        return ::get_delay_ps(delay_sec); //Class overload hides file-scope by default
+        return get_edge_delay_triple(edge, *delay_calc_, *timing_ctx.graph);
     }
 
-  private:                                                  //Data
-    std::string top_module_name_;                           ///<Name of the top level module (i.e. the circuit)
+  private:                        //Data
+    std::string top_module_name_; ///<Name of the top level module (i.e. the circuit)
+  protected:
     std::vector<std::string> inputs_;                       ///<Name of circuit inputs
     std::vector<std::string> outputs_;                      ///<Name of circuit outputs
     std::vector<Assignment> assignments_;                   ///<Set of assignments (i.e. net-to-net connections)
     std::vector<std::shared_ptr<Instance>> cell_instances_; ///<Set of cell instances
 
+  private:
     //Drivers of logical nets.
     // Key: logic net id, Value: pair of wire_name and tnode_id
     std::map<AtomNetId, std::pair<std::string, tatum::NodeId>> logical_net_drivers_;
@@ -2059,7 +2472,10 @@ class NetlistWriterVisitor : public NetlistVisitor {
     std::map<std::string, float> logical_net_sink_delays_;
 
     //Output streams
+  protected:
     std::ostream& verilog_os_;
+
+  private:
     std::ostream& blif_os_;
     std::ostream& sdf_os_;
 
@@ -2067,36 +2483,222 @@ class NetlistWriterVisitor : public NetlistVisitor {
     std::map<std::pair<ClusterBlockId, int>, tatum::NodeId> pin_id_to_tnode_lookup_;
 
     std::shared_ptr<const AnalysisDelayCalculator> delay_calc_;
+
+  protected:
+    const LogicalModels& models_;
+
+  private:
+    struct t_analysis_opts opts_;
 };
 
-//
-// Externally Accessible Functions
-//
+/**
+ * @brief A class which writes post-implementation merged netlists (Verilog)
+ *
+ * It implements the NetlistVisitor interface used by NetlistWalker (see netlist_walker.h)
+ */
+class MergedNetlistWriterVisitor : public NetlistWriterVisitor {
+  public:                                                //Public interface
+    MergedNetlistWriterVisitor(std::ostream& verilog_os, ///<Output stream for verilog netlist
+                               std::ostream& blif_os,    ///<Output stream for blif netlist
+                               std::ostream& sdf_os,     ///<Output stream for SDF
+                               std::shared_ptr<const AnalysisDelayCalculator> delay_calc,
+                               const LogicalModels& models,
+                               struct t_analysis_opts opts)
+        : NetlistWriterVisitor(verilog_os, blif_os, sdf_os, delay_calc, models, opts) {}
 
-///@brief Main routing for this file. See netlist_writer.h for details.
-void netlist_writer(const std::string basename, std::shared_ptr<const AnalysisDelayCalculator> delay_calc) {
-    std::string verilog_filename = basename + "_post_synthesis.v";
-    std::string blif_filename = basename + "_post_synthesis.blif";
-    std::string sdf_filename = basename + "_post_synthesis.sdf";
+    std::map<std::string, int> portmap;
 
-    VTR_LOG("Writing Implementation Netlist: %s\n", verilog_filename.c_str());
-    VTR_LOG("Writing Implementation Netlist: %s\n", blif_filename.c_str());
-    VTR_LOG("Writing Implementation SDF    : %s\n", sdf_filename.c_str());
+    void visit_atom_impl(const t_pb* atom) override {
+        auto& atom_ctx = g_vpr_ctx.atom();
 
-    std::ofstream verilog_os(verilog_filename);
-    std::ofstream blif_os(blif_filename);
-    std::ofstream sdf_os(sdf_filename);
+        auto atom_pb = atom_ctx.lookup().atom_pb_bimap().pb_atom(atom);
+        if (atom_pb == AtomBlockId::INVALID()) {
+            return;
+        }
+        LogicalModelId model_id = atom_ctx.netlist().block_model(atom_pb);
+        std::string model_name = models_.model_name(model_id);
 
-    NetlistWriterVisitor visitor(verilog_os, blif_os, sdf_os, delay_calc);
+        if (model_name == LogicalModels::MODEL_INPUT) {
+            auto merged_io_name = make_io(atom, PortType::INPUT);
+            if (merged_io_name != "")
+                inputs_.emplace_back(merged_io_name);
+        } else if (model_name == LogicalModels::MODEL_OUTPUT) {
+            auto merged_io_name = make_io(atom, PortType::OUTPUT);
+            if (merged_io_name != "")
+                outputs_.emplace_back(merged_io_name);
+        } else if (model_name == LogicalModels::MODEL_NAMES) {
+            cell_instances_.push_back(make_lut_instance(atom));
+        } else if (model_name == LogicalModels::MODEL_LATCH) {
+            cell_instances_.push_back(make_latch_instance(atom));
+        } else if (model_name == std::string("single_port_ram")) {
+            cell_instances_.push_back(make_ram_instance(atom));
+        } else if (model_name == std::string("dual_port_ram")) {
+            cell_instances_.push_back(make_ram_instance(atom));
+        } else if (model_name == std::string("multiply")) {
+            cell_instances_.push_back(make_multiply_instance(atom));
+        } else if (model_name == std::string("adder")) {
+            cell_instances_.push_back(make_adder_instance(atom));
+        } else {
+            cell_instances_.push_back(make_blackbox_instance(atom));
+        }
+    }
 
-    NetlistWalker nl_walker(visitor);
+    /**
+     * @brief Returns the name of circuit-level Input/Output ports with multi-bit
+     * ports merged into one.
+     *
+     * The I/O is recorded and instantiated by the top level output routines
+     *   @param atom    The implementation primitive representing the I/O
+     *   @param dir     The IO direction
+     *   @param portmap Map for keeping port names and width
+     */
+    std::string make_io(const t_pb* atom,
+                        PortType dir) {
+        const t_pb_graph_node* pb_graph_node = atom->pb_graph_node;
 
-    nl_walker.walk();
-}
+        std::string io_name;
+        std::string indexed_io_name;
+        int cluster_pin_idx = -1;
+        // regex for matching 3 groups:
+        // * 'out:' - optional
+        // * verilog identifier - mandatory
+        // * index - optional
+        std::string rgx = "(out:)?([a-zA-Z$_]+[a-zA-Z0-9$_]*)(\\[[0-9]+\\])?$";
+        std::string name(atom->name);
+        std::regex regex(rgx);
+        std::smatch matches;
+
+        if (dir == PortType::INPUT) {
+            VTR_ASSERT(pb_graph_node->num_output_ports == 1);                                // One output port
+            VTR_ASSERT(pb_graph_node->num_output_pins[0] == 1);                              // One output pin
+            cluster_pin_idx = pb_graph_node->pins_by_output_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
+
+            io_name = "";
+            indexed_io_name = atom->name;
+
+            if (std::regex_match(name, matches, regex)) {
+                if (std::find(inputs_.begin(), inputs_.end(), matches[2]) == inputs_.end()) { //Skip already existing multi-bit port names
+                    io_name = matches[2];
+                    portmap[matches[2]] = 0;
+                } else {
+                    portmap[matches[2]]++;
+                }
+            }
+
+        } else {
+            VTR_ASSERT(pb_graph_node->num_input_ports == 1);                                // One input port
+            VTR_ASSERT(pb_graph_node->num_input_pins[0] == 1);                              // One input pin
+            cluster_pin_idx = pb_graph_node->pins_by_input_port[0][0].pin_count_in_cluster; // Unique pin index in cluster
+
+            //Strip off the starting 'out:' that vpr adds to uniqify outputs
+            //this makes the port names match the input blif file
+
+            io_name = "";
+            indexed_io_name = atom->name.substr(4);
+
+            if (std::regex_search(name, matches, regex)) {
+                if (std::find(outputs_.begin(), outputs_.end(), matches[2]) == outputs_.end()) { //Skip already existing multi-bit port names
+                    portmap[matches[2]] = 0;
+                    io_name = matches[2];
+                } else {
+                    portmap[matches[2]]++;
+                }
+            }
+        }
+
+        const auto& top_pb_route = find_top_pb_route(atom);
+
+        if (top_pb_route.count(cluster_pin_idx)) {
+            //Net exists
+            auto atom_net_id = top_pb_route[cluster_pin_idx].atom_net_id; //Connected net in atom netlist
+
+            //Port direction is inverted (inputs drive internal nets, outputs sink internal nets)
+            PortType wire_dir = (dir == PortType::INPUT) ? PortType::OUTPUT : PortType::INPUT;
+
+            //Look up the tnode associated with this pin (used for delay calculation)
+            tatum::NodeId tnode_id = find_tnode(atom, cluster_pin_idx);
+
+            auto wire_name = make_inst_wire(atom_net_id, tnode_id, indexed_io_name, wire_dir, 0, 0);
+
+            //Connect the wires to to I/Os with assign statements
+            if (wire_dir == PortType::INPUT) {
+                assignments_.emplace_back(indexed_io_name, escape_verilog_identifier(wire_name));
+            } else {
+                assignments_.emplace_back(escape_verilog_identifier(wire_name), indexed_io_name);
+            }
+        }
+
+        return io_name;
+    }
+
+    void print_primary_io(int depth) override {
+        //Primary Inputs
+        for (auto iter = inputs_.begin(); iter != inputs_.end(); ++iter) {
+            if (portmap[*iter] > 0)
+                verilog_os_ << indent(depth + 1) << "input [" << portmap[*iter] << ":0] " << *iter;
+            else
+                verilog_os_ << indent(depth + 1) << "input " << *iter;
+            if (iter + 1 != inputs_.end() || outputs_.size() > 0) {
+                verilog_os_ << ",";
+            }
+            verilog_os_ << "\n";
+        }
+
+        //Primary Outputs
+        for (auto iter = outputs_.begin(); iter != outputs_.end(); ++iter) {
+            if (portmap[*iter] > 0)
+                verilog_os_ << indent(depth + 1) << "output [" << portmap[*iter] << ":0] " << *iter;
+            else
+                verilog_os_ << indent(depth + 1) << "output " << *iter;
+            if (iter + 1 != outputs_.end()) {
+                verilog_os_ << ",";
+            }
+            verilog_os_ << "\n";
+        }
+    }
+
+    void print_assignments(int depth) override {
+        verilog_os_ << "\n";
+        verilog_os_ << indent(depth + 1) << "//IO assignments\n";
+        for (auto& assign : assignments_) {
+            assign.print_merged_verilog(verilog_os_, indent(depth + 1));
+        }
+    }
+
+    void finish_impl() override {
+        // Don't write to blif and sdf streams
+        print_verilog();
+    }
+};
 
 //
 // File-scope function implementations
 //
+
+DelayTriple get_pin_tco_delay_triple(const t_pb_graph_pin& pin) {
+    DelayTriple delay_triple;
+    delay_triple.minimum = pin.tco_min;
+    delay_triple.maximum = pin.tco_max;
+    // Since Tatum does not provide typical delays, set it to be the average
+    // of min and max.
+    delay_triple.typical = (pin.tco_min + pin.tco_max) / 2.0;
+    return delay_triple;
+}
+
+DelayTriple get_edge_delay_triple(tatum::EdgeId edge_id,
+                                  const AnalysisDelayCalculator& delay_calc,
+                                  const tatum::TimingGraph& timing_graph) {
+    double min_edge_delay = delay_calc.min_edge_delay(timing_graph, edge_id);
+    double max_edge_delay = delay_calc.max_edge_delay(timing_graph, edge_id);
+
+    DelayTriple delay_triple;
+    delay_triple.minimum = min_edge_delay;
+    delay_triple.maximum = max_edge_delay;
+    // Since Tatum does not provide typical delays, set it to be the average
+    // of min and max.
+    delay_triple.typical = (min_edge_delay + max_edge_delay) / 2.0;
+    return delay_triple;
+}
 
 ///@brief Returns a blank string for indenting the given depth
 std::string indent(size_t depth) {
@@ -2108,16 +2710,11 @@ std::string indent(size_t depth) {
     return new_indent;
 }
 
-///@brief Returns the delay in pico-seconds from a floating point delay
-double get_delay_ps(double delay_sec) {
-    return delay_sec * 1e12; //Scale to picoseconds
-}
-
 ///@brief Returns the name of a unique unconnected net
 std::string create_unconn_net(size_t& unconn_count) {
     //We increment unconn_count by reference so each
     //call generates a unique name
-    return "__vpr__unconn" + std::to_string(unconn_count++);
+    return unconn_prefix + std::to_string(unconn_count++);
 }
 
 /**
@@ -2159,7 +2756,31 @@ void print_blif_port(std::ostream& os, size_t& unconn_count, const std::string& 
  *
  * Handles special cases like multi-bit and disconnected ports
  */
-void print_verilog_port(std::ostream& os, const std::string& port_name, const std::vector<std::string>& nets, PortType type, int depth) {
+void print_verilog_port(std::ostream& os, size_t& unconn_count, const std::string& port_name, const std::vector<std::string>& nets, PortType type, int depth, struct t_analysis_opts& opts) {
+    auto unconn_inp_name = [&]() {
+        switch (opts.post_synth_netlist_unconn_input_handling) {
+            case e_post_synth_netlist_unconn_handling::GND:
+                return std::string("1'b0");
+            case e_post_synth_netlist_unconn_handling::VCC:
+                return std::string("1'b1");
+            case e_post_synth_netlist_unconn_handling::NETS:
+                return create_unconn_net(unconn_count);
+            case e_post_synth_netlist_unconn_handling::UNCONNECTED:
+            default:
+                return std::string("1'bX");
+        }
+    };
+
+    auto unconn_out_name = [&]() {
+        switch (opts.post_synth_netlist_unconn_output_handling) {
+            case e_post_synth_netlist_unconn_handling::NETS:
+                return create_unconn_net(unconn_count);
+            case e_post_synth_netlist_unconn_handling::UNCONNECTED:
+            default:
+                return std::string();
+        }
+    };
+
     //Port name
     os << indent(depth) << "." << port_name << "(";
 
@@ -2169,40 +2790,57 @@ void print_verilog_port(std::ostream& os, const std::string& port_name, const st
         if (nets[0].empty()) {
             //Disconnected
             if (type == PortType::INPUT || type == PortType::CLOCK) {
-                os << "1'b0";
+                os << unconn_inp_name();
             } else {
                 VTR_ASSERT(type == PortType::OUTPUT);
-                os << "DummyOut";
+                os << unconn_out_name();
             }
         } else {
             //Connected
             os << escape_verilog_identifier(nets[0]);
         }
     } else {
-        //A multi-bit port, we explicitly concat the single-bit nets to build the port,
-        //taking care to print MSB on left and LSB on right
-        os << "{"
-           << "\n";
-        for (int ipin = (int)nets.size() - 1; ipin >= 0; --ipin) { //Reverse order to match endianess
-            os << indent(depth + 1);
-            if (nets[ipin].empty()) {
-                //Disconnected
-                if (type == PortType::INPUT || type == PortType::CLOCK) {
-                    os << "1'b0";
-                } else {
-                    VTR_ASSERT(type == PortType::OUTPUT);
-                    os << "DummyOut";
-                }
-            } else {
-                //Connected
-                os << escape_verilog_identifier(nets[ipin]);
-            }
-            if (ipin != 0) {
-                os << ",";
-                os << "\n";
+        // Check if all pins are unconnected
+        bool all_unconnected = true;
+        for (size_t i = 0; i < nets.size(); ++i) {
+            if (!nets[i].empty()) {
+                all_unconnected = false;
+                break;
             }
         }
-        os << "}";
+
+        //A multi-bit port, we explicitly concat the single-bit nets to build the port,
+        //taking care to print MSB on left and LSB on right
+        if (all_unconnected && type == PortType::OUTPUT && opts.post_synth_netlist_unconn_output_handling == e_post_synth_netlist_unconn_handling::UNCONNECTED) {
+            // Empty connection
+        } else {
+            // Individual bits
+            os << "{"
+               << "\n";
+            for (int ipin = (int)nets.size() - 1; ipin >= 0; --ipin) { //Reverse order to match endianness
+                os << indent(depth + 1);
+                if (nets[ipin].empty()) {
+                    //Disconnected
+                    if (type == PortType::INPUT || type == PortType::CLOCK) {
+                        os << unconn_inp_name();
+                    } else {
+                        VTR_ASSERT(type == PortType::OUTPUT);
+                        // When concatenating output connection there cannot
+                        // be an empty placeholder so we have to create a
+                        // dummy net.
+                        os << create_unconn_net(unconn_count);
+                    }
+                } else {
+                    //Connected
+                    os << escape_verilog_identifier(nets[ipin]);
+                }
+                if (ipin != 0) {
+                    os << ",";
+                }
+                os << "\n";
+            }
+            os << indent(depth) + " }";
+        }
     }
     os << ")";
 }
@@ -2214,7 +2852,7 @@ std::string escape_verilog_identifier(const std::string identifier) {
     //The escaped identifiers start with a literal back-slash '\'
     //followed by the identifier and are terminated by white space
     //
-    //We pre-pend the escape back-slash and append a space to avoid
+    //We prepend the escape back-slash and append a space to avoid
     //the identifier gobbling up adjacent characters like commas which
     //are not actually part of the identifier
     std::string prefix = "\\";
@@ -2242,7 +2880,7 @@ bool is_special_sdf_char(char c) {
     //Since the spec allows for non-special characters to be escaped (they are treated
     //normally), we treat $ as a special character to be safe.
     //
-    //Note that the spec appears to have rendering errors in the PDF availble
+    //Note that the spec appears to have rendering errors in the PDF available
     //on IEEE Xplore, listing the 'LEFT-POINTING DOUBLE ANGLE QUOTATION MARK'
     //character (decimal code 171) in place of the APOSTROPHE character '
     //with decimal code 39 in the special character list. We assume code 39.
@@ -2276,4 +2914,185 @@ std::string escape_sdf_identifier(const std::string identifier) {
 ///@brief Joins two identifier strings
 std::string join_identifier(std::string lhs, std::string rhs) {
     return lhs + '_' + rhs;
+}
+
+/**
+ * @brief Add the original SDC constraints that VPR used during its flow to the
+ *        given SDC file.
+ *
+ *  @param sdc_os
+ *      Output stream for the target SDC file. The original SDC file passed into
+ *      VPR will be appended to this file.
+ *  @param timing_info
+ *      Information on the timing within VPR. This is used to get the file path
+ *      to the original SDC file.
+ */
+void add_original_sdc_to_post_implemented_sdc_file(std::ofstream& sdc_os,
+                                                   const t_timing_inf& timing_info) {
+    // Open the original SDC file provided to VPR.
+    std::ifstream original_sdc_file;
+    original_sdc_file.open(timing_info.SDCFile);
+    if (!original_sdc_file.is_open()) {
+        // TODO: VPR automatically creates SDC constraints by default if no SDC
+        //       file is provided. These can be replicated here if needed.
+        VPR_FATAL_ERROR(VPR_ERROR_IMPL_NETLIST_WRITER,
+                        "No SDC files provided to VPR; currently cannot generate "
+                        "post-implementation SDC file without it");
+    }
+
+    // Write a header to declare where these commands came from.
+    sdc_os << "\n";
+    sdc_os << "#******************************************************************************#\n";
+    sdc_os << "# The following SDC commands were provided to VPR from the given SDC file:\n";
+    sdc_os << "# \t" << timing_info.SDCFile << "\n";
+    sdc_os << "#******************************************************************************#\n";
+
+    // Append the original SDC file to the post-implementation SDC file.
+    sdc_os << original_sdc_file.rdbuf();
+}
+
+/**
+ * @brief Add propagated clock commands to the given SDC file based on the set
+ *        clock modeling.
+ *
+ * This is necessary since VPR decides if clocks are routed or not, which has
+ * affects on how timing analysis is performed on the clocks.
+ *
+ *  @param sdc_os
+ *      The file stream to add the propagated clock commands to.
+ */
+void add_propagated_clocks_to_sdc_file(std::ofstream& sdc_os) {
+
+    // The timing constraints contain information on all the clocks in the circuit
+    // (provided by the user-provided SDC file).
+    const auto timing_constraints = g_vpr_ctx.timing().constraints;
+
+    // Collect the non-virtual clocks. Virtual clocks are not routed and
+    // do not get propageted.
+    std::vector<tatum::DomainId> non_virtual_clocks;
+    for (tatum::DomainId clock_domain_id : timing_constraints->clock_domains()) {
+        if (!timing_constraints->is_virtual_clock(clock_domain_id)) {
+            non_virtual_clocks.push_back(clock_domain_id);
+        }
+    }
+
+    // If there are no non-virtual clocks, no extra commands needed. Virtual
+    // clocks are ideal.
+    if (non_virtual_clocks.empty()) {
+        return;
+    }
+
+    // Append a header to explain why these commands are added.
+    sdc_os << "\n";
+    sdc_os << "#******************************************************************************#\n";
+    sdc_os << "# The following are clock domains in VPR which have delays on their edges.\n";
+    sdc_os << "#\n";
+    sdc_os << "# Any non-virtual clock has its delay determined and written out as part of a\n";
+    sdc_os << "# propagated clock command. If VPR was instructed not to route the clock, this\n";
+    sdc_os << "# delay will be an underestimate.\n";
+    sdc_os << "#\n";
+    sdc_os << "# Note: Virtual clocks do not get routed and are treated as ideal.\n";
+    sdc_os << "#******************************************************************************#\n";
+
+    // Add the SDC commands to set the non-virtual clocks as propagated (non-ideal);
+    // Note: It was decided that "ideal" (dont route) clock modeling in VPR should still
+    //       set the clocks as propagated to allow for the input pad delays of
+    //       clocks to be included. The SDF delay annotations on clock signals
+    //       should make this safe to do.
+    for (tatum::DomainId clock_domain_id : non_virtual_clocks) {
+        sdc_os << "set_propagated_clock ";
+        sdc_os << timing_constraints->clock_domain_name(clock_domain_id);
+        sdc_os << "\n";
+    }
+}
+
+/**
+ * @brief Generates a post-implementation SDC file with the given file name
+ *        based on the timing info used for VPR.
+ *
+ *  @param sdc_filename
+ *      The file name of the SDC file to generate.
+ *  @param timing_info
+ *      Information on the timing used in the VPR flow.
+ */
+void generate_post_implementation_sdc(const std::string& sdc_filename,
+                                      const t_timing_inf& timing_info) {
+    if (!timing_info.timing_analysis_enabled) {
+        VTR_LOG_WARN("Timing analysis is disabled. Post-implementation SDC file "
+                     "will not be generated.\n");
+        return;
+    }
+
+    // Begin writing the post-implementation SDC file.
+    std::ofstream sdc_os(sdc_filename);
+
+    // Print a header declaring that this file is auto-generated and what version
+    // of VTR produced it.
+    sdc_os << "#******************************************************************************#\n";
+    sdc_os << "# SDC automatically generated by VPR from a post-place-and-route implementation.\n";
+    sdc_os << "#\tVersion: " << vtr::VERSION << "\n";
+    sdc_os << "#******************************************************************************#\n";
+
+    // Add the original SDC that VPR used during its flow.
+    add_original_sdc_to_post_implemented_sdc_file(sdc_os, timing_info);
+
+    // Add propagated clocks to SDC file if needed.
+    add_propagated_clocks_to_sdc_file(sdc_os);
+}
+
+} // namespace
+
+//
+// Externally Accessible Functions
+//
+
+///@brief Main routine for this file. See netlist_writer.h for details.
+void netlist_writer(const std::string basename,
+                    std::shared_ptr<const AnalysisDelayCalculator> delay_calc,
+                    const LogicalModels& models,
+                    const t_timing_inf& timing_info,
+                    t_analysis_opts opts) {
+    std::string verilog_filename = basename + "_post_synthesis.v";
+    std::string blif_filename = basename + "_post_synthesis.blif";
+    std::string sdf_filename = basename + "_post_synthesis.sdf";
+
+    VTR_LOG("Writing Implementation Netlist: %s\n", verilog_filename.c_str());
+    VTR_LOG("Writing Implementation Netlist: %s\n", blif_filename.c_str());
+    VTR_LOG("Writing Implementation SDF    : %s\n", sdf_filename.c_str());
+    std::ofstream verilog_os(verilog_filename);
+    std::ofstream blif_os(blif_filename);
+    std::ofstream sdf_os(sdf_filename);
+
+    NetlistWriterVisitor visitor(verilog_os, blif_os, sdf_os, delay_calc, models, opts);
+
+    NetlistWalker nl_walker(visitor);
+
+    nl_walker.walk();
+
+    if (opts.gen_post_implementation_sdc) {
+        std::string sdc_filename = basename + "_post_synthesis.sdc";
+
+        VTR_LOG("Writing Implementation SDC    : %s\n", sdc_filename.c_str());
+
+        generate_post_implementation_sdc(sdc_filename,
+                                         timing_info);
+    }
+}
+
+///@brief Main routine for this file. See netlist_writer.h for details.
+void merged_netlist_writer(const std::string basename, std::shared_ptr<const AnalysisDelayCalculator> delay_calc, const LogicalModels& models, t_analysis_opts opts) {
+    std::string verilog_filename = basename + "_merged_post_implementation.v";
+
+    VTR_LOG("Writing Merged Implementation Netlist: %s\n", verilog_filename.c_str());
+
+    std::ofstream verilog_os(verilog_filename);
+    // Don't write blif and sdf, pass dummy streams
+    std::ofstream blif_os;
+    std::ofstream sdf_os;
+
+    MergedNetlistWriterVisitor visitor(verilog_os, blif_os, sdf_os, delay_calc, models, opts);
+
+    NetlistWalker nl_walker(visitor);
+
+    nl_walker.walk();
 }

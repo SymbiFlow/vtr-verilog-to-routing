@@ -3,7 +3,7 @@
 * The purpose of this program is to generate a valid .blif netlist by 
 * parsing and interpreting a .vqm file. 
 *
-*				VQM to BLIF Convertor V.1.2
+*				VQM to BLIF Converter V.1.2
 *
 * Author:	S. Whitty
 *		June 6, 2011
@@ -77,10 +77,14 @@
 *  For more, see "logic_types.h", "read_xml_arch_file.h" and "read_xml_arch_file.c" in libvpr
 *********************************************************************************************/
 
+#include "logic_types.h"
+#include "preprocess.h"
 #include "vqm2blif.h"
 #include "lut_stats.h"
 #include "vtr_error.h"
 #include "physical_types.h"
+#include "hard_block_recog.h"
+#include "vtr_vector.h"
 
 #include <sys/stat.h>
 
@@ -96,8 +100,8 @@ lut_support_map supported_luts;	//map structure for verifying a VQM primitive ag
 					//LUT configurations (see lut_regoc.h & lut_recog.cpp)
 
 
-int* model_count;		//array of flags indicating whether a model read from
-					//the architecture was instantiated in the .vqm file.
+vtr::vector<LogicalModelId, int> model_count; //array of flags indicating whether a model read from
+					                          //the architecture was instantiated in the .vqm file.
 
 t_boolean debug_mode;	//user-set flag causing the creation of intermediate files 
 				//with debug information.
@@ -126,7 +130,7 @@ t_boolean elaborate_ram_clocks; //user-set flag which controls whether rams have
 
 t_boolean single_clock_primitives; //user-set flag which controls whether multiclock blocks have
                                    // their extra clocks dropped.  This is a work around for
-                                   // VPR's limitaiton of one clock per primitive.
+                                   // VPR's limitation of one clock per primitive.
 
 t_boolean split_carry_chain_logic; //user-set flag which controls whether to decompose carry chain
                                    //logic cells into their constituent logic (LUT) and arithmetic 
@@ -140,30 +144,35 @@ t_boolean print_unused_subckt_pins; //user-set flag which controls whether subck
                                     //this option to be true.
 t_boolean eblif_format;             //If true, writes circuit in extended BLIF (.eblif) format (supported by YOSYS & VPR)
 
+t_boolean insert_custom_hard_blocks; // user-set flag. Which if true, helps find and filter user-defined hard blocks within the netlist (based on the supplied hard block names) and then instantiates the hard blocks within the blif file. 
+									// or if false, then the netlist is processed without identifying any hard blocks.
+									// this option should only be used if the original user-design contained custom hard-blocks.
+									// The user-defined hard block names need to be provided
+
 //============================================================================================
 //			FUNCTION DECLARATIONS
 //============================================================================================
 
 //Setup Functions
-void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile, 
-			   string* outfile);
+void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile, string* outfile,
+			   string* device, std::vector<std::string>* hard_block_list);
 	void setup_tokens (tokmap* tokens);
 
 //Execution Functions
-void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch);
-	void subckt_prep(t_model* cur_model);
+void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch, string device);
+	void subckt_prep(const LogicalModels& models);
 	void init_blif_subckts (t_node **vqm_nodes, int number_of_vqm_nodes, 
-						t_model *arch_models, t_blif_model* my_model);
+						const LogicalModels& models, t_blif_model* my_model, string device);
 
 	//1-to-1 Subcircuit Function
 	//Translates one VQM Node into one BLIF Subcircuit, appends a mode-hash based on 
 	//parameters if elab_mode is MODES or MODES_TIMING.
-	void push_node_1_to_1 (t_node* vqm_node, t_model* arch_models, scktvec* blif_subckts);
+	void push_node_1_to_1 (t_node* vqm_node, const LogicalModels& models, scktvec* blif_subckts, string device);
 
 	//Atomize Subcircuit Function
 	//Uses select parameters and a dictionary to atomize each block and
 	//name it as the dictionary says.
-	void push_node_atomize (t_node* vqm_node, t_model* arch_models, scktvec* blif_subckts);
+	void push_node_atomize (t_node* vqm_node, const LogicalModels& models, scktvec* blif_subckts);
 
 	//General Subcircuit Initialization
 	//No matter the translation, models from the architecture get turned into
@@ -181,7 +190,7 @@ void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch)
 
 void dump_blif (char* blif_file, t_blif_model* main_model, t_arch* arch, t_boolean print_unused_subckt_pins);
 
-void dump_main_model(t_blif_model* model, ofstream& outfile, t_boolean print_unused_subckt_pins, t_boolean eblif_format, t_boolean debug);
+void dump_main_model(t_blif_model* model, ofstream& outfile, const LogicalModels& models, t_boolean print_unused_subckt_pins, t_boolean eblif_format, t_boolean debug);
 
 void dump_portlist (ofstream& outfile, pinvec ports, t_boolean debug);
 void dump_assignments(ofstream& outfile, t_blif_model* model, t_boolean eblif_format, t_boolean debug);
@@ -202,7 +211,7 @@ void dump_wire_assign(ofstream& outfile, string target_name,
 
 void dump_luts (ofstream& outfile, lutvec* blif_luts, t_boolean eblif_format, t_boolean debug);
 
-void dump_subckts(ofstream& outfile, scktvec* subckts, t_boolean print_unused_pins, t_boolean eblif_format, t_boolean debug);
+void dump_subckts(ofstream& outfile, scktvec* subckts, const LogicalModels& models, t_boolean print_unused_pins, t_boolean eblif_format, t_boolean debug);
 
 void dump_subckt_map (ofstream& outfile, portmap* map, t_model_ports* temp_port, 
                 const char* inst_name, const char* maptype, int s_index, t_boolean print_unused_pins, t_boolean debug, bool last);
@@ -210,7 +219,7 @@ size_t count_print_pins(t_model_ports* temp_port, portmap* map, t_boolean print_
 
 void dump_subckt_portlist(ofstream& outfile, t_model_ports* port, string indent, t_boolean debug);
 
-void dump_subckt_models(t_model* temp_model, ofstream& outfile, t_boolean debug);
+void dump_subckt_models(const LogicalModels& models, ofstream& outfile, t_boolean debug);
 
 //Debug functions
 void echo_module (char* echo_file, const char* vqm_filename, t_module* my_module);
@@ -218,7 +227,7 @@ void echo_module_pins (ofstream& outfile, t_module* module);
 void echo_module_assigns (ofstream& outfile, t_module* module);
 void echo_module_nodes (ofstream& outfile, t_module* module);
 void echo_blif_model (char* echo_file, const char* vqm_filename, 
-				t_blif_model* my_model, t_model* temp_model);
+				t_blif_model* my_model, const LogicalModels& models);
 
 
 //Other Functions
@@ -263,15 +272,22 @@ int main(int argc, char* argv[])
 	//used to construct output filenames from project name 
 	//char* filename necessitated by vqm_parse_file()
 
+	// a list which stores all the user supplied custom hard block type names
+	std::vector<std::string> hard_block_type_name_list;
+
+	// indicates the type of device the circuit is targeting
+	// we set the default value to the stratix 4 device
+	string device = "stratixiv";
+
 //*************************************************************************************************
 //	Begin Conversion
 //*************************************************************************************************
 
-	cout << "********************\nVQM to BLIF Convertor\nS. Whitty 2011\n********************\n" ;
+	cout << "********************\nVQM to BLIF Converter\nS. Whitty 2011\n********************\n" ;
 	cout << "This parser reads a .vqm file and converts it to .blif format.\n\n" ;
 	
 	//verify command-line is correct, populate input variables and global mode flags.
-	cmd_line_parse(argc, argv, &source_file, &arch_file, &out_file);
+	cmd_line_parse(argc, argv, &source_file, &arch_file, &out_file, &device,&hard_block_type_name_list);
 
 	setup_lut_support_map ();	//initialize LUT support for cleanup and elaborate functions
 
@@ -311,7 +327,7 @@ int main(int argc, char* argv[])
     //        required when decomposing INOUT pins into input and output pins
 	cout << "\n>> Parsing architecture file " << arch_file << endl ;
     try {
-        XmlReadArch( arch_file.c_str(), false, &arch, physical_tile_types, logical_block_types);	//Architecture (XML) Parser call
+        xml_read_arch( arch_file.c_str(), false, &arch, physical_tile_types, logical_block_types, /*device_model_warnings=*/true);	//Architecture (XML) Parser call
     } catch (const vtr::VtrError& e) {
         cout << "Error at line " << e.line() << " in " << e.filename() << ": " << e.what() << endl;
         exit(1);
@@ -322,7 +338,7 @@ int main(int argc, char* argv[])
     numTypes = logical_block_types.size();
 
 	VTR_ASSERT((types) && (numTypes > 0));
-	VTR_ASSERT(arch.models != NULL);
+	VTR_ASSERT(!arch.models.user_models().empty());
 			
     //Pre-process the netlist
     //  Currently this just 'cleans up' bi-directional inout pins
@@ -330,7 +346,7 @@ int main(int argc, char* argv[])
     processStart = clock();
 
     preprocess_netlist(my_module, &arch, types, numTypes, fix_global_nets, elaborate_ram_clocks,
-                       single_clock_primitives, split_carry_chain_logic, remove_const_nets);
+                       single_clock_primitives, split_carry_chain_logic, remove_const_nets, device);
 	
     if (debug_mode){
 		//Print debug info to "<project_path>_module.echo"
@@ -369,8 +385,29 @@ int main(int argc, char* argv[])
 			//file contains cleaned data read from the .vqm structures.
 		}
 	}
+
+	// only process the netlist for any custom hard blocks if the user provided valid hard block names
+	if (insert_custom_hard_blocks)
+	{	
+		cout << "\n>> Identifying and instantiating custom hard blocks within the netlist.\n";
 		
+		processStart = clock();
 		
+		try
+		{
+			add_hard_blocks_to_netlist(my_module,&arch,&hard_block_type_name_list, arch_file, source_file, device);
+		}
+		catch(const vtr::VtrError& error)
+		{
+			VTR_LOG_ERROR("%s\n", ((std::string)error.what()).c_str());
+			exit(1);
+		}
+
+		processEnd = clock();
+
+		cout << "\n>> Custom hard block instantiations took " << (float)(processEnd - processStart)/CLOCKS_PER_SEC << " seconds.\n" ;
+	}
+	
 	//Reorganize netlist data into structures conducive to .blif writing.
 	if (verbose_mode){
 		cout << "\n>> Initializing BLIF model\n" ;
@@ -380,7 +417,7 @@ int main(int argc, char* argv[])
 
 	processStart = clock();
 
-	init_blif_models( &my_model, my_module, &arch );
+	init_blif_models( &my_model, my_module, &arch, device);
 			
 	if(debug_mode){			
 		//Print debug info to "<project_path>_blif.echo"
@@ -428,8 +465,8 @@ int main(int argc, char* argv[])
 //			SETUP FUNCTIONS
 //============================================================================================
 
-void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile, 
-			   string* outfile){
+void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile, string* outfile,
+			   string* device, std::vector<std::string>* hard_block_type_name_list){
 /*  Interpret the command-line arguments, accepting the input files, output file, and various
  *  mode settings from the user. 
  *
@@ -471,6 +508,10 @@ void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile
     remove_const_nets = T_FALSE;
     print_unused_subckt_pins = T_FALSE;
     eblif_format = T_FALSE;
+	insert_custom_hard_blocks = T_FALSE;
+
+	// temporary storage to hold hard block names from the argument list
+	std::string curr_hard_block_name; 
 
 	//Now read the command line to configure input variables.
 	for (int i = 1; i < argc; i++){
@@ -591,6 +632,86 @@ void cmd_line_parse (int argc, char** argv, string* sourcefile, string* archfile
                 case OT_EBLIF_FORMAT:
                     eblif_format = T_TRUE;
                     break;
+				case OT_INSERT_CUSTOM_HARD_BLOCKS:
+					// first check whether an accompanying hard block type name was supplied (user provides the names of all the various types of custom hard blocks within the design, essentially this is the module names in their HDL design)
+					if ( i+1 == argc ){
+						// no hard block type name was supplied so throw an error
+						cout << "ERROR: Missing Hard Block Module Names.\n" ;
+						print_usage (T_TRUE);
+					}
+
+					// now we loop through and process the following arguments
+					while (T_TRUE)
+					{
+						// first check whether the next argument is a new option or a supplied hard block type name
+						it = CmdTokens.find(argv[i+1]);
+
+						// case where the next argument is a command line option
+						if (it != CmdTokens.end())
+						{
+							// When we come here, we need to finish processing further command line arguments for hard block type names. Since we have a different command-line option.
+
+							// case one below is when the user didn't provide any hard block type names and just provided the next command-line option
+							if (!insert_custom_hard_blocks)
+							{
+								// since no hard block type names were supplied, we throw an error
+								cout << "ERROR: Missing Hard Block Module Names.\n"; 
+								print_usage (T_TRUE);
+							}
+							else
+							{
+								// the user already provided a legal hard block type name, so if we come here then the user simply just wanted to use another command line option, so we just leave this case statement.
+								break;
+							}
+						}
+						else
+						{
+							// when we are here, the user provided an argument which is potentially a valid hard block type name
+							curr_hard_block_name.assign(argv[i+1]);
+
+							// check if the provided name is valid
+							verify_hard_block_type_name(curr_hard_block_name);
+
+							// if the hard block type name was escaped by '\', then we need to remove the '\' character from the string (look at 'verify_hard_block_type_name' function for more info)
+							cleanup_hard_block_type_name(&curr_hard_block_name);
+
+							// if we are here then the provided name was valid.
+							insert_custom_hard_blocks = T_TRUE;
+							
+							// check to see whether the user repeated a hard block type name
+							if ((std::find(hard_block_type_name_list->begin(), hard_block_type_name_list->end(), curr_hard_block_name)) == hard_block_type_name_list->end())
+							{
+								hard_block_type_name_list->push_back(curr_hard_block_name); // add the hard block type name to the list
+							}
+							else
+							{
+								cout << "ERROR: Hard Block Module name '" << curr_hard_block_name << "' was repeated.\n";
+								print_usage (T_TRUE);
+							}
+
+							// update argument index to show that we have processed the current hard block type name successfully
+							i++;
+						}
+
+						// we handle the case where the next argument is empty (if we continued then an exception will be thrown in the find function above)
+						if (i+1 == argc)
+						{
+							// at this point we would have read a vlid input.
+							// Safe to assume that the user just finished providing hard block names
+							break;
+						}
+					}
+					break;
+				case OT_DEVICE:
+					if ( i+1 == argc ){
+						cout << "\nERROR: Missing device type.\n" ;
+						print_usage(T_TRUE);
+					}
+					//Store the next argument as the device type
+					device->assign((string)argv[i+1]);
+					verify_device(*device); // make sure we can support the provided device
+					i++; //Increment past the next argument
+					break;
 				default:
 					//Should never get here; unknown tokens aren't mapped.
 					cout << "\nERROR: Token " << argv[i] << " mishandled.\n" ;
@@ -643,13 +764,15 @@ void setup_tokens (tokmap* tokens){
 	tokens->insert(tokpair("-remove_const_nets", OT_REMOVE_CONST_NETS));
 	tokens->insert(tokpair("-include_unused_subckt_pins", OT_INCLUDE_UNUSED_SUBCKT_PINS));
 	tokens->insert(tokpair("-eblif_format", OT_EBLIF_FORMAT));
+	tokens->insert(tokpair("-insert_custom_hard_blocks", OT_INSERT_CUSTOM_HARD_BLOCKS));
+	tokens->insert(tokpair("-device", OT_DEVICE));
 }
 
 //============================================================================================
 //			EXECUTION FUNCTIONS
 //============================================================================================
 
-void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch){
+void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch, string device){
 /*  Populates a BLIF model structure with appropriate parser data.
  *
  *	ARGUMENTS
@@ -694,7 +817,7 @@ void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch)
 				exit(1);
 				break;
 			default:
-				//PIN_WIREs don't need to be declared independantly for proper
+				//PIN_WIREs don't need to be declared independently for proper
 				//BLIF format, they'll appear again in the array_of_assignments.
 				;	
 		}
@@ -726,7 +849,7 @@ void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch)
 		init_blif_subckts (	my_module->array_of_nodes, 
 						my_module->number_of_nodes,
 						arch->models,
-						my_model	);
+						my_model, device);
 	}
 	
 	if(verbose_mode){
@@ -738,8 +861,8 @@ void init_blif_models(t_blif_model* my_model, t_module* my_module, t_arch* arch)
 //============================================================================================
 void 	init_blif_subckts (	t_node **vqm_nodes, 
 					int number_of_vqm_nodes,
-					t_model *arch_models,
-					t_blif_model* my_model	){
+					const LogicalModels& models,
+					t_blif_model* my_model, string device){
 /*  Initializes the subcircuits vector within a t_blif_model based on a t_node array.
  *
  *	ARGUMENTS
@@ -756,8 +879,7 @@ void 	init_blif_subckts (	t_node **vqm_nodes,
 	t_node* temp_node;		//from vqm_dll.h
 
 	//Preparations before the subcircuits can be assigned.
-	VTR_ASSERT(arch_models != NULL);
-	subckt_prep(arch_models);
+	subckt_prep(models);
 
 	VTR_ASSERT((vqm_nodes != NULL)&&(vqm_nodes[0] != NULL)&&(number_of_vqm_nodes >= 0));
 
@@ -776,9 +898,9 @@ void 	init_blif_subckts (	t_node **vqm_nodes,
 		if ((lut_mode == BLIF)&&(is_lut(temp_node))){
 			push_lut ( temp_node, &(my_model->luts) );
 		} else if ((elab_mode == NONE)||(elab_mode == MODES)||(elab_mode == MODES_TIMING)){
-			push_node_1_to_1 (temp_node, arch_models, &(my_model->subckts));
+			push_node_1_to_1 (temp_node, models, &(my_model->subckts), device);
 		} else if (elab_mode == ATOMS){
-			push_node_atomize (temp_node, arch_models, &(my_model->subckts));
+			push_node_atomize (temp_node, models, &(my_model->subckts));
 		} else {
 			//Should never get here; a bad elab_mode should be rejected at parse-time
 			cout << "\nERROR: Corrupted Elaboration Mode.\n" ;
@@ -790,7 +912,7 @@ void 	init_blif_subckts (	t_node **vqm_nodes,
 //============================================================================================
 //============================================================================================
 
-void subckt_prep(t_model* cur_model){
+void subckt_prep(const LogicalModels& models){
 /*  Accomplishes preparatory tasks before the subcircuits of a blif_model can be initialized.
  *
  *	ARGUMENTS
@@ -798,24 +920,10 @@ void subckt_prep(t_model* cur_model){
  *	Linked list containing all model information from the Architecture file.
  */
 
-//TASK 1: Find the maximum index among the models in the Architecture.
-	int max_model_index;
-	max_model_index = cur_model->index;
-	while(cur_model){
-		//Cycle through the list, save the highest index.
-		if (cur_model->index > max_model_index){
-			max_model_index = cur_model->index;
-		}
-		cur_model = cur_model->next;
-	}
+//TASK 1: Allocate and initialize the model_count array (global).
+    model_count = vtr::vector<LogicalModelId, int>(models.all_models().size(), 0);
 
-//TASK 2: Allocate and initialize the model_count array (global).
-	model_count = (int*)malloc((max_model_index + 1)*sizeof(int));
-	for (int i = 0; i <= max_model_index; i++){
-		model_count[i] = 0;
-	}
-	
-//TASK 3: Initialize the unconn and open_port structures.
+//TASK 2: Initialize the unconn and open_port structures.
 	unconn.name = strdup("unconn");
 	unconn.indexed = T_FALSE;
 	unconn.type = PIN_WIRE;
@@ -831,7 +939,7 @@ void subckt_prep(t_model* cur_model){
 
 //============================================================================================
 //============================================================================================
-void push_node_1_to_1 (t_node* vqm_node, t_model* arch_models, scktvec* blif_subckts){
+void push_node_1_to_1 (t_node* vqm_node, const LogicalModels& models, scktvec* blif_subckts, string device){
 /*  Interprets each VQM block as a single instance of a BLIF subcircuit. Depending on 
  *  the global elab_mode, the Architecture will be searched either for the VQM block name as-is
  *  or a name appended with a special mode-hash, generated from parameters of the VQM block.
@@ -847,15 +955,11 @@ void push_node_1_to_1 (t_node* vqm_node, t_model* arch_models, scktvec* blif_sub
 
 	//temporary process variables
 	t_blif_subckt temp_subckt;	//from vqm2blif.h
-	t_model* cur_model;		//from physical_types.h
 
 	boolvec vqm_ports_found;	//verification flags indicating that all ports 
 						//found in the VQM were mapped.
 
 	string search;		//temporary variable to construct a desired block name within.
-
-	cur_model = arch_models; //search for the corresponding model in the list from the architecture.
-	VTR_ASSERT(cur_model != NULL);
 
 	temp_subckt.inst_name = (string)vqm_node->name;	//copy the instance name
 	VTR_ASSERT( !temp_subckt.inst_name.empty() );
@@ -867,7 +971,7 @@ void push_node_1_to_1 (t_node* vqm_node, t_model* arch_models, scktvec* blif_sub
 
 	} else if (elab_mode == MODES || elab_mode == MODES_TIMING){
 		//search for an Architecture model based on the block name and the parameters
-		search = generate_opname(vqm_node, arch_models);  //generate the simple mode-hashed name based on parameters.
+		search = generate_opname(vqm_node, models, device);  //generate the simple mode-hashed name based on parameters.
 
 	} else {
 		//should never get here, based on condition in init_blif_subckts()
@@ -888,100 +992,100 @@ void push_node_1_to_1 (t_node* vqm_node, t_model* arch_models, scktvec* blif_sub
 		cout << "\n\t\t>> Blackbox Identified." ;
 		cout << "\n\t\t>> Searching Architecture for Model Data \""<< search << "\"" ;
 	}
-	while ((cur_model)&&(strcmp(cur_model->name, search.c_str()) != 0)){
-		cur_model = cur_model->next;
-	}
+    LogicalModelId model_id = models.get_model_by_name(search);
 
 	//cur_model now points to either NULL or the appropriate Architecture model.
-	if (!cur_model){	
+	if (!model_id.is_valid()){
 		//cur_model == NULL if the end of the model list was reached without success.
 		cout << "\n\nERROR: Model name " << search << " was not found in the architecture.\n" ;
 		exit(1);
-	} else {
-		if (verbose_mode){
-			cout << "\n\t\t>> Model " << search << " identified.\n" ;
-		}
-		temp_subckt.model_type = cur_model;	//initialize model_type
-		model_count[cur_model->index]++;	//increment the instance count of the model
-		temp_subckt.input_cnxns.clear();	//reset the input and output maps
-		temp_subckt.output_cnxns.clear();
-		
-		//map the input ports of the model read from the architecture
-		//to the corresponding external pin as per the vqm
-		init_subckt_map(	&(temp_subckt.input_cnxns), 
-					temp_subckt.model_type->inputs, 
-					vqm_node, &vqm_ports_found);	
-		//vqm_ports_found entries are set as ports are mapped
-
-		VTR_ASSERT(!temp_subckt.input_cnxns.empty());	//all blocks must have an input
-
-		//now map the output ports
-		init_subckt_map(	&(temp_subckt.output_cnxns), 
-					temp_subckt.model_type->outputs, 
-					vqm_node, &vqm_ports_found);
-		//vqm_ports_found entries are set as ports are mapped
-
-		VTR_ASSERT(!temp_subckt.output_cnxns.empty());	//all blocks must have an output
-
-        //Pass through parameters
-        for (int iparam = 0; iparam < vqm_node->number_of_params; ++iparam) {
-            t_subckt_param_attr param;
-            t_node_parameter* vqm_param = vqm_node->array_of_params[iparam];
-            param.name = vqm_param->name;
-
-            if (vqm_param->type == NODE_PARAMETER_STRING) {
-                param.value = vqm_param->value.string_value;
-            } else {
-                VTR_ASSERT(vqm_param->type == NODE_PARAMETER_INTEGER);
-                param.value = std::to_string(vqm_param->value.integer_value);
-            }
-            temp_subckt.params.push_back(param);
-        }
-
-		//Verify that all ports specified in the VQM node were successfully mapped before 
-		//committing the subcircuit to the BLIF structure.			
-		if (verbose_mode){
-			cout << "\t\tVQM Port Verification:\n" ;
-		}
-		for (int i = 0; i < vqm_node->number_of_ports; i++){
-			/* The mapping process maps all ports of the architecture either to the open port or
-			 * a port in the VQM. If a port appeared in the VQM and not in the 
-			 * architecture, the association's corresponding entry in vqm_ports_found would 
-			 * remain T_FALSE through the mapping process.
-			 */
-			if (verbose_mode){
-				//Print whether the port was mapped explicitly
-				//Prints "Port (port)[index] = [ mapped | unmapped ]"
-				cout << "\t\t\tPort " << vqm_node->array_of_ports[i]->port_name ;
-
-				if (vqm_node->array_of_ports[i]->port_index >= 0){
-					cout << "[" << vqm_node->array_of_ports[i]->port_index << "]" ;
-				}
-
-				cout <<"= " << ((vqm_ports_found[i])? "mapped":"unmapped") << endl;
-			}
-
-			if (vqm_ports_found[i] == T_FALSE){
-				cout << "\n\nERROR: Port " << vqm_node->array_of_ports[i]->port_name ;
-				if (vqm_node->array_of_ports[i]->port_index >= 0){
-					cout << "[" << vqm_node->array_of_ports[i]->port_index << "]" ;
-				}
-				cout << " not found in architecture for " << search << endl ; 
-				exit(1);
-			}
-		}
-		if (verbose_mode){
-			cout << endl ;
-		}
-		//push the temp_subckt into the subckt vector
-		blif_subckts->push_back(temp_subckt);
 	}
+
+	if (verbose_mode){
+		cout << "\n\t\t>> Model " << search << " identified.\n" ;
+	}
+	temp_subckt.model_type = model_id;	//initialize model_type
+	model_count[model_id]++;	//increment the instance count of the model
+	temp_subckt.input_cnxns.clear();	//reset the input and output maps
+	temp_subckt.output_cnxns.clear();
+
+    const t_model& model = models.get_model(model_id);
+
+	//map the input ports of the model read from the architecture
+	//to the corresponding external pin as per the vqm
+	init_subckt_map(	&(temp_subckt.input_cnxns),
+				model.inputs,
+				vqm_node, &vqm_ports_found);
+	//vqm_ports_found entries are set as ports are mapped
+
+	VTR_ASSERT(!temp_subckt.input_cnxns.empty());	//all blocks must have an input
+
+	//now map the output ports
+	init_subckt_map(	&(temp_subckt.output_cnxns),
+				model.outputs,
+				vqm_node, &vqm_ports_found);
+	//vqm_ports_found entries are set as ports are mapped
+
+	VTR_ASSERT(!temp_subckt.output_cnxns.empty());	//all blocks must have an output
+
+    //Pass through parameters
+    for (int iparam = 0; iparam < vqm_node->number_of_params; ++iparam) {
+        t_subckt_param_attr param;
+        t_node_parameter* vqm_param = vqm_node->array_of_params[iparam];
+        param.name = vqm_param->name;
+
+        if (vqm_param->type == NODE_PARAMETER_STRING) {
+            param.value = vqm_param->value.string_value;
+        } else {
+            VTR_ASSERT(vqm_param->type == NODE_PARAMETER_INTEGER);
+            param.value = std::to_string(vqm_param->value.integer_value);
+        }
+        temp_subckt.params.push_back(param);
+    }
+
+	//Verify that all ports specified in the VQM node were successfully mapped before
+	//committing the subcircuit to the BLIF structure.
+	if (verbose_mode){
+		cout << "\t\tVQM Port Verification:\n" ;
+	}
+	for (int i = 0; i < vqm_node->number_of_ports; i++){
+		/* The mapping process maps all ports of the architecture either to the open port or
+		 * a port in the VQM. If a port appeared in the VQM and not in the
+		 * architecture, the association's corresponding entry in vqm_ports_found would
+		 * remain T_FALSE through the mapping process.
+		 */
+		if (verbose_mode){
+			//Print whether the port was mapped explicitly
+			//Prints "Port (port)[index] = [ mapped | unmapped ]"
+			cout << "\t\t\tPort " << vqm_node->array_of_ports[i]->port_name ;
+
+			if (vqm_node->array_of_ports[i]->port_index >= 0){
+				cout << "[" << vqm_node->array_of_ports[i]->port_index << "]" ;
+			}
+
+			cout <<"= " << ((vqm_ports_found[i])? "mapped":"unmapped") << endl;
+		}
+
+		if (vqm_ports_found[i] == T_FALSE){
+			cout << "\n\nERROR: Port " << vqm_node->array_of_ports[i]->port_name ;
+			if (vqm_node->array_of_ports[i]->port_index >= 0){
+				cout << "[" << vqm_node->array_of_ports[i]->port_index << "]" ;
+			}
+			cout << " not found in architecture for " << search << endl ;
+			exit(1);
+		}
+	}
+	if (verbose_mode){
+		cout << endl ;
+	}
+	//push the temp_subckt into the subckt vector
+	blif_subckts->push_back(temp_subckt);
 }
 
 //============================================================================================
 //============================================================================================
 
-void push_node_atomize (t_node* /*vqm_node*/, t_model* /*arch_models*/, scktvec* /*blif_subckts*/ /*, FILE* dict*/){
+void push_node_atomize (t_node* /*vqm_node*/, const LogicalModels& /*models*/, scktvec* /*blif_subckts*/ /*, FILE* dict*/){
 /*  Interprets each VQM block and its parameter set, then expands that block into its smaller 
  *  atomic constituents based on a "Dictionary" document.
  *
@@ -1097,7 +1201,7 @@ void find_and_map (portmap* map, t_model_ports* to_be_mapped, t_node* node,
 			//map the port to its connectivity data
 			map->insert(portpair(temp_name, node->array_of_ports[i]));
 
-			//indicate that the port has been successfuly mapped to
+			//indicate that the port has been successfully mapped to
 			vqm_ports_found->at(i) = T_TRUE;
 			break;
 		}
@@ -1172,14 +1276,14 @@ void push_lut (t_node* vqm_node, lutvec* blif_luts){
 				portName = get_wire_name(vqm_node->array_of_ports[i]->associated_net, vqm_node->array_of_ports[i]->wire_index);
 				if (which_port < 6){
 					if (verbose_mode) {
-						cout << "\t\t  Assigning inport " << i << " to " << portName << endl;
+						cout << "\t\t  Assigning in-port " << i << " to " << portName << endl;
 					}
-					temp_lut.set_inport ( which_port, portName.c_str() );
+					temp_lut.set_in_port ( which_port, portName.c_str() );
 				} else {
 					if (verbose_mode) {
-						cout << "\t\t  Assigning outport to " << portName << endl;
+						cout << "\t\t  Assigning out-port to " << portName << endl;
 					}
-					temp_lut.set_outport( get_wire_name(vqm_node->array_of_ports[i]->associated_net, vqm_node->array_of_ports[i]->wire_index).c_str() );
+					temp_lut.set_out_port( get_wire_name(vqm_node->array_of_ports[i]->associated_net, vqm_node->array_of_ports[i]->wire_index).c_str() );
 				}
 			}
 		}
@@ -1216,7 +1320,7 @@ void dump_blif (char* blif_file, t_blif_model* main_model, t_arch* arch, t_boole
 	blif_out << "\n#MAIN MODEL\n" ;
 	
 	//completely dump the top-level model
-	dump_main_model(main_model, blif_out, print_unused_subckt_pins_local, eblif_format, T_FALSE);
+	dump_main_model(main_model, blif_out, arch->models, print_unused_subckt_pins_local, eblif_format, T_FALSE);
 	
 	//now dump the subckt models from the architecture
 	//that were used in the vqm
@@ -1232,7 +1336,7 @@ void dump_blif (char* blif_file, t_blif_model* main_model, t_arch* arch, t_boole
 //============================================================================================
 //============================================================================================
 
-void dump_main_model(t_blif_model* model, ofstream& outfile, t_boolean print_unused_subckt_pins_local, t_boolean eblif_format_local, t_boolean debug){
+void dump_main_model(t_blif_model* model, ofstream& outfile, const LogicalModels& models, t_boolean print_unused_subckt_pins_local, t_boolean eblif_format_local, t_boolean debug){
 /*  Dumps information stored in a model structure in proper BLIF syntax.
  *
  *	ARGUMENTS
@@ -1288,7 +1392,7 @@ void dump_main_model(t_blif_model* model, ofstream& outfile, t_boolean print_unu
 	
 	//Print Subcircuit Variable information
 	if (model->subckts.size() > 0){
-		dump_subckts(outfile, &(model->subckts), print_unused_subckt_pins_local, eblif_format_local, debug);
+		dump_subckts(outfile, &(model->subckts), models, print_unused_subckt_pins_local, eblif_format_local, debug);
 	}
 	
 	//Printing the model data is complete.
@@ -1304,7 +1408,7 @@ void dump_portlist (ofstream& outfile, pinvec ports, t_boolean /*debug*/){
  *
  *  NOTE: In VQM/Verilog syntax, buses are declared as
  *			{input, output, clock, wire} [ left : right ] <name>
- *  where left and right are indeces that describe the
+ *  where left and right are indices that describe the
  *  bus width.
  *
  *	ARGUMENTS
@@ -1405,7 +1509,7 @@ void dump_assignments(ofstream& outfile, t_blif_model* model, t_boolean eblif_fo
 							(temp_assign->target->left > temp_assign->target->right)? -1:1,
 							temp_assign->value,
 							debug, temp_assign->inversion);
-				//dump_bus_assign() calls dump_wire_assign() repeatedly based on the indeces
+				//dump_bus_assign() calls dump_wire_assign() repeatedly based on the indices
 				//of the target and whether the right or left index is larger. 
 			} else {
 #else
@@ -1477,7 +1581,7 @@ void dump_bus_assign(ofstream& outfile, string target_name, int target_left, int
  *  A bus assignment only occurs when the following is in the VQM:
  *   "	wire [X:Y] a;
  *  		wire [X:Y] b;
- *		assign a = b; " <-- NOTE: no indeces in the assign statement.
+ *		assign a = b; " <-- NOTE: no indices in the assign statement.
  *
  *	ARGUMENTS
  *  outfile:
@@ -1485,17 +1589,17 @@ void dump_bus_assign(ofstream& outfile, string target_name, int target_left, int
  *  target_name:
  *	Name of the wire being driven by the assign (on the left of the assign). 
  *  target_left, target_right:
- *	Left and right indeces of the target bus, as declared (Left = X, Right = Y)
+ *	Left and right indices of the target bus, as declared (Left = X, Right = Y)
  *  target_dir:
- *	Directionality of the indeces. +1 if Y > X, -1 if Y < X.
+ *	Directionality of the indices. +1 if Y > X, -1 if Y < X.
  *  is_constant:
  *	Flag indicating whether the assignment is being driven by a constant generator.
  *  source_name:
  *	Name of the driver wire (on the right of the assign).
  *  source_left, source_right:
- *	Left and right indeces of the driver bus, as declared (Left = X, Right = Y)
+ *	Left and right indices of the driver bus, as declared (Left = X, Right = Y)
  *  source_dir:
- *	Directionality of the indeces. +1 if Y > X, -1 if Y < X.
+ *	Directionality of the indices. +1 if Y > X, -1 if Y < X.
  *  value:
  *	If the assign is constant, holds the value of the generator.
  *  debug:
@@ -1598,7 +1702,7 @@ void dump_luts (ofstream& outfile, lutvec* blif_luts, t_boolean eblif_format_loc
 //============================================================================================
 //============================================================================================
 
-void dump_subckts(ofstream& outfile, scktvec* subckts, t_boolean print_unused_pins, t_boolean eblif_format_local, t_boolean debug){
+void dump_subckts(ofstream& outfile, scktvec* subckts, const LogicalModels& models, t_boolean print_unused_pins, t_boolean eblif_format_local, t_boolean debug){
 /*  Traverse the subcircuit vector, printing the names and connections
  *  of each instantiated subcircuit in the main model.
  *
@@ -1618,15 +1722,16 @@ void dump_subckts(ofstream& outfile, scktvec* subckts, t_boolean print_unused_pi
 	for(int i = 0; i < limit; i++){
 		//print each subcircuit's name, port, and connectivity information
 		temp_subckt = &(subckts->at(i));
+        const t_model& model_type = models.get_model(temp_subckt->model_type);
 		if (debug){
 			outfile << "\nSubcircuit Number: " << i << endl;
 			outfile << "Instance Name: " << temp_subckt->inst_name << endl;
-			outfile << "Type: " << temp_subckt->model_type->name << endl ;
+			outfile << "Type: " << model_type.name << endl ;
 		} else {
             if (!eblif_format_local) {
                 outfile << "\n# Subckt " << i << ": " << temp_subckt->inst_name << " \n";
             }
-            outfile << ".subckt " << temp_subckt->model_type->name << " \\\n" ;
+            outfile << ".subckt " << model_type.name << " \\\n" ;
 		}
 
 			
@@ -1634,13 +1739,13 @@ void dump_subckts(ofstream& outfile, scktvec* subckts, t_boolean print_unused_pi
 			outfile << "Input Map:\n" ;
 		}
 
-        size_t num_print_output_pins = count_print_pins(temp_subckt->model_type->outputs, &(temp_subckt->output_cnxns), print_unused_pins);
+        size_t num_print_output_pins = count_print_pins(model_type.outputs, &(temp_subckt->output_cnxns), print_unused_pins);
 		
 		//dump the input map containing connectivity data
         bool last = (num_print_output_pins == 0);
 		dump_subckt_map(outfile,
 					&(temp_subckt->input_cnxns), 
-					temp_subckt->model_type->inputs, 
+					model_type.inputs,
 					temp_subckt->inst_name.c_str(), 
 					"input", i,
                     print_unused_pins,
@@ -1655,7 +1760,7 @@ void dump_subckts(ofstream& outfile, scktvec* subckts, t_boolean print_unused_pi
         last = true;
 		dump_subckt_map(outfile,
 					&(temp_subckt->output_cnxns), 
-					temp_subckt->model_type->outputs, 
+					model_type.outputs,
 					temp_subckt->inst_name.c_str(),
 					"output", i,
                     print_unused_pins,
@@ -1701,12 +1806,10 @@ void dump_subckt_map (ofstream& outfile, portmap* map, t_model_ports* temp_port,
 	string pin_name;
     string indent = "    ";
 
-	int ports_dumped = 1;
-
     std::vector<std::string> port_strings;
 
 	while(temp_port){
-		for (int i = 0; i < temp_port->size; i++, ports_dumped++){
+		for (int i = 0; i < temp_port->size; i++){
 			//loop through a port's size
 			if (temp_port->size > 1){
 				//rename the port "name[i]"
@@ -1805,7 +1908,7 @@ size_t count_print_pins(t_model_ports* temp_port, portmap* map, t_boolean print_
 //============================================================================================
 //============================================================================================
 
-void dump_subckt_models(t_model* temp_model, ofstream& outfile, t_boolean debug){
+void dump_subckt_models(const LogicalModels& models, ofstream& outfile, t_boolean debug){
 /*  Cycles through all models declared in the architecture
  *  and dumps the ones used by the VQM as blackbox models
  *  at the end of the .blif file
@@ -1818,27 +1921,29 @@ void dump_subckt_models(t_model* temp_model, ofstream& outfile, t_boolean debug)
  *	flag to indicate whether to print in DEBUG or BLIF format.
  */	
     unsigned long total_block_count = 0;
-	while(temp_model){
-		if (model_count[temp_model->index] > 0){
-            //Count the number of blocks
-            total_block_count += model_count[temp_model->index];
+    for (LogicalModelId model_id : models.user_models()) {
+        if (model_count[model_id] == 0)
+            continue;
 
-			//dump all .subckt models declared in the architecture 
-			//Use the model_count array to only output the models that were used.
-			if (!debug){
-				cout << "\t>> Introduced " << model_count[temp_model->index] << " instances of blackbox " << temp_model->name << endl;
-			}
-			outfile << ((debug)? "\n Model: " : "\n.model ") << temp_model->name << endl ;
-			
-			outfile << ((debug)? "Inputs:\n" : ".inputs \\\n") ; //cycle through all inputs
-			dump_subckt_portlist(outfile, temp_model->inputs, "    ", debug);
+        //Count the number of blocks
+        total_block_count += model_count[model_id];
 
-			outfile << ((debug)? "Outputs:\n" : ".outputs \\\n") ; //cycle through all outputs
-			dump_subckt_portlist(outfile, temp_model->outputs, "    ", debug);
+        const t_model& model = models.get_model(model_id);
 
-			outfile << ((debug)? "\nEND MODEL\n" : ".blackbox\n.end\n") ;
-		}	
-		temp_model = temp_model->next;
+		//dump all .subckt models declared in the architecture
+		//Use the model_count array to only output the models that were used.
+		if (!debug){
+			cout << "\t>> Introduced " << model_count[model_id] << " instances of blackbox " << model.name << endl;
+		}
+		outfile << ((debug)? "\n Model: " : "\n.model ") << model.name << endl ;
+
+		outfile << ((debug)? "Inputs:\n" : ".inputs \\\n") ; //cycle through all inputs
+		dump_subckt_portlist(outfile, model.inputs, "    ", debug);
+
+		outfile << ((debug)? "Outputs:\n" : ".outputs \\\n") ; //cycle through all outputs
+		dump_subckt_portlist(outfile, model.outputs, "    ", debug);
+
+		outfile << ((debug)? "\nEND MODEL\n" : ".blackbox\n.end\n") ;
 	}
     cout << "\t>> Total Block Count: " << total_block_count;
 }
@@ -1847,7 +1952,7 @@ void dump_subckt_models(t_model* temp_model, ofstream& outfile, t_boolean debug)
 //============================================================================================
 
 void dump_subckt_portlist(ofstream& outfile, t_model_ports* port, std::string indent, t_boolean debug){
-/*  Dumps the portlist of a subcircuit model at the end of a BLIF, flattening busses as necessary.
+/*  Dumps the portlist of a subcircuit model at the end of a BLIF, flattening buses as necessary.
  *
  *	ARGUMENTS
  *  outfile:
@@ -1858,10 +1963,9 @@ void dump_subckt_portlist(ofstream& outfile, t_model_ports* port, std::string in
  *	flag to indicate whether to print in DEBUG or BLIF format.
  */	
 	string temp_name;
-	int ports_dumped = 1;
 
 	while (port){	
-		for (int i = 0; i < port->size; i++, ports_dumped++){
+		for (int i = 0; i < port->size; i++){
 			temp_name = (string)port->name;
 
 			if (port->size > 1){	//append the index if necessary using the established convention
@@ -1889,12 +1993,12 @@ void dump_subckt_portlist(ofstream& outfile, t_model_ports* port, std::string in
 //============================================================================================
 
 void all_data_cleanup(){
-/* Frees all allocated memory from the parser and convertor.
+/* Frees all allocated memory from the parser and converter.
  */
 	vqm_data_cleanup();//found in ../LIB/vqm_dll.h, frees parser-allocated memory
 
-	free(model_count);
-	
+    model_count.clear();
+
 	return;
 }
 
@@ -1907,7 +2011,7 @@ void echo_module (char* echo_file, const char* vqm_filename, t_module* my_module
 *
  * 		PIN INFORMATION
  *	All inputs, outputs, inouts, and wires declared in the circuit
- *	and their indeces, if applicable. Equivalent to the beginning
+ *	and their indices, if applicable. Equivalent to the beginning
  *	declarations in the VQM Module. ("input [31:0] ACCout", "wire gnd", etc.)
  *
  *		ASSIGNMENT INFORMATION
@@ -1956,7 +2060,7 @@ void echo_module_pins (ofstream& outfile, t_module* module){
 /* Print all pin information from the VQM module.
  *	Each pin has:
  *	- a name
- *	- right and left indeces
+ *	- right and left indices
  *	- a type (direction)
  * 
  *	ARGUMENTS
@@ -2133,7 +2237,7 @@ void echo_module_nodes (ofstream& outfile, t_module* module){
 //============================================================================================
 
 void echo_blif_model (char* echo_file, const char* vqm_filename, 
-				t_blif_model* my_model, t_model* temp_model) {
+				t_blif_model* my_model, const LogicalModels& models) {
 /*  Prints all model data into a .txt for debugging
  *  Used to ensure correct population of the parser data into the model.
  *
@@ -2158,14 +2262,14 @@ void echo_blif_model (char* echo_file, const char* vqm_filename,
 	model_out << "\n\tMAIN MODEL\n" ;
 	
 	//completely dump the top-level model in DEBUG format
-	dump_main_model(my_model, model_out, T_TRUE, T_TRUE, T_TRUE);
+	dump_main_model(my_model, model_out, models, T_TRUE, T_TRUE, T_TRUE);
 	
 	model_out << "\n\tSUBCKT MODELS\n";
 	
 	//now dump the subckt models from the architecture
 	//that were used in the VQM file, in DEBUG format.
 	if (my_model->subckts.size() > 0){
-		dump_subckt_models(temp_model, model_out, T_TRUE);
+		dump_subckt_models(models, model_out, T_TRUE);
 	}
 	
 	// Close file.

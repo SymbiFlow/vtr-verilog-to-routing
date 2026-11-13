@@ -172,7 +172,7 @@ def xLUT(LUT_size, num_LUT):
 
 
 def xCLB(k_LUT, N_BLE, I_CLB, I_BLE, fracture_level, num_FF, crossbar_str):
-    O_LUT = 2 ** fracture_level
+    O_LUT = 2**fracture_level
     O_soft = O_LUT
     O_ble = O_soft
     O_CLB = N_BLE * O_ble
@@ -233,14 +233,12 @@ def xCLB(k_LUT, N_BLE, I_CLB, I_BLE, fracture_level, num_FF, crossbar_str):
             next_start = 0
 
             for lut_input in range(k_LUT):
-
                 xbegin("mux")
                 xprop("name", "crossbar-" + str(i_ble) + "-" + str(lut_input))
 
                 # Inputs
                 inputs = []
                 for i_cb in range(1, cb + 1):
-
                     input_str = ""
                     if input_idx < I_CLB:
                         input_str = "clb.I[" + str(input_idx) + "]"
@@ -430,7 +428,7 @@ def xCLB(k_LUT, N_BLE, I_CLB, I_BLE, fracture_level, num_FF, crossbar_str):
         else:
             special_stage = False
 
-            num_LUT = 2 ** frac_stage
+            num_LUT = 2**frac_stage
             LUT_size = k_LUT - frac_stage
 
         idx = "[" + str(LUT_size - 1) + ":0]"
@@ -835,7 +833,6 @@ if sweep:
                                 )
 
 else:
-
     # K - N - I - Fi - Frac -  FF - L - 45
 
     # Non-Fractured

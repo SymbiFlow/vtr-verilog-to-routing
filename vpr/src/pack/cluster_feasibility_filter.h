@@ -1,3 +1,4 @@
+#pragma once
 /*
  * Feasibility filter used during packing that determines if various necessary conditions for legality are met
  *
@@ -6,7 +7,7 @@
  * 2) Robustness issue.  During packing, we have a limited size queue to store candidates to try to pack.  A good filter helps keep that queue filled with candidates likely to pass.
  *
  * 1st major filter: Pin counting based on pin classes
- * Rationale: If the number of a particular gruop of pins supplied by the pb_graph_node in the architecture is insufficient to meet a candidate packing solution's demand for that group of pins, then that
+ * Rationale: If the number of a particular group of pins supplied by the pb_graph_node in the architecture is insufficient to meet a candidate packing solution's demand for that group of pins, then that
  * candidate solution is for sure invalid without any further legalization checks.  For example, if a candidate solution requires 2 clock pins but the architecture only has one clock, then that solution
  * can't be legal.
  *
@@ -19,10 +20,11 @@
  *
  */
 
-#ifndef CLUSTER_FEASIBILITY_CHECK_H
-#define CLUSTER_FEASIBILITY_CHECK_H
-#include "arch_types.h"
+class t_pb_graph_node;
 
+/**
+ * @brief Identify all pin class information for complex block
+ *
+ * @param pb_graph_node The pb_graph node of the complex block whose pin class information to be identified.
+ */
 void load_pin_classes_in_pb_graph_head(t_pb_graph_node* pb_graph_node);
-
-#endif

@@ -1,11 +1,16 @@
-#ifndef DRAW_COLOR_H
-#define DRAW_COLOR_H
+#pragma once
+/**
+ * @file draw_color.h
+ * 
+ * Contains declarations for different colors used to draw blocks,
+ * as well as a global vector of colors shuffled to prevent similar
+ * colors from being close together
+ */
 
 #ifndef NO_GRAPHICS
 
-#    include "ezgl/point.hpp"
-#    include "ezgl/application.hpp"
-#    include "ezgl/graphics.hpp"
+#include <vector>
+#include "ezgl/color.hpp"
 
 static constexpr ezgl::color blk_BISQUE(0xFF, 0xE4, 0xC4);
 static constexpr ezgl::color blk_LIGHTGREY(0xD3, 0xD3, 0xD3);
@@ -160,7 +165,7 @@ static constexpr ezgl::color blk_ALICEBLUE(0xF0, 0xF8, 0xFF);
 //The colours used to draw block types
 const std::vector<ezgl::color> block_colors{
     //This first set of colours is somewhat curated to yield
-    //a nice colour pallette
+    //a nice colour palette
     blk_BISQUE, //EMPTY type is usually the type with index 0, so this colour
                 //usually unused
     blk_LIGHTGREY,
@@ -319,5 +324,3 @@ const std::vector<ezgl::color> block_colors{
 };
 
 #endif /* NO_GRAPHICS */
-
-#endif /* DRAW_COLOR_H */

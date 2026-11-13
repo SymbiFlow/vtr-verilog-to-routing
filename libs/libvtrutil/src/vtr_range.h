@@ -1,13 +1,14 @@
-#ifndef VTR_RANGE_H
-#define VTR_RANGE_H
+#pragma once
+
 #include <iterator>
+#include <ranges>
 
 namespace vtr {
-/*
- * The vtr::Range template models a range defined by two iterators of type T.
+/**
+ * @brief The vtr::Range template models a range defined by two iterators of type T.
  *
  * It allows conveniently returning a range from a single function call
- * without having to explicity expose the underlying container, or make two
+ * without having to explicitly expose the underlying container, or make two
  * explicit calls to retrieve the associated begin and end iterators.
  * It also enables the easy use of range-based-for loops.
  *
@@ -15,7 +16,7 @@ namespace vtr {
  *
  *      class My Data {
  *          public:
- *              typdef std::vector<int>::const_iterator my_iter;
+ *              typedef std::vector<int>::const_iterator my_iter;
  *              vtr::Range<my_iter> data();
  *          ...
  *          private:
@@ -40,23 +41,30 @@ namespace vtr {
 template<typename T>
 class Range {
   public:
-    Range(T b, T e)
+    ///@brief constructor
+    constexpr Range(T b, T e)
         : begin_(b)
         , end_(e) {}
-    T begin() { return begin_; }
-    T end() { return end_; }
-    const T begin() const { return begin_; }
-    const T end() const { return end_; }
-    bool empty() { return begin_ == end_; }
-    size_t size() { return std::distance(begin_, end_); }
+    ///@brief Return an iterator to the start of the range
+    constexpr T begin() noexcept { return begin_; }
+    ///@brief Return an iterator to the end of the range
+    constexpr T end() noexcept { return end_; }
+    ///@brief Return an iterator to the start of the range (immutable)
+    constexpr const T begin() const noexcept { return begin_; }
+    ///@brief Return an iterator to the end of the range (immutable)
+    constexpr const T end() const noexcept { return end_; }
+    ///@brief Return true if empty
+    constexpr bool empty() const noexcept { return begin_ == end_; }
+    ///@brief Return the range size
+    constexpr size_t size() const { return std::distance(begin_, end_); }
 
   private:
     T begin_;
     T end_;
 };
 
-/*
- * Creates a vtr::Range from a pair of iterators.
+/**
+ * @brief Creates a vtr::Range from a pair of iterators.
  *
  *  Unlike using the vtr::Range() constructor (which requires specifying
  *  the template type T, using vtr::make_range() infers T from the arguments.
@@ -65,14 +73,22 @@ class Range {
  *  auto my_range = vtr::make_range(my_vec.begin(), my_vec.end());
  */
 template<typename T>
-auto make_range(T b, T e) { return Range<T>(b, e); }
+constexpr auto make_range(T b, T e) { return Range<T>(b, e); }
 
-/*
- * Creates a vtr::Range from a container
+/**
+ * @brief Creates a vtr::Range from a container
  */
 template<typename Container>
-auto make_range(const Container& c) { return make_range(std::begin(c), std::end(c)); }
+inline auto make_range(const Container& c) { return make_range(std::begin(c), std::end(c)); }
 
 } // namespace vtr
 
-#endif
+/**
+ * @brief Mark vtr::Range as a borrowed range.
+ *
+ * A vtr::Range only holds a pair of iterators, so those iterators stay valid
+ * after the Range object itself is destroyed. This lets temporary ranges be
+ * passed directly to std::ranges algorithms and views (e.g. std::views::filter).
+ */
+template<typename T>
+inline constexpr bool std::ranges::enable_borrowed_range<vtr::Range<T>> = true;

@@ -23,10 +23,6 @@
 
 #include "memory.h"
 
-#if defined(__GNUC__) && !KJ_HEADER_WARNINGS
-#pragma GCC system_header
-#endif
-
 #if _MSC_VER
 #if _MSC_VER < 1910
 #include <intrin.h>
@@ -34,6 +30,8 @@
 #include <intrin0.h>
 #endif
 #endif
+
+KJ_BEGIN_HEADER
 
 namespace kj {
 
@@ -69,7 +67,7 @@ class Refcounted: private Disposer {
 public:
   Refcounted() = default;
   virtual ~Refcounted() noexcept(false);
-  KJ_DISALLOW_COPY(Refcounted);
+  KJ_DISALLOW_COPY_AND_MOVE(Refcounted);
 
   inline bool isShared() const { return refcount > 1; }
   // Check if there are multiple references to this object. This is sometimes useful for deciding
@@ -87,6 +85,9 @@ private:
   friend Own<T> addRef(T& object);
   template <typename T, typename... Params>
   friend Own<T> refcounted(Params&&... params);
+
+  template <typename T>
+  friend class RefcountedWrapper;
 };
 
 template <typename T, typename... Params>
@@ -114,12 +115,65 @@ Own<T> Refcounted::addRefInternal(T* object) {
   return Own<T>(object, *refcounted);
 }
 
+template <typename T>
+class RefcountedWrapper: public Refcounted {
+  // Adds refcounting as a wrapper around an existing type, allowing you to construct references
+  // with type Own<T> that appears to point directly to the underlying object.
+
+public:
+  template <typename... Params>
+  RefcountedWrapper(Params&&... params): wrapped(kj::fwd<Params>(params)...) {}
+
+  T& getWrapped() { return wrapped; }
+  const T& getWrapped() const { return wrapped; }
+
+  Own<T> addWrappedRef() {
+    // Return an owned reference to the wrapped object that is backed by a refcount.
+    ++refcount;
+    return Own<T>(&wrapped, *this);
+  }
+
+private:
+  T wrapped;
+};
+
+template <typename T>
+class RefcountedWrapper<Own<T>>: public Refcounted {
+  // Specialization for when the wrapped type is itself Own<T>. We don't want this to result in
+  // Own<Own<T>>.
+
+public:
+  RefcountedWrapper(Own<T> wrapped): wrapped(kj::mv(wrapped)) {}
+
+  T& getWrapped() { return *wrapped; }
+  const T& getWrapped() const { return *wrapped; }
+
+  Own<T> addWrappedRef() {
+    // Return an owned reference to the wrapped object that is backed by a refcount.
+    ++refcount;
+    return Own<T>(wrapped.get(), *this);
+  }
+
+private:
+  Own<T> wrapped;
+};
+
+template <typename T, typename... Params>
+Own<RefcountedWrapper<T>> refcountedWrapper(Params&&... params) {
+  return refcounted<RefcountedWrapper<T>>(kj::fwd<Params>(params)...);
+}
+
+template <typename T>
+Own<RefcountedWrapper<Own<T>>> refcountedWrapper(Own<T>&& wrapped) {
+  return refcounted<RefcountedWrapper<Own<T>>>(kj::mv(wrapped));
+}
+
 // =======================================================================================
 // Atomic (thread-safe) refcounting
 //
 // Warning: Atomic ops are SLOW.
 
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
 #if _M_ARM
 #define KJ_MSVC_INTERLOCKED(OP, MEM) _Interlocked##OP##_##MEM
 #else
@@ -131,10 +185,10 @@ class AtomicRefcounted: private kj::Disposer {
 public:
   AtomicRefcounted() = default;
   virtual ~AtomicRefcounted() noexcept(false);
-  KJ_DISALLOW_COPY(AtomicRefcounted);
+  KJ_DISALLOW_COPY_AND_MOVE(AtomicRefcounted);
 
   inline bool isShared() const {
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
     return KJ_MSVC_INTERLOCKED(Or, acq)(&refcount, 0) > 1;
 #else
     return __atomic_load_n(&refcount, __ATOMIC_ACQUIRE) > 1;
@@ -142,7 +196,7 @@ public:
   }
 
 private:
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
   mutable volatile long refcount = 0;
 #else
   mutable volatile uint refcount = 0;
@@ -173,13 +227,15 @@ inline kj::Own<T> atomicRefcounted(Params&&... params) {
 
 template <typename T>
 kj::Own<T> atomicAddRef(T& object) {
-  KJ_IREQUIRE(object.AtomicRefcounted::refcount > 0, "Object not allocated with kj::refcounted().");
+  KJ_IREQUIRE(object.AtomicRefcounted::refcount > 0,
+      "Object not allocated with kj::atomicRefcounted().");
   return AtomicRefcounted::addRefInternal(&object);
 }
 
 template <typename T>
 kj::Own<const T> atomicAddRef(const T& object) {
-  KJ_IREQUIRE(object.AtomicRefcounted::refcount > 0, "Object not allocated with kj::refcounted().");
+  KJ_IREQUIRE(object.AtomicRefcounted::refcount > 0,
+      "Object not allocated with kj::atomicRefcounted().");
   return AtomicRefcounted::addRefInternal(&object);
 }
 
@@ -203,7 +259,7 @@ kj::Maybe<kj::Own<const T>> atomicAddRefWeak(const T& object) {
 template <typename T>
 kj::Own<T> AtomicRefcounted::addRefInternal(T* object) {
   AtomicRefcounted* refcounted = object;
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
   KJ_MSVC_INTERLOCKED(Increment, nf)(&refcounted->refcount);
 #else
   __atomic_add_fetch(&refcounted->refcount, 1, __ATOMIC_RELAXED);
@@ -214,7 +270,7 @@ kj::Own<T> AtomicRefcounted::addRefInternal(T* object) {
 template <typename T>
 kj::Own<const T> AtomicRefcounted::addRefInternal(const T* object) {
   const AtomicRefcounted* refcounted = object;
-#if _MSC_VER
+#if _MSC_VER && !defined(__clang__)
   KJ_MSVC_INTERLOCKED(Increment, nf)(&refcounted->refcount);
 #else
   __atomic_add_fetch(&refcounted->refcount, 1, __ATOMIC_RELAXED);
@@ -223,3 +279,5 @@ kj::Own<const T> AtomicRefcounted::addRefInternal(const T* object) {
 }
 
 }  // namespace kj
+
+KJ_END_HEADER

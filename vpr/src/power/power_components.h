@@ -1,3 +1,4 @@
+#pragma once
 /*********************************************************************
  *  The following code is part of the power modelling feature of VTR.
  *
@@ -20,16 +21,13 @@
  * within the FPGA (flip-flops, LUTs, interconnect structures, etc).
  */
 
-#ifndef __POWER_COMPONENTS_H__
-#define __POWER_COMPONENTS_H__
-
 /************************* INCLUDES *********************************/
+#include <string>
 #include "power.h"
-#include "clustered_netlist.h"
 
 /************************* Defines **********************************/
 
-/* This controlls the level of accuracy used for transition density
+/* This controls the level of accuracy used for transition density
  * calculations of internal LUT nodes.  The more detailed model
  * looks at SRAM values in deciding if toggles on the inputs will
  * toggle the internal nets.  The fast method uses only signal
@@ -37,7 +35,7 @@
  */
 #define POWER_LUT_SLOW
 #if (!(defined(POWER_LUT_SLOW) || defined(POWER_LUT_FAST)))
-#    define POWER_LUT_SLOW
+#define POWER_LUT_SLOW
 #endif
 
 /************************* ENUMS ************************************/
@@ -82,7 +80,7 @@ void power_component_add_usage(t_power_usage* power_usage,
 float power_component_get_usage_sum(e_power_component_type component_idx);
 
 void power_usage_ff(t_power_usage* power_usage, float size, float D_prob, float D_dens, float Q_prob, float Q_dens, float clk_prob, float clk_dens, float period);
-void power_usage_lut(t_power_usage* power_usage, int LUT_size, float transistor_size, char* SRAM_values, float* input_densities, float* input_probabilities, float period);
+void power_usage_lut(t_power_usage* power_usage, int LUT_size, float transistor_size, std::string SRAM_values, float* input_densities, float* input_probabilities, float period);
 void power_usage_local_interc_mux(t_power_usage* power_usage, t_pb* pb, t_interconnect_pins* interc_pins, ClusterBlockId iblk);
 void power_usage_mux_multilevel(t_power_usage* power_usage,
                                 t_mux_arch* mux_arch,
@@ -92,5 +90,3 @@ void power_usage_mux_multilevel(t_power_usage* power_usage,
                                 bool output_level_restored,
                                 float period);
 void power_usage_buffer(t_power_usage* power_usage, float size, float in_prob, float in_dens, bool level_restored, float period);
-
-#endif

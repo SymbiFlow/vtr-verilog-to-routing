@@ -1,11 +1,13 @@
 """
-    Module to run the VTR flow. This module calls other modules that then access the tools like VPR.
+Module to run the VTR flow. This module calls other modules that then access the tools like VPR.
 """
+
 import shutil
 from pathlib import Path
 from collections import OrderedDict
 from enum import Enum
 import vtr
+from vtr.mosaic.verilator_random_check import run_verilator_random_check
 
 
 class VtrStage(Enum):
@@ -13,10 +15,12 @@ class VtrStage(Enum):
         Enum class for the VTR stages\
     """
 
-    odin = 1
-    abc = 2
-    ace = 3
-    vpr = 4
+    ODIN = 1
+    PARMYS = 2
+    MOSAIC = 3
+    ABC = 4
+    ACE = 5
+    VPR = 6
 
     def __le__(self, other):
         if self.__class__ is other.__class__:
@@ -29,20 +33,60 @@ class VtrStage(Enum):
         return NotImplemented
 
 
+def _maybe_run_verilator_check(
+    circuit_file,
+    circuit_copy,
+    next_stage_netlist,
+    post_frontend_netlist,
+    opts,
+):
+    """run rtl vs post-synth verilator check when this flow produced a netlist."""
+    if ".blif" in circuit_file.suffixes:
+        print("verilator_check: skipped (input is already a blif netlist)")
+        return
+    if post_frontend_netlist is None:
+        print("verilator_check: skipped (no synthesis frontend ran in this flow)")
+        return
+    post_synth_blif = next_stage_netlist
+    if not Path(post_synth_blif).is_file():
+        print("verilator_check: missing post-synth blif {}".format(post_synth_blif))
+        return
+    temp_dir = opts["temp_dir"]
+    include_paths = []
+    for include in opts.get("include_files") or []:
+        include_copy = temp_dir / Path(include).name
+        if include_copy.is_file():
+            include_paths.append(include_copy)
+    run_verilator_random_check(
+        circuit_copy,
+        post_synth_blif,
+        temp_dir,
+        include_files=include_paths,
+        vectors=opts["vectors"],
+        seed=opts["seed"],
+    )
+
+
 # pylint: disable=too-many-arguments, too-many-locals, too-many-branches, too-many-statements
 def run(
     architecture_file,
     circuit_file,
     power_tech_file=None,
-    start_stage=VtrStage.odin,
-    end_stage=VtrStage.vpr,
+    include_files=None,
+    start_stage=VtrStage.PARMYS,
+    end_stage=VtrStage.VPR,
     command_runner=vtr.CommandRunner(),
     temp_dir=Path("./temp"),
     odin_args=None,
+    parmys_args=None,
+    mosaic_args=None,
     abc_args=None,
     vpr_args=None,
     keep_intermediate_files=True,
     keep_result_files=True,
+    odin_config=None,
+    yosys_script=None,
+    mosaic_script=None,
     min_hard_mult_size=3,
     min_hard_adder_size=1,
     check_equivalent=False,
@@ -51,6 +95,10 @@ def run(
     relax_w_factor=1.3,
     check_route=False,
     check_place=False,
+    no_second_run=False,
+    verilator_check=False,
+    verilator_check_vectors=50000,
+    verilator_check_seed=1,
 ):
     """
     Runs the VTR CAD flow to map the specified circuit_file onto the target architecture_file
@@ -88,6 +136,9 @@ def run(
         odin_args        :
             A dictionary of keyword arguments to pass on to ODIN II
 
+        mosaic_args :
+            A dictionary of keyword arguments to pass on to MOSAIC
+
         abc_args         :
             A dictionary of keyword arguments to pass on to ABC
 
@@ -101,15 +152,24 @@ def run(
             Determines if the result files are kept or deleted
 
         min_hard_mult_size :
-            Tells ODIN II the minimum multiplier size that should
+            Tells PARMYS/ODIN II the minimum multiplier size that should
             be implemented using hard multiplier (if available)
 
         min_hard_adder_size :
-            Tells ODIN II the minimum adder size that should be implemented
+            Tells PARMYS/ODIN II the minimum adder size that should be implemented
             using hard adder (if available).
 
         check_equivalent  :
             Enables Logical Equivalence Checks
+
+        verilator_check :
+            Run mosaic verilator random-check of rtl vs post-synth (after abc)
+
+        verilator_check_vectors :
+            Number of random vectors for verilator_check
+
+        verilator_check_seed :
+            Seed for verilator_check
 
         use_old_abc_script :
             Enables the use of the old ABC script
@@ -125,6 +185,9 @@ def run(
 
         check_place:
             Route existing placement by enabling VPR routing.
+
+        no_second_run:
+            Don't run VPR again even if it's writing out some intermediate files.
     """
 
     #
@@ -132,8 +195,9 @@ def run(
     #
     vpr_args = OrderedDict() if not vpr_args else vpr_args
     odin_args = OrderedDict() if not odin_args else odin_args
+    parmys_args = OrderedDict() if not parmys_args else parmys_args
+    mosaic_args = OrderedDict() if not mosaic_args else mosaic_args
     abc_args = OrderedDict() if not abc_args else abc_args
-
     # Verify that files are Paths or convert them to Paths and check that they exist
     architecture_file = vtr.util.verify_file(architecture_file, "Architecture")
     circuit_file = vtr.util.verify_file(circuit_file, "Circuit")
@@ -148,6 +212,8 @@ def run(
 
     # Define useful filenames
     post_odin_netlist = temp_dir / (circuit_file.stem + ".odin" + netlist_ext)
+    post_yosys_netlist = temp_dir / (circuit_file.stem + ".parmys" + netlist_ext)
+    post_mosaic_netlist = temp_dir / (circuit_file.stem + ".mosaic" + netlist_ext)
     post_abc_netlist = temp_dir / (circuit_file.stem + ".abc" + netlist_ext)
     post_ace_netlist = temp_dir / (circuit_file.stem + ".ace" + netlist_ext)
     post_ace_activity_file = temp_dir / (circuit_file.stem + ".act")
@@ -166,34 +232,94 @@ def run(
     shutil.copy(str(circuit_file), str(circuit_copy))
     shutil.copy(str(architecture_file), str(architecture_copy))
 
+    # Check whether any inclulde is specified
+    if include_files:
+        # Verify include files are Paths or convert them to Path + check that they exist
+        # Copy include files to the run directory
+        for include in include_files:
+            include_file = vtr.util.verify_file(include, "Circuit")
+            include_copy = temp_dir / include_file.name
+            shutil.copy(str(include), str(include_copy))
+
     # There are multiple potential paths for the netlist to reach a tool
     # We initialize it here to the user specified circuit and let downstream
     # stages update it
     next_stage_netlist = circuit_copy
+    # set when a synthesis frontend runs; used to gate verilator_check
+    post_frontend_netlist = None
 
     #
-    # RTL Elaboration & Synthesis
+    # RTL Elaboration & Synthesis (ODIN-II)
     #
-    if should_run_stage(VtrStage.odin, start_stage, end_stage) and circuit_file.suffixes != ".blif":
+    if should_run_stage(VtrStage.ODIN, start_stage, end_stage) and circuit_file.suffixes != ".blif":
         vtr.odin.run(
             architecture_copy,
             next_stage_netlist,
+            include_files,
             output_netlist=post_odin_netlist,
             command_runner=command_runner,
             temp_dir=temp_dir,
             odin_args=odin_args,
+            odin_config=odin_config,
             min_hard_mult_size=min_hard_mult_size,
             min_hard_adder_size=min_hard_adder_size,
         )
 
         next_stage_netlist = post_odin_netlist
+        post_frontend_netlist = post_odin_netlist
 
         lec_base_netlist = post_odin_netlist if not lec_base_netlist else lec_base_netlist
+    #
+    # RTL Elaboration & Synthesis (PARMYS)
+    #
+    elif should_run_stage(VtrStage.PARMYS, start_stage, end_stage):
+        synthesis_params = parmys_args.pop("synthesis_params", "") if parmys_args else ""
+        vtr.parmys.run(
+            architecture_copy,
+            next_stage_netlist,
+            include_files,
+            output_netlist=post_yosys_netlist,
+            command_runner=command_runner,
+            temp_dir=temp_dir,
+            parmys_args=parmys_args,
+            yosys_script=yosys_script,
+            min_hard_mult_size=min_hard_mult_size,
+            min_hard_adder_size=min_hard_adder_size,
+            synthesis_params=synthesis_params,
+        )
+
+        next_stage_netlist = post_yosys_netlist
+        post_frontend_netlist = post_yosys_netlist
+
+        lec_base_netlist = post_yosys_netlist if not lec_base_netlist else lec_base_netlist
+
+    #
+    # RTL Elaboration & Synthesis (MOSAIC)
+    #
+    elif should_run_stage(VtrStage.MOSAIC, start_stage, end_stage):
+        vtr.mosaic.run(
+            architecture_copy,
+            next_stage_netlist,
+            include_files,
+            output_netlist=post_mosaic_netlist,
+            command_runner=command_runner,
+            temp_dir=temp_dir,
+            mosaic_args=mosaic_args,
+            mosaic_script=mosaic_script,
+        )
+
+        next_stage_netlist = post_mosaic_netlist
+        post_frontend_netlist = post_mosaic_netlist
+
+        lec_base_netlist = post_mosaic_netlist if not lec_base_netlist else lec_base_netlist
 
     #
     # Logic Optimization & Technology Mapping
     #
-    if should_run_stage(VtrStage.abc, start_stage, end_stage):
+    # mosaic maps to luts inside yosys (ENABLE_ABC=1), so its leg skips
+    # the external abc stage. odin and parmys still go through it.
+    abc_already_done_in_synth = start_stage == VtrStage.MOSAIC
+    if should_run_stage(VtrStage.ABC, start_stage, end_stage) and not abc_already_done_in_synth:
         vtr.abc.run(
             architecture_copy,
             next_stage_netlist,
@@ -209,15 +335,38 @@ def run(
         lec_base_netlist = post_abc_netlist if not lec_base_netlist else lec_base_netlist
 
     #
+    # verilator random-check of rtl against the post-synth netlist
+    #
+    if verilator_check:
+        # next_stage_netlist is post-abc for parmys/odin, or mosaic blif
+        _maybe_run_verilator_check(
+            circuit_file,
+            circuit_copy,
+            next_stage_netlist,
+            post_frontend_netlist,
+            {
+                "temp_dir": temp_dir,
+                "include_files": include_files,
+                "vectors": verilator_check_vectors,
+                "seed": verilator_check_seed,
+            },
+        )
+
+    #
     # Power Activity Estimation
     #
     if power_tech_file:
         # The user provided a tech file, so do power analysis
 
-        if should_run_stage(VtrStage.ace, start_stage, end_stage):
+        if should_run_stage(VtrStage.ACE, start_stage, end_stage):
+            pre_ace_netlist = post_yosys_netlist
+            if start_stage == VtrStage.ODIN:
+                pre_ace_netlist = post_odin_netlist
+            elif start_stage == VtrStage.MOSAIC:
+                pre_ace_netlist = post_mosaic_netlist
             vtr.ace.run(
                 next_stage_netlist,
-                old_netlist=post_odin_netlist,
+                old_netlist=pre_ace_netlist,
                 output_netlist=post_ace_netlist,
                 output_activity_file=post_ace_activity_file,
                 command_runner=command_runner,
@@ -239,7 +388,7 @@ def run(
     #
     # Pack/Place/Route
     #
-    if should_run_stage(VtrStage.vpr, start_stage, end_stage):
+    if should_run_stage(VtrStage.VPR, start_stage, end_stage):
         # Copy the input netlist for input to vpr
         shutil.copyfile(str(next_stage_netlist), str(pre_vpr_netlist))
         route_fixed_w = "route_chan_width" in vpr_args
@@ -252,8 +401,15 @@ def run(
             do_second_run = False
             second_run_args = vpr_args
 
-            if "write_rr_graph" in vpr_args or "analysis" in vpr_args or "route" in vpr_args:
+            if (
+                "write_rr_graph" in vpr_args
+                or "write_router_lookahead" in vpr_args
+                or "write_intra_cluster_router_lookahead" in vpr_args
+            ):
                 do_second_run = True
+
+            if no_second_run:
+                do_second_run = False
 
             vtr.vpr.run(
                 architecture_copy,
@@ -263,6 +419,12 @@ def run(
                 temp_dir=temp_dir,
                 vpr_args=vpr_args,
             )
+            # `--graphics_commands "...; exit N"` terminates VPR before the
+            # write_rr_graph/lookahead artifacts are produced; skip the
+            # second-run consistency checks rather than failing on missing
+            # outputs.
+            if do_second_run and vtr.graphics_exit_requested(str(temp_dir / "vpr.out")):
+                do_second_run = False
             if do_second_run:
                 # Run vpr again with additional parameters.
                 # This is used to ensure that files generated by VPR can be re-loaded by it
@@ -337,14 +499,19 @@ def run(
 
 
 def delete_intermediate_files(
-    next_stage_netlist, post_ace_activity_file, keep_result_files, temp_dir, power_tech_file,
+    next_stage_netlist,
+    post_ace_activity_file,
+    keep_result_files,
+    temp_dir,
+    power_tech_file,
 ):
     """
-        delete intermediate files
+    delete intermediate files
     """
     next_stage_netlist.unlink()
-    exts = (".xml", ".sdf", ".v")
-    exts += (".net", ".place", ".route") if not keep_result_files else None
+    exts = (".xml", ".sdf", ".v", ".sv")
+    if not keep_result_files:
+        exts += (".net", ".place", ".route")
 
     for file in temp_dir.iterdir():
         if file.suffix in exts:

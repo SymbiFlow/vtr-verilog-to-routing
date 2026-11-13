@@ -13,6 +13,7 @@
 //these assignments are not observed. Buses in a VQM File are flattened into 1-bit wide assigns.
 //NOTE: The functionality of this option is untested.
 
+#include "logic_types.h"
 #define MAX_LEN 350	//maximum length of a port/net name
 #define MAX_PPL 10	//maximum number of ports that can be put into one line of a BLIF
 
@@ -43,9 +44,9 @@
 #include <queue>
 #include <set>
 #include <string.h>
+#include <regex>
 
 #include "vqm_dll.h"	//VQM Parser
-#include "hash.h"				//Hash Table Functions
 
 #include "read_xml_arch_file.h"	//Architecture Parser
 
@@ -82,7 +83,9 @@ enum v_OptionBaseToken
     OT_REMOVE_CONST_NETS,
     OT_INCLUDE_UNUSED_SUBCKT_PINS,
     OT_EBLIF_FORMAT,
-	OT_UNKNOWN
+	OT_UNKNOWN,
+  OT_INSERT_CUSTOM_HARD_BLOCKS,
+  OT_DEVICE
 };
 
 struct cstrcomp{	//operator structure to compare C-strings within a map class
@@ -96,16 +99,63 @@ typedef pair <const char*, v_OptionBaseToken> tokpair;
 struct RamInfo {
     std::string mode = "";
     int port_a_addr_width = 0;
+    int port_a_addr2_width = 0;
     int port_a_data_width = 0;
     t_node_port_association* port_a_input_clock = nullptr;
+    t_node_port_association* port_a_input_ena = nullptr;
     t_node_port_association* port_a_output_clock = nullptr;
+    t_node_port_association* port_a_output_ena = nullptr;
+    t_node_port_association* port_a_dataout_aclr = nullptr;
+    t_node_port_association* port_a_dataout_sclr = nullptr;
 
     int port_b_addr_width = 0;
+    int port_b_addr2_width = 0;
     int port_b_data_width = 0;
     t_node_port_association* port_b_input_clock = nullptr;
+    t_node_port_association* port_b_input_ena = nullptr;
     t_node_port_association* port_b_output_clock = nullptr;
+    t_node_port_association* port_b_output_ena = nullptr;
+    t_node_port_association* port_b_dataout_aclr = nullptr;
+    t_node_port_association* port_b_dataout_sclr = nullptr;
 };
 
+
+
+struct DSPInfo {
+
+    t_node_port_association* port_ax_clock = nullptr;
+    t_node_port_association* port_ay_clock = nullptr;
+    t_node_port_association* port_az_clock = nullptr;
+    t_node_port_association* port_bx_clock = nullptr;
+    t_node_port_association* port_by_clock = nullptr;
+    t_node_port_association* port_bz_clock = nullptr;
+  
+    t_node_port_association* port_coef_sel_a_clock = nullptr;
+    t_node_port_association* port_coef_sel_b_clock = nullptr;
+
+    t_node_port_association* port_ay_scan_in_clock = nullptr;
+    t_node_port_association* port_accumulate_clock = nullptr;
+    t_node_port_association* port_load_const_clock = nullptr;
+    t_node_port_association* port_negate_clock = nullptr;
+    t_node_port_association* port_sub_clock = nullptr;
+
+    t_node_port_association* port_chainout_clock = nullptr;
+    t_node_port_association* port_output_clock = nullptr;
+
+
+};
+
+// stores relevant information for a given FPGA device
+// currently, just storing the strings used to identify luts and dff primitives and their ports within the vqm netlist
+// add additional parameters as needed
+struct DeviceInfo {
+    std::string lut_type_name;
+    std::string lut_output_port;
+    int lut_output_port_size;
+
+    std::string dff_type_name;
+    std::string dff_output_port;
+}; 
 
 //============================================================================================
 //				GLOBAL FUNCTIONS
@@ -115,24 +165,41 @@ struct RamInfo {
 
 void verify_format (string* filename, string extension);	//verifies a given string ends in ".extension"
 
+// verifies whether the hard block type name provided by the user meets verilog naming rules
+void verify_hard_block_type_name(string curr_hard_block_name);
+
+// checks to see that the device name supplied matches the devices we can support
+void verify_device(string device_name);
+
+// if the hard block type name was escaped by '\', we need to remove the '\' character from the name (refer to function above)
+void cleanup_hard_block_type_name(string* curr_hard_block_name);
+
 void construct_filename (char* filename, const char* path, const char* ext);	//constructs a filename based on the path and termination passed
 
 //Naming Conventions
 
-string generate_opname (t_node* vqm_node, t_model* arch_models);	//generates a mode-hashed name for a subcircuit instance
+string generate_opname (t_node* vqm_node, const LogicalModels& arch_models, string device);	//generates a mode-hashed name for a subcircuit instance
 
-string generate_opname_stratixiv (t_node* vqm_node, t_model* arch_models); //mode-hash for Stratix IV
-void generate_opname_stratixiv_ram (t_node* vqm_node, t_model* arch_models, string& mode_hash); //mode-hash for Stratix IV RAM blocks
-void generate_opname_stratixiv_dsp_mult (t_node* vqm_node, t_model* arch_models, string& mode_hash); //mode-hash for Stratix IV DSP Multiplers
-void generate_opname_stratixiv_dsp_out (t_node* vqm_node, t_model* arch_models, string& mode_hash); //mode-hash for Stratix IV DSP Output (MAC)
+void generate_opname_ram (t_node* vqm_node, const LogicalModels& arch_models, string& mode_hash, string device); //mode-hash for RAM blocks
 
-t_model* find_arch_model_by_name(string model_name, t_model* arch_models); //returns the pointer to a module from the arch file, searches by name
+string generate_opname_stratixiv (t_node* vqm_node, const LogicalModels& arch_models); //mode-hash for Stratix IV
+void generate_opname_stratixiv_dsp_mult (t_node* vqm_node, string& mode_hash); //mode-hash for Stratix IV DSP Multipliers
+void generate_opname_stratixiv_dsp_out (t_node* vqm_node, string& mode_hash); //mode-hash for Stratix IV DSP Output (MAC)
+
+string generate_opname_stratix10 (t_node* vqm_node, const LogicalModels& arch_models); //mode-hash for Stratix 10
+void generate_opname_stratix10_dsp (t_node* vqm_node, string& mode_hash, bool dsp_mode); //mode-hash for Stratix 10 DSP fixed point Multipliers
+void generate_opname_stratix10_lut (t_node* vqm_node, string& mode_hash); //mode-hash for Stratix 10 LUTs
+void remap_lut_ports(t_node* vqm_node); // remaps the input ports of the LUT atom to the ports [dataa-datae]
 
 string get_wire_name(t_pin_def* net, int index);	//returns a string with the appropriate wire name
 
 string append_index_to_str (string busname, int index);	//appends an integer index to the end of a string
 
-RamInfo get_ram_info(const t_node* vqm_node);
+RamInfo get_ram_info(const t_node* vqm_node, string device);
+
+DSPInfo get_dsp_info(const t_node* vqm_node);
+
+void set_dsp_clk(DSPInfo& dsp_info, t_node_port_association* source_clk, std::string clock_name);
 
 //Other
 
@@ -163,6 +230,21 @@ typedef enum v_Clean_Mode { CL_NONE, CL_BUFF, CL_ALL } e_clean;
 extern e_clean clean_mode;	//user-set flag dictating how to clean away buffers/invertors
 
 extern t_boolean buffd_outs;	//user-set flag that regulates whether to keep buffered outputs
+
+//============================================================================================
+//				DEVICE SPECIFIC INFORMATION 
+//============================================================================================
+
+/*
+  A database that stores parameters for different types of FPGA devices.
+  Currently only the stratix 4 device parameters are stored.
+*/
+const map<std::string, DeviceInfo> device_parameter_database {
+    // stratix 4 device
+    {"stratixiv", {"stratixiv_lcell_comb", "combout", 1, "dffeas", "q" }},
+    {"stratix10", {"fourteennm_lcell_comb", "combout", 1, "fourteennm_ff", "q" }},
+    {"agilex", {"tennm_lcell_comb", "combout", 1, "tennm_ff", "q" }}
+};
 
 #endif
 

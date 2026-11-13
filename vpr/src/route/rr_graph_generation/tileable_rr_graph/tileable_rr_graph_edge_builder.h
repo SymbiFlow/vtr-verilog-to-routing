@@ -1,0 +1,100 @@
+#pragma once
+
+/********************************************************************
+ * Include header files that are required by function declaration
+ *******************************************************************/
+#include <vector>
+
+/* Headers from vtrutil library */
+#include "vtr_ndmatrix.h"
+#include "vtr_geometry.h"
+
+#include "physical_types.h"
+#include "device_grid.h"
+#include "rr_graph_view.h"
+#include "rr_graph.h"
+
+/********************************************************************
+ * Function declaration
+ *******************************************************************/
+
+void build_rr_graph_edges(const RRGraphView& rr_graph,
+                          RRGraphBuilder& rr_graph_builder,
+                          vtr::vector<RRNodeId, RRSwitchId>& rr_node_driver_switches,
+                          const t_crr_opts& crr_opts,
+                          const DeviceGrid& grids,
+                          const VibDeviceGrid& vib_grid,
+                          size_t layer,
+                          const vtr::Point<size_t>& device_chan_width,
+                          const std::vector<t_segment_inf>& segment_inf,
+                          const std::vector<t_segment_inf>& segment_inf_x,
+                          const std::vector<t_segment_inf>& segment_inf_y,
+                          const std::vector<vtr::Matrix<int>>& Fc_in,
+                          const std::vector<vtr::Matrix<int>>& Fc_out,
+                          e_switch_block_type sb_type,
+                          int Fs,
+                          e_switch_block_type sb_subtype,
+                          int sub_fs,
+                          bool perimeter_cb,
+                          bool opin2all_sides,
+                          bool concat_wire,
+                          bool wire_opposite_side,
+                          RRSwitchId delayless_switch,
+                          const int route_verbosity);
+
+void build_rr_graph_direct_connections(const RRGraphView& rr_graph,
+                                       RRGraphBuilder& rr_graph_builder,
+                                       const DeviceGrid& grids,
+                                       size_t layer,
+                                       const std::vector<t_direct_inf>& directs,
+                                       const std::vector<t_clb_to_clb_directs>& clb_to_clb_directs);
+
+void build_rr_graph_edges_for_source_nodes(const RRGraphView& rr_graph,
+                                           RRGraphBuilder& rr_graph_builder,
+                                           const vtr::vector<RRNodeId, RRSwitchId>& rr_node_driver_switches,
+                                           const DeviceGrid& grids,
+                                           size_t layer,
+                                           size_t& num_edges_to_create);
+
+void build_rr_graph_edges_for_sink_nodes(const RRGraphView& rr_graph,
+                                         RRGraphBuilder& rr_graph_builder,
+                                         const vtr::vector<RRNodeId, RRSwitchId>& rr_node_driver_switches,
+                                         const DeviceGrid& grids,
+                                         size_t layer,
+                                         size_t& num_edges_to_create);
+
+void build_rr_graph_vib_edges(const RRGraphView& rr_graph,
+                              RRGraphBuilder& rr_graph_builder,
+                              vtr::vector<RRNodeId, RRSwitchId>& rr_node_driver_switches,
+                              const DeviceGrid& grids,
+                              const VibDeviceGrid& vib_grid,
+                              size_t layer,
+                              const vtr::Point<size_t>& device_chan_width,
+                              const std::vector<t_segment_inf>& segment_inf,
+                              const std::vector<t_segment_inf>& segment_inf_x,
+                              const std::vector<t_segment_inf>& segment_inf_y,
+                              bool perimeter_cb,
+                              RRSwitchId delayless_switch,
+                              e_gsb_version gsb_version);
+
+void build_rr_graph_regular_edges(const RRGraphView& rr_graph,
+                                  RRGraphBuilder& rr_graph_builder,
+                                  const vtr::vector<RRNodeId, RRSwitchId>& rr_node_driver_switches,
+                                  const t_crr_opts& crr_opts,
+                                  const DeviceGrid& grids,
+                                  size_t layer,
+                                  const vtr::Point<size_t>& device_chan_width,
+                                  const std::vector<t_segment_inf>& segment_inf,
+                                  const std::vector<t_segment_inf>& segment_inf_x,
+                                  const std::vector<t_segment_inf>& segment_inf_y,
+                                  const std::vector<vtr::Matrix<int>>& Fc_in,
+                                  const std::vector<vtr::Matrix<int>>& Fc_out,
+                                  e_switch_block_type sb_type,
+                                  int Fs,
+                                  e_switch_block_type sb_subtype,
+                                  int sub_fs,
+                                  bool perimeter_cb,
+                                  bool opin2all_sides,
+                                  bool concat_wire,
+                                  bool wire_opposite_side,
+                                  const int route_verbosity);

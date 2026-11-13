@@ -3,7 +3,7 @@
 * This file contains useful structures and functions used by vqm2blif.cpp to
 * parse a VQM netlist in order to output a corresponding BLIF netlist.
 *
-*			VQM to BLIF Convertor V.1.0
+*			VQM to BLIF Converter V.1.0
 *
 * Author:	S. Whitty
 *		May 20, 2011
@@ -31,10 +31,10 @@
 * THE SOFTWARE.
 * 			BACKGROUND
 *
-* VQM is an internal file format used by Altera® inside their development tool,
-* Quartus® II. It uses a subset of the Verilog description language, and the 
+* VQM is an internal file format used by Altera(R) inside their development tool,
+* Quartus(R) II. It uses a subset of the Verilog description language, and the 
 * circuit it describes is technology-mapped to one of their families of devices 
-* (e.g. Stratix® IV or Cyclone® II). These files can be outputted during normal
+* (e.g. Stratix(R) IV or Cyclone(R) II). These files can be outputted during normal
 * Quartus II operation, as detailed in Altera's QUIP documentation.
 *	-> For more, see: quip_tutorial.pdf
 *	-> Download QUIP at:
@@ -56,11 +56,10 @@
 //				INCLUDES
 //============================================================================================
 
+#include <string>
+#include "logic_types.h"
 #include "vqm2blif_util.h"
 #include "lutmask.h"
-#include "cleanup.h"
-#include "lut_recog.h"
-#include "preprocess.h"
 
 //============================================================================================
 //				DATA STRUCTURES
@@ -74,7 +73,7 @@ struct t_subckt_param_attr {
 typedef struct s_blif_subckt{
 	string inst_name;
 	
-	t_model* model_type;
+	LogicalModelId model_type;
 	
 	portmap input_cnxns;
 	
@@ -101,7 +100,7 @@ typedef struct s_blif_subckt{
  *	If a port is left open, it will be mapped to the "hbpad" t_node_port_association.
  *	NOTE: Must map the port's name (string) because a port may be a bus, with multiple
  *	wires having the same portname. All assignments in BLIF must be 1-bit wide, so these
- *	buses must be flattened and mapped independantly.
+ *	buses must be flattened and mapped independently.
  */
  
 typedef struct s_blif_model{

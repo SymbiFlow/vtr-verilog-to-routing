@@ -67,7 +67,7 @@ KJ code is RAII-strict. Whenever it is the case that "this block of code cannot 
 
 Use the macros `KJ_DEFER`, `KJ_ON_SCOPE_SUCCESS`, and `KJ_ON_SCOPE_FAILURE` to easily specify some code that must be executed on exit from the current scope, without the need to define a whole class with a destructor.
 
-Be careful when writing complicated destructors. If a destructor performs multiple cleanup actions, you generally need to make sure that the latter actions occur even if the former ones throw an exception. For this reason, a destructor should generally perform no more than one cleanup action. If you need to clean up multiple things, have you class contain multiple members representing the different things that need cleanup, each with its own destructor. This way, if one member's destructor throws, the others still run.
+Be careful when writing complicated destructors. If a destructor performs multiple cleanup actions, you generally need to make sure that the latter actions occur even if the former ones throw an exception. For this reason, a destructor should generally perform no more than one cleanup action. If you need to clean up multiple things, have your class contain multiple members representing the different things that need cleanup, each with its own destructor. This way, if one member's destructor throws, the others still run.
 
 ### Ownership
 
@@ -109,7 +109,7 @@ Keep in mind that atomic (thread-safe) reference counting can be extremely slow.
 
 A "singleton" is any mutable object or value that is globally accessible. "Globally accessible" means that the object is declared as a global variable or static member variable, or that the object can be found by following pointers from such variables.
 
-Never use singletons. Singletons cause invisible and unexpected dependencies between components of your software that appear unrelated. Worse, the assumption that "there should only be one of this object per process" is almost always wrong, but its wrongness only becomes apparent after so much code uses the singleton that it is infeasible to change. Singleton interfaces ofter turn into unusable monstrosities in an attempt to work around the fact that they should never have been a singleton in the first place.
+Never use singletons. Singletons cause invisible and unexpected dependencies between components of your software that appear unrelated. Worse, the assumption that "there should only be one of this object per process" is almost always wrong, but its wrongness only becomes apparent after so much code uses the singleton that it is infeasible to change. Singleton interfaces often turn into unusable monstrosities in an attempt to work around the fact that they should never have been a singleton in the first place.
 
 See ["Singletons Considered Harmful"](http://www.object-oriented-security.org/lets-argue/singletons) for a complete discussion.
 
@@ -429,7 +429,7 @@ We use:
 * Clang for compiling.
 * `KJ_DBG()` for simple debugging.
 * Valgrind for complicated debugging.
-* [Ekam](https://github.com/sandstorm-io/ekam) for a build system.
+* [Ekam](https://github.com/capnproto/ekam) for a build system.
 * Git for version control.
 
 ## Irrelevant formatting rules
@@ -449,7 +449,7 @@ As a code reviewer, when you see a violation of formatting rules, think carefull
 
 **Rationale:** There has never been broad agreement on C++ naming style. The closest we have is the C++ standard library. Unfortunately, the C++ standard library made the awful decision of naming types and values in the same style, losing a highly useful visual cue that makes programming more pleasant, and preventing variables from being named after their type (which in many contexts is perfectly appropriate).
 
-Meanwhile, the Java style, which KJ emulates, has been broadly adopted to varying degrees in other languages, from Javascript to Haskell. Using a similar style in KJ code makes it less jarring to switch between C++ and those other languages. Being consistent with Javascript is especially useful because it is the one language that everyone pretty much has to use, due to its use in the web platform.
+Meanwhile, the Java style, which KJ emulates, has been broadly adopted to varying degrees in other languages, from JavaScript to Haskell. Using a similar style in KJ code makes it less jarring to switch between C++ and those other languages. Being consistent with JavaScript is especially useful because it is the one language that everyone pretty much has to use, due to its use in the web platform.
 
 There has also never been any agreement on C++ file extensions, for some reason. The extension `.c++`, though not widely used, is accepted by all reasonable tools and is clearly the most precise choice.
 
@@ -458,7 +458,9 @@ There has also never been any agreement on C++ file extensions, for some reason.
 * Indents are two spaces.
 * Never use tabs.
 * Maximum line length is 100 characters.
-* Indent a continuation line by four spaces, *or* line them up nicely with the previous line if it makes it easier to read.
+* Indent continuation lines for braced init lists by two spaces.
+* Indent all other continuation lines by four spaces.
+* Alternatively, line up continuation lines with previous lines if it makes them easier to read.
 * Place a space between a keyword and an open parenthesis, e.g.: `if (foo)`
 * Do not place a space between a function name and an open parenthesis, e.g.: `foo(bar)`
 * Place an opening brace at the end of the statement which initiates the block, not on its own line.
@@ -469,6 +471,7 @@ There has also never been any agreement on C++ file extensions, for some reason.
 * Statements inside a `namespace` are **not** indented unless the namespace is a short block that is just forward-declaring things at the top of a file.
 * Set your editor to strip trailing whitespace on save, otherwise other people who use this setting will see spurious diffs when they edit a file after you.
 
+<br>
 
     if (foo) {
       bar();

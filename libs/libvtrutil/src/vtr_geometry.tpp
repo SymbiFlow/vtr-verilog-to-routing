@@ -1,3 +1,7 @@
+#include <limits>
+
+#include "vtr_assert.h"
+
 namespace vtr {
 /*
  * Point
@@ -58,11 +62,35 @@ void Point<T>::swap() {
     std::swap(x_, y_);
 }
 
+template<class T>
+Point<T> Point<T>::operator+(const Point<T>& rhs) {
+    return {x_ + rhs.x_, y_ + rhs.y_};
+}
+
+template<class T>
+Point<T> Point<T>::operator-(const Point<T>& rhs) {
+    return {x_ - rhs.x_, y_ - rhs.y_};
+}
+
+template<class T>
+Point<T>& Point<T>::operator+=(const Point<T>& rhs) {
+    x_ += rhs.x_;
+    y_ += rhs.y_;
+    return *this;
+}
+
+template<class T>
+Point<T>& Point<T>::operator-=(const Point<T>& rhs) {
+    x_ -= rhs.x_;
+    y_ -= rhs.y_;
+    return *this;
+}
+
 /*
  * Rect
  */
 template<class T>
-Rect<T>::Rect()
+Rect<T>::Rect() noexcept
     : Rect<T>(Point<T>(0, 0), Point<T>(0, 0)) {
     //pass
 }
@@ -121,6 +149,11 @@ Point<T> Rect<T>::top_right() const {
 }
 
 template<class T>
+std::tuple<T, T, T, T> Rect<T>::coordinates() const {
+    return {xmin(), ymin(), xmax(), ymax()};
+}
+
+template<class T>
 T Rect<T>::width() const {
     return xmax() - xmin();
 }
@@ -145,7 +178,7 @@ bool Rect<T>::strictly_contains(Point<T> point) const {
 }
 
 template<class T>
-bool Rect<T>::coincident(Point<T> point) const {
+bool Rect<T>::contains_inclusive(Point<T> point) const {
     //Including right or top edges
     return point.x() >= xmin() && point.x() <= xmax()
            && point.y() >= ymin() && point.y() <= ymax();
@@ -156,6 +189,12 @@ bool Rect<T>::contains(const Rect<T>& other) const {
     //Including all edges
     return other.xmin() >= xmin() && other.xmax() <= xmax()
            && other.ymin() >= ymin() && other.ymax() <= ymax();
+}
+
+template<class T>
+bool Rect<T>::strictly_overlaps(const Rect<T>& other) const {
+    return xmin() < other.xmax() && xmax() > other.xmin()
+           && ymax() > other.ymin() && ymin() < other.ymax();
 }
 
 template<class T>
@@ -189,6 +228,13 @@ Rect<T> intersection(const Rect<T>& lhs, const Rect<T>& rhs) {
                    std::min(lhs.xmax(), rhs.xmax()),
                    std::min(lhs.ymax(), rhs.ymax()));
 }
+template<class T>
+static void print_rect(FILE* fp, const Rect<T> rect) {
+    fprintf(fp, "\txmin: %d\n", rect.xmin());
+    fprintf(fp, "\tymin: %d\n", rect.ymin());
+    fprintf(fp, "\txmax: %d\n", rect.xmax());
+    fprintf(fp, "\tymax: %d\n", rect.ymax());
+}
 //Only defined for integral types
 template<typename T, typename std::enable_if<std::is_integral<T>::value>::type...>
 Point<T> sample(const vtr::Rect<T>& r, T x, T y, T d) {
@@ -215,6 +261,20 @@ void Rect<T>::set_xmax(T xmax_val) {
 template<class T>
 void Rect<T>::set_ymax(T ymax_val) {
     top_right_.set_y(ymax_val);
+}
+
+template<class T>
+Rect<T>& Rect<T>::operator+=(const Point<T>& rhs) {
+    bottom_left_ += rhs;
+    top_right_ += rhs;
+    return *this;
+}
+
+template<class T>
+Rect<T>& Rect<T>::operator-=(const Point<T>& rhs) {
+    bottom_left_ -= rhs;
+    top_right_ -= rhs;
+    return *this;
 }
 
 template<class T>
@@ -301,9 +361,9 @@ bool RectUnion<T>::strictly_contains(Point<T> point) const {
 }
 
 template<class T>
-bool RectUnion<T>::coincident(Point<T> point) const {
+bool RectUnion<T>::contains_inclusive(Point<T> point) const {
     for (const auto& rect : rects()) {
-        if (rect.coincident(point)) {
+        if (rect.contains_inclusive(point)) {
             return true;
         }
     }

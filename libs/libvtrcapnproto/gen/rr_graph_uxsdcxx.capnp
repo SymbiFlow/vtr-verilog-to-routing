@@ -2,11 +2,11 @@
 # https://github.com/duck2/uxsdcxx
 # Modify only if your build process doesn't involve regenerating this file.
 #
-# Cmdline: uxsdcxx/uxsdcap.py /home/kmurray/trees/vtr/vpr/src/route/rr_graph.xsd
-# Input file: /home/kmurray/trees/vtr/vpr/src/route/rr_graph.xsd
-# md5sum of input file: 40e83d2ea6556761d4e29f21324b1871
+# Cmdline: uxsdcxx/uxsdcap.py /home/alex/vtr-switch-min-max-delay/libs/librrgraph/src/io/rr_graph.xsd
+# Input file: /home/alex/vtr-switch-min-max-delay/libs/librrgraph/src/io/rr_graph.xsd
+# md5sum of input file: fc64388fa00da75640603bc9d9aa7416
 
-@0xb803100e76d3342d;
+@0x8345769c23aca9ef;
 using Cxx = import "/capnp/c++.capnp";
 $Cxx.namespace("ucap");
 
@@ -17,6 +17,12 @@ enum SwitchType {
 	passGate @3;
 	short @4;
 	buffer @5;
+}
+
+enum SegmentResType {
+	uxsdInvalid @0;
+	general @1;
+	gclk @2;
 }
 
 enum PinType {
@@ -30,10 +36,12 @@ enum NodeType {
 	uxsdInvalid @0;
 	chanx @1;
 	chany @2;
-	source @3;
-	sink @4;
-	opin @5;
-	ipin @6;
+	chanz @3;
+	source @4;
+	sink @5;
+	opin @6;
+	ipin @7;
+	mux @8;
 }
 
 enum NodeDirection {
@@ -41,6 +49,12 @@ enum NodeDirection {
 	incDir @1;
 	decDir @2;
 	biDir @3;
+	none @4;
+}
+
+enum NodeClkResType {
+	uxsdInvalid @0;
+	virtualSink @1;
 }
 
 enum LocSide {
@@ -49,6 +63,17 @@ enum LocSide {
 	right @2;
 	top @3;
 	bottom @4;
+	rightLeft @5;
+	rightBottom @6;
+	rightBottomLeft @7;
+	topRight @8;
+	topBottom @9;
+	topLeft @10;
+	topRightBottom @11;
+	topRightLeft @12;
+	topBottomLeft @13;
+	topRightBottomLeft @14;
+	bottomLeft @15;
 }
 
 struct Channel {
@@ -81,6 +106,8 @@ struct Timing {
 	cout @2 :Float32;
 	r @3 :Float32;
 	tdel @4 :Float32;
+	tdelMax @5 :Float32;
+	tdelMin @6 :Float32;
 }
 
 struct Sizing {
@@ -107,8 +134,10 @@ struct SegmentTiming {
 
 struct Segment {
 	id @0 :Int32;
-	name @1 :Text;
-	timing @2 :SegmentTiming;
+	length @1 :Int32;
+	name @2 :Text;
+	resType @3 :SegmentResType;
+	timing @4 :SegmentTiming;
 }
 
 struct Segments {
@@ -140,9 +169,10 @@ struct BlockTypes {
 struct GridLoc {
 	blockTypeId @0 :Int32;
 	heightOffset @1 :Int32;
-	widthOffset @2 :Int32;
-	x @3 :Int32;
-	y @4 :Int32;
+	layer @2 :Int32 = 0;
+	widthOffset @3 :Int32;
+	x @4 :Int32;
+	y @5 :Int32;
 }
 
 struct GridLocs {
@@ -150,12 +180,14 @@ struct GridLocs {
 }
 
 struct NodeLoc {
-	ptc @0 :Int32;
-	side @1 :LocSide;
-	xhigh @2 :Int32;
-	xlow @3 :Int32;
-	yhigh @4 :Int32;
-	ylow @5 :Int32;
+	layerHigh @0 :Int32 = 0;
+	layerLow @1 :Int32 = 0;
+	ptc @2 :Text;
+	side @3 :LocSide;
+	xhigh @4 :Int32;
+	xlow @5 :Int32;
+	yhigh @6 :Int32;
+	ylow @7 :Int32;
 }
 
 struct NodeTiming {
@@ -178,13 +210,15 @@ struct Metadata {
 
 struct Node {
 	capacity @0 :UInt32;
-	direction @1 :NodeDirection;
-	id @2 :UInt32;
-	type @3 :NodeType;
-	loc @4 :NodeLoc;
-	timing @5 :NodeTiming;
-	segment @6 :NodeSegment;
-	metadata @7 :Metadata;
+	clkResType @1 :NodeClkResType;
+	direction @2 :NodeDirection;
+	id @3 :UInt32;
+	name @4 :Text;
+	type @5 :NodeType;
+	loc @6 :NodeLoc;
+	timing @7 :NodeTiming;
+	segment @8 :NodeSegment;
+	metadata @9 :Metadata;
 }
 
 struct RrNodes {
@@ -203,14 +237,15 @@ struct RrEdges {
 }
 
 struct RrGraph {
-	toolComment @0 :Text;
-	toolName @1 :Text;
-	toolVersion @2 :Text;
-	channels @3 :Channels;
-	switches @4 :Switches;
-	segments @5 :Segments;
-	blockTypes @6 :BlockTypes;
-	grid @7 :GridLocs;
-	rrNodes @8 :RrNodes;
-	rrEdges @9 :RrEdges;
+	schemaFileId @0 :UInt64;
+	toolComment @1 :Text;
+	toolName @2 :Text;
+	toolVersion @3 :Text;
+	channels @4 :Channels;
+	switches @5 :Switches;
+	segments @6 :Segments;
+	blockTypes @7 :BlockTypes;
+	grid @8 :GridLocs;
+	rrNodes @9 :RrNodes;
+	rrEdges @10 :RrEdges;
 }
